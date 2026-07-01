@@ -29,16 +29,23 @@
       "pattern": "\\b(?:\\+?1[-. ]?)?\\(?[2-9]\\d{2}\\)?[-. ]?\\d{3}[-. ]?\\d{4}\\b"
     },
     {
-      "id": "internal_vpn_subnet",
+      "id": "private_ip_address",
       "type": "regex",
-      "description": "Any IPv4 address. Generated placeholders are always valid IPv4 (each octet 0-255).",
-      "pattern": "\\b(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}\\b"
+      "description": "RFC 1918 private IPv4 addresses only: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16. Excludes loopback (127.x), broadcast (255.255.255.255), link-local (169.254.x), and public IPs to preserve their semantic meaning for the AI model.",
+      "pattern": "\\b(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3})\\b"
     },
     {
       "id": "generic_bearer_token",
       "type": "regex",
       "description": "Bearer token value only; 'Authorization: Bearer ' prefix is kept",
       "pattern": "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)",
+      "flags": "i"
+    },
+    {
+      "id": "keyword_value_pairs",
+      "type": "regex",
+      "description": "Captures the value portion of common key=value / key: value assignments for sensitive keywords (key, password, accountid, account_id, client_id, secret). Supports formats: KEY=val, KEY: val, KEY:val, KEY:\"val\", KEY=\"val\". Case-insensitive.",
+      "pattern": "(?<![A-Za-z])(?:key|password|accountid|account_id|client_id|secret)\\s*[:=]\\s*\"?([A-Za-z0-9_./@+\\-]+)\"?",
       "flags": "i"
     }
   ],
