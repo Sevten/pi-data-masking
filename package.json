@@ -6,7 +6,6 @@
     "type": "git",
     "url": "git+https://github.com/sevten/pi-data-masking.git"
   },
-  "homepage": "https://github.com/sevten/pi-data-masking#readme",
   "license": "MIT",
   "type": "module",
   "main": "./index.ts",
@@ -33,5 +32,10 @@
   "devDependencies": {
     "@types/node": "^26.0.1",
     "typescript": "^6.0.3"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }

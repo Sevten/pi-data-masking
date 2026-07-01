@@ -103,8 +103,6 @@ Each rule has an optional `type` field:
 }
 ```
 
-> Note: only the **root domain** needs a rule. Literal matching is substring-based, so `api.company-internal.com`, `db.company-internal.com`, etc. all get their root-domain portion replaced automatically — no need for a separate rule per subdomain. Subdomain prefixes like `api`, `db` usually aren't sensitive on their own.
-
 **3. Regex fuzzy match** — `pattern` instead of `real`; one rule covers a whole class of values (phone numbers, credentials inside connection strings, ...), and each distinct value gets its own stable placeholder:
 
 ```json
