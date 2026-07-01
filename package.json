@@ -1,0 +1,37 @@
+{
+  "name": "@sevten/pi-data-masking",
+  "version": "0.1.0",
+  "description": "Pi extension that masks sensitive data before it reaches the LLM and restores it for users and tools.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sevten/pi-data-masking.git"
+  },
+  "homepage": "https://github.com/sevten/pi-data-masking#readme",
+  "license": "MIT",
+  "type": "module",
+  "main": "./index.ts",
+  "files": [
+    "*.ts",
+    "masking.config.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "data-masking",
+    "ai-agent"
+  ],
+  "scripts": {
+    "check": "tsc",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "typescript": "^6.0.3"
+  }
+}

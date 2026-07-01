@@ -1,0 +1,50 @@
+{
+  "_comment": "Full rule syntax, examples, and merge/priority rules are documented in README.md.",
+
+  "enabled": true,
+
+  "rules": [
+    {
+      "id": "company_root_domain",
+      "description": "Company root domain (manual placeholder).",
+      "real": "company-internal.com",
+      "placeholder": "northstar-systems.com"
+    },
+    {
+      "id": "db_conn_credentials",
+      "type": "regex",
+      "description": "Username:password in DB/MQ connection strings. [^\\s]+ (not .+) greedily backtracks to the last @ within one token, correctly handling passwords containing @ without crossing whitespace.",
+      "pattern": "(?:postgresql|mysql|mariadb|redis|mongodb|amqp|amqps):\\/\\/([^\\s]+)@"
+    },
+    {
+      "id": "prod_api_key",
+      "description": "Production API key (auto-generated placeholder)",
+      "real": "sk-prod-abc123456789",
+      "placeholder": "auto"
+    },
+    {
+      "id": "us_mobile_number",
+      "type": "regex",
+      "description": "US phone number",
+      "pattern": "\\b(?:\\+?1[-. ]?)?\\(?[2-9]\\d{2}\\)?[-. ]?\\d{3}[-. ]?\\d{4}\\b"
+    },
+    {
+      "id": "internal_vpn_subnet",
+      "type": "regex",
+      "description": "Any IPv4 address. Generated placeholders are always valid IPv4 (each octet 0-255).",
+      "pattern": "\\b(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}\\b"
+    },
+    {
+      "id": "generic_bearer_token",
+      "type": "regex",
+      "description": "Bearer token value only; 'Authorization: Bearer ' prefix is kept",
+      "pattern": "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)",
+      "flags": "i"
+    }
+  ],
+
+  "options": {
+    "caseSensitive": true,
+    "showStatusBar": true
+  }
+}
