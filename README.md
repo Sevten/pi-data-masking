@@ -41,6 +41,7 @@ Concretely, masking happens by replacing each character of a sensitive value wit
 10. [Notes](#notes)
 11. [Limitations](#limitations)
 12. [File overview](#file-overview)
+13. [Testing rules with /masking-test](#testing-rules-with-masking-test)
 
 ---
 
@@ -333,6 +334,7 @@ Use `/masking-history` to review the full masking history for this session at an
 | `/masking-toggle` | Temporarily toggle on/off (doesn't touch the config file, resets on restart) |
 | `/masking-reload` | Manually reload the config file (reuses the current session key and dynamic regex map, placeholders stay stable) |
 | `/masking-clear` | Close the currently displayed panel |
+| `/masking-test <text>` | Preview how a text snippet looks after all masking rules are applied — shows the masked output (what the LLM actually sees) in a widget, without affecting session state |
 
 ---
 
@@ -400,6 +402,35 @@ The regex-discovered value-to-placeholder map only lives in memory, tied to the 
 - **Session-scoped only.** Placeholder mappings (especially regex-discovered ones) live only in memory for the current session. A new session means new placeholders for the same real values — there's no cross-session placeholder consistency, by design (see [Dynamic placeholder map lifecycle](#notes)).
 - **No masking of binary or non-string data.** `maskValue`/`unmaskValue` recurse through strings inside objects/arrays; binary payloads, base64 blobs that aren't matched by a rule, or non-JSON tool outputs aren't masked.
 - **Single Pi session boundary.** Masking is enforced at the `context`/`message_end`/`tool_call` hook points for this extension's own scope. If another extension or a raw API path bypasses these hooks, masking won't apply there.
+
+---
+
+## Testing rules with /masking-test
+
+To verify that a rule is working as intended without sending anything to the LLM, use:
+
+```
+/masking-test <text to preview>
+```
+
+The command applies all current masking rules to the text you provide and shows the result in a widget — that is, exactly what the LLM would receive if that text appeared in a conversation:
+
+```
+🧪 Masking test  ·  21:09:00
+─── Original
+  My email is user@company-internal.com and my key is sk-prod-abc123456789
+─── After masking (what LLM sees)  🔒 2 value(s) masked
+  My email is user@northstar-systems.com and my key is sk-nqpz-mwx847312654
+```
+
+**Behaviour notes:**
+
+- **Isolated from the session**: a temporary `Masker` instance is created for the test, with a fresh empty dynamic map. The main session's placeholder mappings are never modified, so testing a snippet doesn't change what future conversation turns see.
+- **Uses the current session key**: placeholder generation is deterministic within a session, so `/masking-test` output matches what a real conversation turn would produce.
+- **Requires masking to be enabled**: if masking is currently disabled (e.g. after `/masking-toggle`), the command returns a prompt to re-enable it instead.
+- **Regex rules work the same way**: a regex rule that has never fired before will generate a fresh placeholder (into the temporary map); a rule that has already fired in the real conversation will see the same real-to-placeholder mappings — because the main session `dynamicPlaceholderMap` is passed as-is to the temporary `Masker` for lookup, even though new entries from the test run are written only to the temporary map.
+
+This is the recommended way to validate new rules before deploying a config change — no need to start a full conversation.
 
 ---
 

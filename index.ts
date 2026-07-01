@@ -438,4 +438,57 @@ export default async function (pi: ExtensionAPI) {
       ctx.ui.setWidget("masking-rules-list", undefined);
     },
   });
+
+  // ── Command: /masking-test ────────────────────────────────────────────────
+
+  pi.registerCommand("masking-test", {
+    description: "Preview how a text snippet looks after masking rules are applied",
+    handler: async (args, ctx) => {
+      const input = (args ?? "").trim();
+      if (!input) {
+        ctx.ui.notify("Usage: /masking-test <text to preview>", "info");
+        return;
+      }
+      if (!config.enabled) {
+        ctx.ui.notify(
+          "Masking is currently disabled — enable it first with /masking-toggle",
+          "info"
+        );
+        return;
+      }
+      if (config.rules.length === 0) {
+        ctx.ui.notify(
+          "No masking rules configured — check masking.config.json",
+          "info"
+        );
+        return;
+      }
+
+      // Create a temporary, isolated Masker using the current session key.
+      // A fresh empty map is passed so test runs never pollute the real
+      // session's dynamicPlaceholderMap.
+      const tempMap: DynamicPlaceholderMap = new Map();
+      const tempMasker = new Masker(
+        config.rules,
+        config.options.caseSensitive,
+        sessionKey,
+        tempMap
+      );
+
+      const { text: masked, count } = tempMasker.mask(input);
+
+      const summary =
+        count > 0
+          ? `🔒 ${count} value(s) masked`
+          : "✅ No values masked by current rules";
+
+      ctx.ui.setWidget("masking-test", [
+        `🧪 Masking test  ·  ${nowTime()}`,
+        `─── Original`,
+        `  ${input}`,
+        `─── After masking (what LLM sees)  ${summary}`,
+        `  ${masked}`,
+      ]);
+    },
+  });
 }
