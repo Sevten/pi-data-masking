@@ -1,6 +1,6 @@
 {
   "name": "@sevten/pi-data-masking",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension that masks sensitive data before it reaches the LLM and restores it for users and tools.",
   "repository": {
     "type": "git",
