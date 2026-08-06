@@ -1,14 +1,20 @@
 {
-  "_comment": "Full rule syntax, examples, and merge/priority rules are documented in README.md.",
-
+  "_comment": "Template config for pi-data-masking. Copy it to ~/.pi/agent/pi-data-masking/masking.config.json (applies to all projects) or <project>/.pi/pi-data-masking/masking.config.json (this project only), then replace the example values below with your real ones. Full syntax, merge behavior, and priority rules are documented in README.md.",
+  "_usage": "Rules are applied top to bottom; on overlaps, earlier rules win. A 'literal' rule replaces the exact 'real' value (omit 'placeholder' or set \"auto\" to auto-generate; set it explicitly for a controlled fake). A 'regex' rule matches a class of values via 'pattern' — with capture groups, only the captured part is replaced. Verify any snippet with: /masking-test <text>.",
+  "_options": "options.caseSensitive: case sensitivity for literal matching (regex rules with their own 'flags' override it). options.showStatusBar: whether to show the status indicator.",
   "enabled": true,
-
   "rules": [
     {
       "id": "company_root_domain",
       "description": "Company root domain (manual placeholder).",
       "real": "company-internal.com",
       "placeholder": "northstar-systems.com"
+    },
+    {
+      "id": "employee_email_local_part",
+      "type": "regex",
+      "description": "Company email local part, matched with a lookahead so @company-internal.com is not consumed — coexists with company_root_domain above regardless of rule order.",
+      "pattern": "[A-Za-z0-9._%+-]+(?=@company-internal\\.com)"
     },
     {
       "id": "db_conn_credentials",
@@ -47,9 +53,14 @@
       "description": "Captures the value portion of common key=value / key: value assignments for sensitive keywords (key, password, accountid, account_id, client_id, secret). Supports formats: KEY=val, KEY: val, KEY:val, KEY:\"val\", KEY=\"val\". Case-insensitive.",
       "pattern": "(?<![A-Za-z])(?:key|password|accountid|account_id|client_id|secret)\\s*[:=]\\s*\"?([A-Za-z0-9_./@+\\-]+)\"?",
       "flags": "i"
+    },
+    {
+      "id": "pem_private_key_block",
+      "type": "regex",
+      "description": "PEM private key blocks: only the base64 body is replaced; the BEGIN/END lines stay so the LLM still recognizes the block. [\\s\\S] matches across newlines.",
+      "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----([\\s\\S]*?)-----END [A-Z ]*PRIVATE KEY-----"
     }
   ],
-
   "options": {
     "caseSensitive": true,
     "showStatusBar": true
