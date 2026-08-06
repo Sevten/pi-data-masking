@@ -19,8 +19,14 @@
     {
       "id": "db_conn_credentials",
       "type": "regex",
-      "description": "Username:password in DB/MQ connection strings. [^\\s]+ (not .+) greedily backtracks to the last @ within one token, correctly handling passwords containing @ without crossing whitespace.",
-      "pattern": "(?:postgresql|mysql|mariadb|redis|mongodb|amqp|amqps):\\/\\/([^\\s]+)@"
+      "description": "Username:password in DB/MQ connection strings (incl. mongodb+srv://). [^\\s]+ (not .+) greedily backtracks to the last @ within one token, correctly handling passwords containing @ without crossing whitespace.",
+      "pattern": "(?:postgresql|mysql|mariadb|redis|mongodb(?:\\+srv)?|amqp|amqps):\\/\\/([^\\s]+)@"
+    },
+    {
+      "id": "url_userinfo_credentials",
+      "type": "regex",
+      "description": "Credentials embedded in any http(s) URL (user:password@host) — beyond the DB/MQ schemes covered above.",
+      "pattern": "\\bhttps?://[^\\s/:]+:[^\\s/@]+@[^\\s/]+\\b"
     },
     {
       "id": "prod_api_key",
@@ -50,9 +56,45 @@
     {
       "id": "keyword_value_pairs",
       "type": "regex",
-      "description": "Captures the value portion of common key=value / key: value assignments for sensitive keywords (key, password, accountid, account_id, client_id, secret). Supports formats: KEY=val, KEY: val, KEY:val, KEY:\"val\", KEY=\"val\". Case-insensitive.",
-      "pattern": "(?<![A-Za-z])(?:key|password|accountid|account_id|client_id|secret)\\s*[:=]\\s*\"?([A-Za-z0-9_./@+\\-]+)\"?",
+      "description": "Captures the value portion of key=value / key: value assignments for sensitive keywords (token, api_key, access_token, private_key, password, secret, credential, ...). Supports KEY=val, KEY: val, KEY:val, KEY:\"val\", KEY=\"val\". Case-insensitive. Covers .env-style lines and YAML/headers. Quoted JSON keys like \"private_key\": are intentionally NOT matched, to avoid corrupting tool schemas that contain \"key\": ... properties.",
+      "pattern": "(?<![A-Za-z])(?:access_token|auth_token|private_key|api_key|apikey|access_key|account_id|accountid|client_id|credential|password|passwd|secret|token|key)\\s*[:=]\\s*\"?([A-Za-z0-9_./@+\\-]+)\"?",
       "flags": "i"
+    },
+    {
+      "id": "github_pat",
+      "type": "regex",
+      "description": "GitHub personal access tokens: ghp_ (classic) and github_pat_ (fine-grained). Delete if you don't use GitHub.",
+      "pattern": "\\bghp_[A-Za-z0-9]{36}\\b|\\bgithub_pat_[A-Za-z0-9_]{22,}\\b"
+    },
+    {
+      "id": "npm_token",
+      "type": "regex",
+      "description": "npm access tokens (npm_). Delete if you don't publish npm packages.",
+      "pattern": "\\bnpm_[A-Za-z0-9]{36}\\b"
+    },
+    {
+      "id": "huggingface_token",
+      "type": "regex",
+      "description": "Hugging Face access tokens (hf_). Delete if you don't use Hugging Face.",
+      "pattern": "\\bhf_[A-Za-z0-9]{34,}\\b"
+    },
+    {
+      "id": "aws_access_key_id",
+      "type": "regex",
+      "description": "AWS access key IDs (AKIA...). The matching secret is usually nearby as a secret-access-key pair — keyword_value_pairs covers those.",
+      "pattern": "\\bAKIA[0-9A-Z]{16}\\b"
+    },
+    {
+      "id": "slack_token",
+      "type": "regex",
+      "description": "Slack tokens: xoxb- (bot), xoxp- (user), xoxa- (app), xoxr- (legacy). Delete if you don't use Slack.",
+      "pattern": "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b"
+    },
+    {
+      "id": "jwt_token",
+      "type": "regex",
+      "description": "JSON Web Tokens (eyJ...header.payload.signature). Delete if your project doesn't use JWTs.",
+      "pattern": "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b"
     },
     {
       "id": "pem_private_key_block",
