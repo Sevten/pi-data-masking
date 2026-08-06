@@ -35,13 +35,15 @@ Concretely, masking happens by replacing each character of a sensitive value wit
 4. [Placeholder generation](#placeholder-generation)
 5. [Regex fuzzy matching](#regex-fuzzy-matching)
 6. [Data flow](#data-flow)
-7. [Stats panel](#stats-panel)
-8. [Built-in commands](#built-in-commands)
-9. [Config field reference](#config-field-reference)
-10. [Notes](#notes)
-11. [Limitations](#limitations)
-12. [File overview](#file-overview)
-13. [Testing rules with /masking-test](#testing-rules-with-masking-test)
+7. [Security boundaries](#security-boundaries)
+8. [Stats panel](#stats-panel)
+9. [Built-in commands](#built-in-commands)
+10. [Config field reference](#config-field-reference)
+11. [Notes](#notes)
+12. [Limitations](#limitations)
+13. [File overview](#file-overview)
+14. [Testing rules with /masking-test](#testing-rules-with-masking-test)
+15. [Development](#development)
 
 ---
 
@@ -61,7 +63,7 @@ mkdir -p /your/project/.pi/pi-data-masking
 cp ~/.pi/agent/pi-data-masking/masking.config.json /your/project/.pi/pi-data-masking/masking.config.json
 ```
 
-Config changes **hot-reload** automatically — no restart needed.
+Config changes **hot-reload** automatically — no restart needed. Config files are validated on load: invalid rules (missing `id`/`real`/`pattern`, invalid regex, unknown `type`) are skipped with a warning notification instead of silently breaking the extension, and JSON parse errors are surfaced the same way.
 
 ---
 
@@ -172,7 +174,7 @@ placeholder: 233.84.19.207          ← each octet independently valid (0-255)
 
 **Stability within a session**: the same real value (whether from a literal rule or a regex match) always gets the same placeholder within a session. Hot reload, `/masking-reload`, and `/masking-toggle` never disturb existing mappings — only a brand-new session resets them.
 
-**Collision protection**: in rare cases (very short real values, limited character space) a generated placeholder may collide with one already in use. The extension keeps a "used" set and automatically retries (up to 10 times) on collision, so each placeholder maps back to exactly one real value.
+**Collision protection**: in rare cases (very short real values, limited character space) a generated placeholder may collide with one already in use. The extension keeps a "used" set seeded with every manual placeholder and every rule's real value, and automatically retries (up to 10 times) on collision — for both literal and regex-discovered placeholders — so each placeholder maps back to exactly one real value. If manually configured placeholders still clash (two rules sharing one placeholder, or a placeholder equal to another rule's real value), a warning is shown at load time.
 
 **Manual override**: literal rules only. Set an explicit `placeholder` to skip auto-generation. Regex rules don't support manual placeholders — a single pattern can match many different real values, so a fixed placeholder wouldn't make sense.
 
@@ -265,7 +267,7 @@ Regex rules have no fixed placeholder to show (real values are only known at run
 
 ### Known limitation
 
-Regex-generated placeholders still go through the format-preserving algorithm (IPv4 addresses get special handling — see [Placeholder generation](#placeholder-generation)). For other value types there's a small theoretical chance of collision with another rule's literal value or placeholder — collision retry covers this, but it's still good practice to keep patterns precise (`\b` boundaries, `[^\s]+` over `.+`) to reduce accidental matches.
+Regex-generated placeholders still go through the format-preserving algorithm (IPv4 addresses get special handling — see [Placeholder generation](#placeholder-generation)). Collisions with literal placeholders or other regex-discovered values are retried automatically (see [Placeholder generation](#placeholder-generation)), but it's still good practice to keep patterns precise (`\b` boundaries, `[^\s]+` over `.+`) to reduce accidental matches.
 
 ---
 
@@ -277,6 +279,11 @@ User input ───────────────────────
                                           [context] deep mask (in-memory copy)
                                           literal + regex rules handled uniformly
                                           regex matches generate/reuse placeholders
+                                                         │
+                                [before_agent_start] masks the system prompt
+                                [before_provider_request] final safety net
+                                (catches anything injected after context,
+                                 incl. by other extensions)
                                                          │
                                                          ▼
                                               LLM (sees only placeholders)
@@ -297,6 +304,17 @@ User input ───────────────────────
                                           next [context] masks it again
                                           LLM sees the masked API response
 ```
+
+---
+
+## Security boundaries
+
+Beyond the `context` hook, masking is enforced at two more outbound boundaries by default (no config needed):
+
+- **System prompt** (`before_agent_start`): the fully assembled system prompt is masked before each turn. If a rule fires there, a one-time-per-session warning is shown so you can tell whether a rule is accidentally matching instructions or tool schemas.
+- **Provider request** (`before_provider_request`): the final request payload (`messages`, `system`, `prompt`) is deep-masked right before it is sent, as a safety net for content that was injected after `context` — for example by another extension. If anything is caught at this boundary, a warning is shown (at most once per turn) so you can investigate the injection path; these fallback hits are not added to the stats panel to avoid double-counting.
+
+The `context` hook remains the primary masking boundary; `before_provider_request` is a defense-in-depth fallback, not a replacement — inbound unmasking for display (`message_end`) and tool execution (`tool_call`) still happens on the normalized message flow.
 
 ---
 
@@ -401,7 +419,8 @@ The regex-discovered value-to-placeholder map only lives in memory, tied to the 
 - **Literal matching is substring-based.** A literal `real` value is matched wherever it appears as a substring, with no word-boundary check. This is intentional (it's what lets one root-domain rule cover all subdomains, for example) but means a short or generic `real` value can match inside unrelated text. Prefer regex rules with `\b` boundaries for short or common patterns.
 - **Session-scoped only.** Placeholder mappings (especially regex-discovered ones) live only in memory for the current session. A new session means new placeholders for the same real values — there's no cross-session placeholder consistency, by design (see [Dynamic placeholder map lifecycle](#notes)).
 - **No masking of binary or non-string data.** `maskValue`/`unmaskValue` recurse through strings inside objects/arrays; binary payloads, base64 blobs that aren't matched by a rule, or non-JSON tool outputs aren't masked.
-- **Single Pi session boundary.** Masking is enforced at the `context`/`message_end`/`tool_call` hook points for this extension's own scope. If another extension or a raw API path bypasses these hooks, masking won't apply there.
+- **Provider-boundary coverage depends on the runtime.** A `before_provider_request` safety net masks the final request payload, but it only runs for providers that emit that hook — a custom provider or raw API path that bypasses it won't be covered.
+- **Deep-copy cost on large payloads.** `maskValue`/`unmaskValue` rebuild objects/arrays while recursing, so very large tool outputs or messages are copied and scanned on each boundary crossing.
 
 ---
 
@@ -438,8 +457,22 @@ This is the recommended way to validate new rules before deploying a config chan
 
 | File | Purpose |
 |------|---------|
-| `index.ts` | Extension entry point: registers the `context` / `message_end` / `tool_call` hooks, session lifecycle, stats panel, and all `/masking-*` commands |
+| `index.ts` | Extension entry point: registers the `context` / `message_end` / `tool_call` / `before_agent_start` / `before_provider_request` hooks, session lifecycle, stats panel, and all `/masking-*` commands |
 | `masker.ts` | Core masking engine — the `Masker` class, rule compilation, span-based mask/unmask, collision tracking for regex-discovered placeholders |
 | `placeholder-gen.ts` | Format-preserving placeholder generation (HMAC-derived byte stream, connection-string and IPv4 special cases) |
-| `config-loader.ts` | Loads and merges global + project config, fills auto placeholders for literal rules, watches config files for hot reload |
+| `config-loader.ts` | Loads, validates, and merges global + project config; fills auto placeholders; watches config paths for hot reload |
+| `details.ts` | Shared per-rule/per-value stats accumulation used by the engine and the entry point |
+| `tests/` | Unit tests (`node:test`) covering the masking engine, placeholder generation, and config loading |
 | `masking.config.example.json` | Example/template config showing literal and regex rules of every kind described in this README |
+
+---
+
+## Development
+
+```bash
+npm install
+npm run check   # type-check everything (including tests)
+npm test        # run the unit test suite (node:test)
+```
+
+CI (GitHub Actions, `.github/workflows/ci.yml`) runs `npm ci` + `npm run check` + `npm test` on every push and pull request.

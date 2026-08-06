@@ -48,6 +48,7 @@ import type { MaskDetail, DetailValue, DynamicPlaceholderMap } from "./masker.ts
 import { loadConfig, watchConfigs } from "./config-loader.ts";
 import type { MaskingConfig } from "./config-loader.ts";
 import { generateSessionKey } from "./placeholder-gen.ts";
+import { mergeDetailInto, finalizeDetails, type DetailAccumulator } from "./details.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -59,17 +60,13 @@ interface HistoryEntry {
   details: MaskDetail[];
 }
 
-// Mutable accumulator for a single round's stats: grouped by ruleId, then
-// deduplicated by real value within each group.
-interface RoundAccEntry {
-  description?: string;
-  counts: Map<string, number>; // real → occurrences
-  order: string[]; // first-seen order of real values
-}
-
 // Max number of distinct values shown per rule in the panel, to avoid the
 // panel ballooning when a rule hits many different values.
 const MAX_DISPLAY_VALUES = 4;
+
+// Warn once per session when the dynamic placeholder map (regex-discovered
+// values) grows past this many entries — it only grows within a session.
+const DYNAMIC_MAP_WARN_THRESHOLD = 5000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -146,6 +143,11 @@ export default async function (pi: ExtensionAPI) {
   let dynamicPlaceholderMap: DynamicPlaceholderMap = new Map();
 
   const history: HistoryEntry[] = [];
+
+  // One-time-per-session warning flags (reset on session_start)
+  let fallbackNotifiedThisTurn = false;
+  let systemPromptWarned = false;
+  let dynamicMapWarned = false;
   const MAX_HISTORY = 30;
 
   // Per-round mask stats.
@@ -154,7 +156,7 @@ export default async function (pi: ExtensionAPI) {
   // history across turns. Reset only on session_start.
   let lastContextLength = 0;
   let currentRoundMaskCount = 0;
-  const currentRoundAcc = new Map<string, RoundAccEntry>();
+  const currentRoundAcc = new Map<string, DetailAccumulator>();
 
   // ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -193,33 +195,6 @@ export default async function (pi: ExtensionAPI) {
     if (history.length > MAX_HISTORY) history.pop();
   }
 
-  function mergeMaskDetailInto(d: MaskDetail) {
-    let entry = currentRoundAcc.get(d.ruleId);
-    if (!entry) {
-      entry = { description: d.description, counts: new Map(), order: [] };
-      currentRoundAcc.set(d.ruleId, entry);
-    }
-    for (const v of d.values) {
-      if (!entry.counts.has(v.real)) entry.order.push(v.real);
-      entry.counts.set(v.real, (entry.counts.get(v.real) ?? 0) + v.occurrences);
-    }
-  }
-
-  function finalizeRoundDetails(): MaskDetail[] {
-    const out: MaskDetail[] = [];
-    for (const [ruleId, entry] of currentRoundAcc) {
-      out.push({
-        ruleId,
-        description: entry.description,
-        values: entry.order.map((real) => ({
-          real,
-          occurrences: entry.counts.get(real)!,
-        })),
-      });
-    }
-    return out;
-  }
-
   function resetRoundCounters() {
     currentRoundMaskCount = 0;
     currentRoundAcc.clear();
@@ -239,21 +214,24 @@ export default async function (pi: ExtensionAPI) {
     // generated regex placeholders) stay stable within a session.
     sessionKey = generateSessionKey();
     dynamicPlaceholderMap = new Map();
+    fallbackNotifiedThisTurn = false;
+    systemPromptWarned = false;
+    dynamicMapWarned = false;
 
-    const cfg = await loadConfig(ctx.cwd, sessionKey);
-    const warnings = rebuild(cfg);
-    notifyWarnings(ctx, warnings);
+    const { config: cfg, warnings } = await loadConfig(ctx.cwd, sessionKey);
+    const compileWarnings = rebuild(cfg);
+    notifyWarnings(ctx, [...warnings, ...compileWarnings]);
 
     stopWatching = watchConfigs(ctx.cwd, async () => {
       // Hot reload: reuse the current session's sessionKey and dynamicPlaceholderMap
       const reloaded = await loadConfig(ctx.cwd, sessionKey);
-      const reloadWarnings = rebuild(reloaded);
+      const reloadWarnings = rebuild(reloaded.config);
       resetRoundCounters();
       ctx.ui.notify(
-        `🔒 Masking config reloaded (${reloaded.rules.length} rule(s))`,
+        `🔒 Masking config reloaded (${reloaded.config.rules.length} rule(s))`,
         "info"
       );
-      notifyWarnings(ctx, reloadWarnings);
+      notifyWarnings(ctx, [...reloaded.warnings, ...reloadWarnings]);
       updateStatus(ctx);
     });
 
@@ -268,7 +246,7 @@ export default async function (pi: ExtensionAPI) {
 
   // ── Hook 1: context — outbound masking ────────────────────────────────────
 
-  pi.on("context", async (event, _ctx) => {
+  pi.on("context", async (event, ctx) => {
     if (!config.enabled || config.rules.length === 0) return;
 
     const messages = event.messages;
@@ -282,7 +260,15 @@ export default async function (pi: ExtensionAPI) {
     for (const msg of newMessages) {
       const { count, details } = masker.maskValue(msg);
       currentRoundMaskCount += count;
-      details.forEach((d) => mergeMaskDetailInto(d));
+      details.forEach((d) => mergeDetailInto(currentRoundAcc, d));
+    }
+
+    if (!dynamicMapWarned && dynamicPlaceholderMap.size >= DYNAMIC_MAP_WARN_THRESHOLD) {
+      dynamicMapWarned = true;
+      ctx.ui.notify(
+        `⚠️ ${dynamicPlaceholderMap.size} distinct regex-discovered values this session; the mapping only grows — consider narrowing regex rules`,
+        "warning"
+      );
     }
 
     // Mask everything (including history) before returning to the LLM, so
@@ -298,8 +284,7 @@ export default async function (pi: ExtensionAPI) {
   pi.on("message_end", async (event, ctx) => {
     if (!config.enabled || config.rules.length === 0) return;
 
-    const role = (event.message as any).role;
-    if (role !== "assistant") return;
+    if (event.message.role !== "assistant") return;
 
     // Restore real values before storing, so the user always sees the real data
     const { message } = unmaskMessage(event.message, masker);
@@ -307,7 +292,7 @@ export default async function (pi: ExtensionAPI) {
     // Show this round's mask stats panel
     if (currentRoundMaskCount > 0) {
       const time = nowTime();
-      const details = finalizeRoundDetails();
+      const details = finalizeDetails(currentRoundAcc);
       pushHistory({ time, masked: currentRoundMaskCount, details });
       showPanel(ctx, buildPanelLines(currentRoundMaskCount, details, time));
       resetRoundCounters();
@@ -330,6 +315,79 @@ export default async function (pi: ExtensionAPI) {
       (event.input as Record<string, unknown>)[key] = unmasked[key];
     }
     // No extra notification needed — mask stats are already shown in the message_end panel
+  });
+
+  // ── Hook 4: turn_start — reset the per-turn fallback notification flag ────
+
+  pi.on("turn_start", async () => {
+    fallbackNotifiedThisTurn = false;
+  });
+
+  // ── Hook 5: before_agent_start — mask the system prompt (default on) ──────
+
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (!config.enabled || config.rules.length === 0) return;
+    const r = masker.mask(event.systemPrompt);
+    if (r.count === 0) return;
+    if (!systemPromptWarned) {
+      systemPromptWarned = true;
+      ctx.ui.notify(
+        `⚠️ System prompt contained ${r.count} sensitive value(s) and was masked before sending; if this is unexpected, review your masking rules`,
+        "warning"
+      );
+    }
+    return { systemPrompt: r.text };
+  });
+
+  // ── Hook 6: before_provider_request — final outbound safety net ────────────
+
+  pi.on("before_provider_request", async (event, ctx) => {
+    if (!config.enabled || config.rules.length === 0) return;
+    const payload = event.payload;
+    if (payload === null || typeof payload !== "object") return;
+
+    const record = payload as Record<string, unknown>;
+    let intercepted = 0;
+
+    if (Array.isArray(record.messages)) {
+      const masked = record.messages.map((m) => {
+        const r = masker.maskValue(m);
+        intercepted += r.count;
+        return r.value;
+      });
+      record.messages = masked;
+    }
+    if (typeof record.system === "string") {
+      const r = masker.mask(record.system);
+      if (r.count > 0) {
+        record.system = r.text;
+        intercepted += r.count;
+      }
+    }
+    if (typeof record.prompt === "string") {
+      const r = masker.mask(record.prompt);
+      if (r.count > 0) {
+        record.prompt = r.text;
+        intercepted += r.count;
+      }
+    }
+
+    if (intercepted > 0 && !fallbackNotifiedThisTurn) {
+      fallbackNotifiedThisTurn = true;
+      ctx.ui.notify(
+        `🛡️ ${intercepted} sensitive value(s) intercepted at the provider request boundary (bypassed the context hook — check other extensions or injected content)`,
+        "warning"
+      );
+    }
+
+    return payload;
+  });
+
+  // ── Hook 7: session_compact — reset the history pointer for sane stats ─────
+
+  pi.on("session_compact", async () => {
+    lastContextLength = 0;
+    resetRoundCounters();
   });
 
   // ── Command: /masking-status ─────────────────────────────────────────────
@@ -399,9 +457,9 @@ export default async function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       config = { ...config, enabled: !config.enabled };
       masker = buildMasker(config.enabled ? config.rules : []);
-      // Rule set changed — reset stats and the history pointer to avoid mixing old/new state
+      // Rule set changed — reset stats; keep lastContextLength so messages
+      // sent while disabled are counted exactly once on re-enable.
       resetRoundCounters();
-      lastContextLength = 0;
       ctx.ui.notify(`Data masking ${config.enabled ? "enabled" : "disabled"}`, "info");
       notifyWarnings(ctx, masker.warnings);
       updateStatus(ctx);
@@ -415,14 +473,14 @@ export default async function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       // Reuse the current session's sessionKey and dynamicPlaceholderMap so
       // placeholder mappings (including dynamic regex ones) stay stable
-      const cfg = await loadConfig(ctx.cwd, sessionKey);
-      const warnings = rebuild(cfg);
+      const { config: cfg, warnings } = await loadConfig(ctx.cwd, sessionKey);
+      const compileWarnings = rebuild(cfg);
       resetRoundCounters();
       ctx.ui.notify(
         `Config reloaded: ${cfg.rules.length} rule(s), masking ${cfg.enabled ? "enabled" : "disabled"}`,
         "info"
       );
-      notifyWarnings(ctx, warnings);
+      notifyWarnings(ctx, [...warnings, ...compileWarnings]);
       updateStatus(ctx);
     },
   });

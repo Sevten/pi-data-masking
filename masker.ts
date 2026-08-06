@@ -43,6 +43,7 @@
  */
 
 import { generatePlaceholder } from "./placeholder-gen.ts";
+import { finalizeDetails, mergeDetailInto, type DetailAccumulator } from "./details.ts";
 
 // ─── Rule types (discriminated union) ──────────────────────────────────────
 
@@ -149,41 +150,6 @@ function overlaps(claimed: Array<[number, number]>, start: number, end: number):
   return false;
 }
 
-// Mutable accumulator used to merge details: grouped by ruleId, then
-// deduplicated by real value within each group.
-interface DetailAccumulator {
-  description?: string;
-  counts: Map<string, number>; // real → occurrences
-  order: string[]; // first-seen order of real values
-}
-
-function mergeDetailInto(map: Map<string, DetailAccumulator>, detail: MaskDetail): void {
-  let entry = map.get(detail.ruleId);
-  if (!entry) {
-    entry = { description: detail.description, counts: new Map(), order: [] };
-    map.set(detail.ruleId, entry);
-  }
-  for (const v of detail.values) {
-    if (!entry.counts.has(v.real)) entry.order.push(v.real);
-    entry.counts.set(v.real, (entry.counts.get(v.real) ?? 0) + v.occurrences);
-  }
-}
-
-function finalizeDetails(map: Map<string, DetailAccumulator>): MaskDetail[] {
-  const out: MaskDetail[] = [];
-  for (const [ruleId, entry] of map) {
-    out.push({
-      ruleId,
-      description: entry.description,
-      values: entry.order.map((real) => ({
-        real,
-        occurrences: entry.counts.get(real)!,
-      })),
-    });
-  }
-  return out;
-}
-
 // ─── Compiled rule representations ─────────────────────────────────────────
 
 interface CompiledLiteralRule {
@@ -216,7 +182,7 @@ interface ReplaceSpan {
   placeholder?: string;
 }
 
-const MAX_COLLISION_ATTEMPTS = 10;
+export const MAX_COLLISION_ATTEMPTS = 10;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -233,6 +199,8 @@ export class Masker {
   private sessionKey: Buffer | null;
   private dynamicMap: DynamicPlaceholderMap;
   private usedPlaceholders: Set<string> = new Set();
+  /** Case flag for unmask patterns, mirrors the mask direction ("" or "i"). */
+  private readonly caseFlag: string;
 
   /** Regex compile errors etc., for the caller to surface via ctx.ui.notify */
   public readonly warnings: string[] = [];
@@ -256,8 +224,7 @@ export class Masker {
   ) {
     this.sessionKey = sessionKey;
     this.dynamicMap = dynamicMap;
-
-    const caseFlag = caseSensitive ? "" : "i";
+    this.caseFlag = caseSensitive ? "" : "i";
 
     for (const rule of rules) {
       if (isRegexRule(rule)) {
@@ -270,8 +237,8 @@ export class Masker {
       // already fills it in) are silently skipped.
       if (!rule.real || !rule.placeholder) continue;
 
-      const pattern = new RegExp(toLiteralPattern(rule.real), `g${caseFlag}`);
-      const unmaskPattern = new RegExp(toLiteralPattern(rule.placeholder), "g");
+      const pattern = new RegExp(toLiteralPattern(rule.real), `g${this.caseFlag}`);
+      const unmaskPattern = new RegExp(toLiteralPattern(rule.placeholder), "g" + this.caseFlag);
 
       this.compiledRules.push({
         kind: "literal",
@@ -296,6 +263,38 @@ export class Masker {
     // Existing dynamic mappings also count as "used" to avoid colliding with them
     for (const entry of this.dynamicMap.values()) {
       this.usedPlaceholders.add(entry.placeholder);
+    }
+
+    // Detect manual-placeholder conflicts (config-loader already resolves
+    // collisions for auto-generated placeholders; manual ones can still clash).
+    const placeholderOwners = new Map<string, { ruleId: string; real: string }>();
+    const realValues = new Set<string>();
+    for (const rule of rules) {
+      if (!isRegexRule(rule) && rule.real) realValues.add(rule.real);
+    }
+    for (const rule of rules) {
+      if (isRegexRule(rule)) continue;
+      if (!rule.real || !rule.placeholder || rule.placeholder === "auto") continue;
+      if (rule.placeholder === rule.real) {
+        this.warnings.push(
+          `Rule [${rule.id}] has placeholder equal to its real value; the rule has no effect`
+        );
+      }
+      const existing = placeholderOwners.get(rule.placeholder);
+      if (existing) {
+        if (existing.real !== rule.real) {
+          this.warnings.push(
+            `Rule [${rule.id}] uses placeholder "${rule.placeholder}" which is already used by rule [${existing.ruleId}] for a different real value — unmasking may restore the wrong value; use distinct placeholders`
+          );
+        }
+      } else {
+        placeholderOwners.set(rule.placeholder, { ruleId: rule.id, real: rule.real });
+      }
+      if (realValues.has(rule.placeholder) && rule.placeholder !== rule.real) {
+        this.warnings.push(
+          `Rule [${rule.id}] placeholder "${rule.placeholder}" is also a real value of another rule — masking may interact unexpectedly; consider distinct values`
+        );
+      }
     }
   }
 
@@ -484,7 +483,7 @@ export class Masker {
       (a, b) => b.placeholder.length - a.placeholder.length
     );
     for (const entry of dynamicEntries) {
-      const pattern = new RegExp(toLiteralPattern(entry.placeholder), "g");
+      const pattern = new RegExp(toLiteralPattern(entry.placeholder), "g" + this.caseFlag);
       let m: RegExpExecArray | null;
       while ((m = pattern.exec(text))) {
         const start = m.index;
