@@ -91,6 +91,17 @@ Each rule has an optional `type` field:
 
 Regex rules replace `real` with a `pattern` (see [Regex fuzzy matching](#regex-fuzzy-matching)); all kinds can be freely mixed — e.g. a domain rule for the host plus a regex rule for credentials inside a connection string. `masking.config.example.json` contains the full example.
 
+### What the example config covers
+
+The template ships with a ready-to-use starter set (16 rules) — each rule's `description` explains its purpose; **delete any rules you don't need** and replace the example values with your real ones:
+
+| Category | Rules |
+|----------|-------|
+| Company identifiers | `company_root_domain` · `prod_api_key` · `employee_email_local_part` |
+| Credentials & secrets | `db_conn_credentials` · `url_userinfo_credentials` · `generic_bearer_token` · `keyword_value_pairs` · `pem_private_key_block` |
+| Platform access tokens | `github_pat` · `npm_token` · `huggingface_token` · `aws_access_key_id` · `slack_token` · `jwt_token` |
+| Network & contact info | `private_ip_address` · `us_mobile_number` |
+
 ---
 
 ## Two-level config merge
@@ -372,7 +383,7 @@ This is the recommended way to validate new rules before deploying a config chan
 | `config-loader.ts` | Loads, validates, and merges global + project config; fills auto placeholders; watches config paths for hot reload |
 | `details.ts` | Shared per-rule/per-value stats accumulation used by the engine and the entry point |
 | `tests/` | Unit tests (`node:test`) covering the masking engine, placeholder generation, and config loading |
-| `masking.config.example.json` | Example/template config showing literal and regex rules of every kind described in this README |
+| `masking.config.example.json` | Ready-to-use starter config (16 rules) covering company identifiers, credentials, platform tokens, and network/contact info; edit before use |
 
 ---
 
