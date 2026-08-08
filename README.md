@@ -1,15 +1,28 @@
 # pi-data-masking
 
-**Pi extension for securing LLM interactions by automatically masking sensitive data on input and unmasking it for users and tools on output.**
+**A Pi extension designed around agent tool use: it masks sensitive data before it reaches the LLM, restores real values only at the tool-execution boundary, and re-masks sensitive tool results before they return to LLM context.**
 
 ## How it works
 
 Pi agent sessions routinely send and receive sensitive data — internal domains, database credentials, API keys, internal IP addresses, phone numbers, and so on. This extension keeps real values local: the **LLM only ever sees format-preserving placeholders**, while the user and any tools the agent calls still operate on the real data.
 
 - The **user** always sees real values
-- The **LLM** only sees randomly generated placeholders that preserve the original format (letter→letter, digit→digit, separators kept as-is) — an obvious marker like `[TOKEN_REDACTED]` would make the model hesitate or skip tool calls
-- **Tool calls** are unmasked back to real values right before execution
+- The **LLM** sees randomly generated placeholders that preserve the original format (letter→letter, digit→digit, separators kept as-is). Unlike an obvious marker such as `[TOKEN_REDACTED]`, these still look like usable keys, URLs, and identifiers, which helps avoid the model declining a tool call or searching for a replacement value.
+- **Tool calls** contain placeholders while the LLM plans them, then their arguments are unmasked back to real values immediately before execution
+- **Tool results** are protected too: matching data from file reads, directory searches, authenticated websites, APIs, and other tools remains real for the user but is masked again before becoming LLM context
 - Supports **literal exact match** and **regex fuzzy match** rules, freely mixed in one config
+- Rules are deliberately flexible: use literal values, regular expressions, and capture groups to cover custom sensitive formats; an AI assistant can help write rules for your environment
+
+## Built around tool use
+
+`pi-data-masking` protects both sides of an agent tool call without asking the LLM to work around redaction markers:
+
+1. Before a request reaches the LLM, matching values in user messages, prior context, and tool results are replaced with format-preserving placeholders.
+2. The LLM can reason about and prepare a normal-looking tool call using those placeholders.
+3. Immediately before the tool runs, placeholders in its arguments are restored to their real local values.
+4. The user sees the real tool result. Before that result is included in later LLM context, matching sensitive values are masked again.
+
+This is rule-based masking, not automatic PII detection: only values covered by a configured literal or regex rule are protected.
 
 ## Contents
 
