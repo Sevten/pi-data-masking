@@ -32,6 +32,18 @@
  *  - Placeholders are written only in the final single-pass reconstruction,
  *    so a placeholder is never re-scanned and mistaken for new sensitive
  *    input by another rule.
+ *  - mask() is idempotent over already-masked output: regions that are
+ *    entirely covered by known placeholders (a cached alternation of every
+ *    current literal + dynamic placeholder, merged into continuous
+ *    intervals) are treated as already masked and left untouched, so
+ *    re-masking a previously masked string (e.g. the before_provider_request
+ *    fallback re-masking the context hook's output) is a no-op. A rule span
+ *    is skipped only when fully inside such a region — a new value that merely
+ *    contains an old placeholder as a substring is still masked. Without this,
+ *    a format-preserving placeholder that still matches its own shape regex
+ *    (phone digits→digits, generic tokens, ...) would be re-registered as
+ *    `real: P1, placeholder: P2`, the LLM would see P2, and unmask could only
+ *    ever restore P2→P1.
  *
  * Collision protection:
  *  - A "used placeholders" set is kept (fixed literal placeholders +
@@ -202,6 +214,10 @@ export class Masker {
   /** Case flag for unmask patterns, mirrors the mask direction ("" or "i"). */
   private readonly caseFlag: string;
 
+  /** Cached alternation regex matching every known placeholder string; see getProtectPattern(). */
+  private protectPattern: RegExp | null = null;
+  private protectPatternDirty = true;
+
   /** Regex compile errors etc., for the caller to surface via ctx.ui.notify */
   public readonly warnings: string[] = [];
 
@@ -343,7 +359,107 @@ export class Masker {
 
     this.usedPlaceholders.add(candidate);
     this.dynamicMap.set(real, { real, placeholder: candidate, ruleId, description });
+    this.protectPatternDirty = true;
     return candidate;
+  }
+
+  /**
+   * Return a single regex matching every currently-known placeholder string
+   * (fixed literal placeholders + regex-discovered dynamic ones), longest
+   * first. Cached, rebuilt only when the placeholder set changes.
+   *
+   * Why this exists: the provider-boundary fallback (`before_provider_request`)
+   * re-runs mask() on the context hook's output, which already contains
+   * placeholders. Format-preserving placeholders are themselves matched by
+   * the same shape-only regex that produced them (phone digits→digits,
+   * generic tokens, keyword=value values, ...), so without protection the
+   * second pass registers `real: P1, placeholder: P2` in the dynamic map.
+   * The LLM then sees P2, and unmask only ever restores P2→P1 — never the
+   * real secret.
+   *
+   * The pattern matches placeholders with the same case behavior the unmask
+   * direction uses (global `caseFlag`), so the protected regions agree with
+   * what `unmask()` can actually restore.
+   */
+  private getProtectPattern(): RegExp | null {
+    if (!this.protectPatternDirty) return this.protectPattern;
+
+    const set = new Set<string>();
+    for (const rule of this.compiledRules) {
+      if (rule.kind === "literal") set.add(rule.placeholder);
+    }
+    for (const entry of this.dynamicMap.values()) set.add(entry.placeholder);
+
+    if (set.size === 0) {
+      this.protectPattern = null;
+      this.protectPatternDirty = false;
+      return null;
+    }
+
+    // Longest-first so a longer placeholder wins when one is a substring of
+    // another, mirroring the unmask direction's ordering.
+    const placeholders = Array.from(set).sort((a, b) => b.length - a.length);
+    this.protectPattern = new RegExp(
+      placeholders.map(toLiteralPattern).join("|"),
+      "g" + this.caseFlag
+    );
+    this.protectPatternDirty = false;
+    return this.protectPattern;
+  }
+
+  /**
+   * Locate every occurrence of a known placeholder in `text` and merge
+   * overlapping/adjacent occurrences into continuous "covered" intervals
+   * (contiguous masked regions count as one interval).
+   */
+  private mergeCoveredRegions(text: string): Array<[number, number]> {
+    const protect = this.getProtectPattern();
+    if (protect === null) return [];
+
+    const spans: Array<[number, number]> = [];
+    protect.lastIndex = 0;
+    let pm: RegExpExecArray | null;
+    while ((pm = protect.exec(text))) {
+      if (pm[0].length === 0) {
+        protect.lastIndex++;
+        continue;
+      }
+      spans.push([pm.index, pm.index + pm[0].length]);
+    }
+    if (spans.length === 0) return [];
+
+    const sorted = spans.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const merged: Array<[number, number]> = [];
+    let [cs, ce] = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+      const [s, e] = sorted[i];
+      if (s <= ce) {
+        if (e > ce) ce = e;
+      } else {
+        merged.push([cs, ce]);
+        [cs, ce] = [s, e];
+      }
+    }
+    merged.push([cs, ce]);
+    return merged;
+  }
+
+  /**
+   * True when the region [start, end) lies entirely inside already-masked
+   * content (a merged covered interval). A region that only partially
+   * overlaps a placeholder — e.g. a new secret that merely contains an old
+   * placeholder as a prefix or substring — is NOT covered, so it is still
+   * masked rather than leaking around the protected span.
+   */
+  private isCovered(
+    covered: Array<[number, number]>,
+    start: number,
+    end: number
+  ): boolean {
+    for (const [s, e] of covered) {
+      if (s <= start && end <= e) return true;
+    }
+    return false;
   }
 
   /** Extract the sub-regions to replace from a regex match: capture groups if present, else the whole match. */
@@ -375,6 +491,14 @@ export class Masker {
 
   private collectMaskSpans(text: string): ReplaceSpan[] {
     const claimed: Array<[number, number]> = [];
+
+    // Compute which regions are already-masked content (placeholders from an
+    // earlier masking pass). A replacement span is skipped only when it lies
+    // ENTIRELY inside such a region; any span that reaches into unmasked text
+    // is still masked, so a second pass is idempotent without letting new
+    // secrets hide inside old placeholders.
+    const covered = this.mergeCoveredRegions(text);
+
     const spans: ReplaceSpan[] = [];
 
     for (const rule of this.compiledRules) {
@@ -394,6 +518,7 @@ export class Masker {
         claimed.push([fullStart, fullEnd]);
 
         if (rule.kind === "literal") {
+          if (this.isCovered(covered, fullStart, fullEnd)) continue;
           spans.push({
             start: fullStart,
             end: fullEnd,
@@ -405,6 +530,10 @@ export class Masker {
         } else {
           const subSpans = this.extractSubSpans(m, fullStart, fullEnd);
           for (const s of subSpans) {
+            // Skip only sub-spans that are fully already-masked (e.g. a
+            // capture group that re-matched its own placeholder); any
+            // capture part reaching into unmasked text is still masked.
+            if (this.isCovered(covered, s.start, s.end)) continue;
             spans.push({
               start: s.start,
               end: s.end,
