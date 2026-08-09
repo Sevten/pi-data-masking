@@ -217,6 +217,76 @@ test("unmask leaves text without known placeholders unchanged", () => {
   assert.equal(r.count, 0);
 });
 
+test("masking already-masked text is idempotent (provider-boundary double-mask regression)", () => {
+  // A format-preserving placeholder (digits→digits) still matches the phone
+  // shape regex that produced it. The before_provider_request fallback
+  // re-runs maskValue() on the context hook's output, so without protection
+  // the second pass would register real: P1 -> placeholder: P2, the LLM would
+  // see P2, and unmask could only restore P2 -> P1, never the real digits.
+  const m = new Masker(
+    [{ id: "phone", type: "regex", pattern: "\\b\\d{3}-\\d{4}\\b" }],
+    true,
+    KEY
+  );
+  const real = "Call 123-4567 now or 987-6543 later";
+  const once = m.mask(real);
+  const twice = m.mask(once.text);
+  assert.equal(twice.text, once.text, "re-masking must not re-mask placeholders");
+  assert.equal(m.unmask(twice.text).text, real);
+});
+
+test("second masking pass still masks genuinely new values and keeps old placeholders", () => {
+  const m = new Masker(
+    [{ id: "phone", type: "regex", pattern: "\\b\\d{3}-\\d{4}\\b" }],
+    true,
+    KEY
+  );
+  const first = m.mask("Call 123-4567 now");
+  // A value injected after the context hook (e.g. by another extension)
+  // reaches the provider boundary unmasked and must still be caught.
+  const payload = first.text + " then 999-8888";
+  const r = m.maskValue(payload) as { value: string };
+  assert.ok(!r.value.includes("999-8888"), "new leak must still be masked");
+  assert.ok(r.value.includes(first.text.slice(5, 13)), "old placeholder must be preserved");
+  assert.equal(m.unmask(r.value).text, "Call 123-4567 now then 999-8888");
+});
+
+test("literal placeholders are protected from a generic shape regex on re-mask", () => {
+  const m = new Masker(
+    [
+      { id: "company_root_domain", real: "company-internal.com", placeholder: "northstar-systems.com" },
+      { id: "generic", type: "regex", pattern: "[A-Za-z0-9._-]+" },
+    ],
+    true,
+    KEY
+  );
+  const real = "internal host is company-internal.com";
+  const once = m.mask(real);
+  const twice = m.mask(once.text);
+  assert.equal(twice.text, once.text, "literal placeholder must not be re-masked");
+  assert.equal(m.unmask(twice.text).text, real);
+});
+
+test("placeholder contained as a substring of a new secret is still masked (no overlap leak)", () => {
+  // Literal placeholder that happens to look like a private IP address.
+  const m = new Masker(
+    [
+      { id: "lit", real: "some-internal-key", placeholder: "10.0.0.1" },
+      { id: "privip", type: "regex", pattern: "\\b(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})\\b" },
+    ],
+    true,
+    KEY
+  );
+  // "10.0.0.15" begins with the placeholder "10.0.0.1": covering only the
+  // placeholder must NOT swallow the longer, genuinely new secret.
+  const masked = m.mask("10.0.0.15");
+  assert.notEqual(masked.text, "10.0.0.15", "new secret must be masked, not leaked");
+  assert.equal(m.unmask(masked.text).text, "10.0.0.15");
+  // The placeholder alone still stays untouched on a re-mask.
+  const alone = m.mask("10.0.0.1");
+  assert.equal(alone.text, "10.0.0.1", "placeholder alone must stay untouched");
+});
+
 test("manual placeholder conflicts produce warnings", () => {
   const m = new Masker(
     [
