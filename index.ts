@@ -10,6 +10,14 @@
  *  3. tool_call event   — pre-execution unmasking: restore tool arguments in
  *                          place so tools run with real values
  *
+ * Provenance (first-seen is forever, see docs/design-proposal.md D1/O1):
+ *  - Values first seen in LLM output are never masked for the session
+ *    (llmInventedValues): the LLM already knows them, and masking them would
+ *    change the representation of its own messages. Only user messages and
+ *    tool results register values (protectedValues); assistant history is
+ *    re-masked only for already-registered values, so restored echoes never
+ *    leak back to the LLM. Stats count only user/tool messages.
+ *
  * Session key:
  *  - A random sessionKey is generated on session_start
  *  - It stays the same for the whole session (including hot reloads,
@@ -44,7 +52,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Masker, isRegexRule, makePreview } from "./masker.ts";
-import type { MaskDetail, DetailValue, DynamicPlaceholderMap } from "./masker.ts";
+import type { MaskDetail, DetailValue, DynamicPlaceholderMap, MaskOptions } from "./masker.ts";
 import { loadConfig, watchConfigs } from "./config-loader.ts";
 import type { MaskingConfig } from "./config-loader.ts";
 import { generateSessionKey } from "./placeholder-gen.ts";
@@ -67,6 +75,16 @@ const MAX_DISPLAY_VALUES = 4;
 // Warn once per session when the dynamic placeholder map (regex-discovered
 // values) grows past this many entries — it only grows within a session.
 const DYNAMIC_MAP_WARN_THRESHOLD = 5000;
+
+// System-prompt guidance paragraph (options.systemPromptGuidance, default
+// off): appended after the masked system prompt to reduce the chance the LLM
+// treats placeholder appearance as meaningful (docs/design-proposal.md D6).
+const SYSTEM_PROMPT_GUIDANCE =
+  "[System note: some values in this conversation are masked placeholders. " +
+  "Treat them as opaque tokens: never infer their original values from their " +
+  "appearance, never transform or derive from them, and note that text " +
+  "describing a value's properties (prefix, format, strength) may refer to " +
+  "the original value, not the placeholder.]";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -127,7 +145,7 @@ export default async function (pi: ExtensionAPI) {
   let config: MaskingConfig = {
     enabled: false,
     rules: [],
-    options: { caseSensitive: true, showStatusBar: true },
+    options: { caseSensitive: true, showStatusBar: true, systemPromptGuidance: false },
   };
   let masker = new Masker([], true);
   let stopWatching: (() => void) | null = null;
@@ -142,12 +160,19 @@ export default async function (pi: ExtensionAPI) {
   // cleared on session_start, reused everywhere else — see file header.
   let dynamicPlaceholderMap: DynamicPlaceholderMap = new Map();
 
+  // Provenance sets (see file header): values first seen in LLM output are
+  // never masked; values first seen in user/tool messages are masked in
+  // every message role. Same lifecycle as dynamicPlaceholderMap.
+  let llmInventedValues: Set<string> = new Set();
+  let protectedValues: Set<string> = new Set();
+
   const history: HistoryEntry[] = [];
 
   // One-time-per-session warning flags (reset on session_start)
   let fallbackNotifiedThisTurn = false;
   let systemPromptWarned = false;
   let dynamicMapWarned = false;
+  let inventedMapWarned = false;
   const MAX_HISTORY = 30;
 
   // Per-round mask stats.
@@ -162,7 +187,23 @@ export default async function (pi: ExtensionAPI) {
 
   /** Build a new Masker from the current config.options, sessionKey, and dynamicPlaceholderMap */
   function buildMasker(rules: MaskingConfig["rules"]): Masker {
-    return new Masker(rules, config.options.caseSensitive, sessionKey, dynamicPlaceholderMap);
+    return new Masker(
+      rules,
+      config.options.caseSensitive,
+      sessionKey,
+      dynamicPlaceholderMap,
+      llmInventedValues,
+      protectedValues
+    );
+  }
+
+  /** Per-role masking options: assistant history is only re-masked for values
+   *  that are already protected (restored echoes); user and tool messages
+   *  discover/register new values; tool results always register (real data
+   *  sources, regardless of what the LLM said earlier). */
+  function maskOptionsForRole(role: string | undefined): MaskOptions {
+    if (role === "assistant") return { discover: false };
+    return { discover: true, ignoreInvented: role === "toolResult" };
   }
 
   /** Rebuild masker and return any regex-compile warnings for the caller to surface */
@@ -214,9 +255,12 @@ export default async function (pi: ExtensionAPI) {
     // generated regex placeholders) stay stable within a session.
     sessionKey = generateSessionKey();
     dynamicPlaceholderMap = new Map();
+    llmInventedValues = new Set();
+    protectedValues = new Set();
     fallbackNotifiedThisTurn = false;
     systemPromptWarned = false;
     dynamicMapWarned = false;
+    inventedMapWarned = false;
 
     const { config: cfg, warnings } = await loadConfig(ctx.cwd, sessionKey);
     const compileWarnings = rebuild(cfg);
@@ -258,9 +302,16 @@ export default async function (pi: ExtensionAPI) {
     lastContextLength = messages.length;
 
     for (const msg of newMessages) {
-      const { count, details } = masker.maskValue(msg);
-      currentRoundMaskCount += count;
-      details.forEach((d) => mergeDetailInto(currentRoundAcc, d));
+      const role = (msg as { role?: string }).role;
+      const isAssistant = role === "assistant";
+      const { count, details } = masker.maskValue(msg, maskOptionsForRole(role));
+      // Only user-sent messages and tool results count toward the stats:
+      // assistant-history re-masking is provenance bookkeeping, and
+      // LLM-invented values are never registered or counted.
+      if (!isAssistant) {
+        currentRoundMaskCount += count;
+        details.forEach((d) => mergeDetailInto(currentRoundAcc, d));
+      }
     }
 
     if (!dynamicMapWarned && dynamicPlaceholderMap.size >= DYNAMIC_MAP_WARN_THRESHOLD) {
@@ -270,11 +321,18 @@ export default async function (pi: ExtensionAPI) {
         "warning"
       );
     }
+    if (!inventedMapWarned && llmInventedValues.size >= DYNAMIC_MAP_WARN_THRESHOLD) {
+      inventedMapWarned = true;
+      ctx.ui.notify(
+        `⚠️ ${llmInventedValues.size} distinct LLM-generated values recorded this session (first-seen-immutable); the set only grows — consider narrower regex rules`,
+        "warning"
+      );
+    }
 
     // Mask everything (including history) before returning to the LLM, so
-    // it only ever sees placeholders.
-    const maskedMessages = messages.map(
-      (msg) => masker.maskValue(msg).value
+    // it only ever sees placeholders for protected values.
+    const maskedMessages = messages.map((msg) =>
+      masker.maskValue(msg, maskOptionsForRole((msg as { role?: string }).role)).value
     );
     return { messages: maskedMessages as typeof event.messages };
   });
@@ -327,16 +385,20 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, ctx) => {
     if (!config.enabled || config.rules.length === 0) return;
-    const r = masker.mask(event.systemPrompt);
-    if (r.count === 0) return;
-    if (!systemPromptWarned) {
+    const r = masker.mask(event.systemPrompt, { discover: true });
+    let text = r.text;
+    if (config.options.systemPromptGuidance) {
+      text += "\n\n" + SYSTEM_PROMPT_GUIDANCE;
+    }
+    if (r.count > 0 && !systemPromptWarned) {
       systemPromptWarned = true;
       ctx.ui.notify(
         `⚠️ System prompt contained ${r.count} sensitive value(s) and was masked before sending; if this is unexpected, review your masking rules`,
         "warning"
       );
     }
-    return { systemPrompt: r.text };
+    if (r.count === 0 && !config.options.systemPromptGuidance) return;
+    return { systemPrompt: text };
   });
 
   // ── Hook 6: before_provider_request — final outbound safety net ────────────
@@ -351,21 +413,26 @@ export default async function (pi: ExtensionAPI) {
 
     if (Array.isArray(record.messages)) {
       const masked = record.messages.map((m) => {
-        const r = masker.maskValue(m);
-        intercepted += r.count;
+        const role = (m as { role?: string } | null)?.role;
+        const isAssistant = role === "assistant";
+        const r = masker.maskValue(m, maskOptionsForRole(role));
+        // Assistant re-masking at this boundary is bookkeeping (idempotent
+        // on the context hook's output); only genuinely intercepted
+        // user/tool-side values count toward the fallback notice.
+        if (!isAssistant) intercepted += r.count;
         return r.value;
       });
       record.messages = masked;
     }
     if (typeof record.system === "string") {
-      const r = masker.mask(record.system);
+      const r = masker.mask(record.system, { discover: true });
       if (r.count > 0) {
         record.system = r.text;
         intercepted += r.count;
       }
     }
     if (typeof record.prompt === "string") {
-      const r = masker.mask(record.prompt);
+      const r = masker.mask(record.prompt, { discover: true });
       if (r.count > 0) {
         record.prompt = r.text;
         intercepted += r.count;
@@ -523,14 +590,16 @@ export default async function (pi: ExtensionAPI) {
       }
 
       // Create a temporary, isolated Masker using the current session key.
-      // A fresh empty map is passed so test runs never pollute the real
-      // session's dynamicPlaceholderMap.
+      // A fresh empty map and provenance sets are passed so test runs never
+      // pollute the real session's dynamicPlaceholderMap / provenance state.
       const tempMap: DynamicPlaceholderMap = new Map();
       const tempMasker = new Masker(
         config.rules,
         config.options.caseSensitive,
         sessionKey,
-        tempMap
+        tempMap,
+        new Set(),
+        new Set()
       );
 
       const { text: masked, count } = tempMasker.mask(input);

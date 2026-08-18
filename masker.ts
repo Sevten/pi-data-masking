@@ -52,6 +52,23 @@
  *    value itself), regenerate with an incremented attempt counter until it
  *    no longer collides (bounded retries; falls back to accepting the
  *    result with a warning).
+ *
+ * Provenance (first-seen is forever, per docs/design-proposal.md D1/O1):
+ *  - The caller owns two session-scoped sets alongside dynamicMap:
+ *      llmInventedValues: values first seen in LLM output. They are never
+ *        masked for the whole session — the LLM already knows them, and
+ *        masking them would change the representation of its own messages
+ *        (logical contradictions, cache misses). Even if the user later
+ *        sends the same string, it stays unmasked (accepted trade-off).
+ *      protectedValues: values first seen in user messages or tool results.
+ *        They are masked in EVERY message role (including assistant
+ *        history), so restored echoes never leak back to the LLM.
+ *  - mask(text, { discover }) selects the behavior: user/tool/system
+ *    messages pass discover: true (register new values); assistant messages
+ *    pass discover: false (only already-protected values are replaced, and
+ *    unmatched values are recorded as LLM-invented).
+ *  - Tool results pass ignoreInvented: true — real data sources always
+ *    register, regardless of what the LLM happened to say earlier.
  */
 
 import { generatePlaceholder } from "./placeholder-gen.ts";
@@ -59,9 +76,25 @@ import { finalizeDetails, mergeDetailInto, type DetailAccumulator } from "./deta
 
 // ─── Rule types (discriminated union) ──────────────────────────────────────
 
+export interface PreserveStructure {
+  /** Keep the first segment (up to the first separator) of the real value
+   *  as-is, so structural claims like "starts with gs-" stay true in the
+   *  LLM's view. A number caps how many characters of that segment are
+   *  kept. See placeholder-gen.ts. */
+  keepPrefix?: boolean | number;
+  /** For exact IPv4 values: keep the first N octets as-is (recommended 2
+   *  for private ranges); remaining octets are randomized within 0-255.
+   *  Clamped to at most 3, so at least one octet is always randomized. */
+  keepIPv4Octets?: number;
+}
+
 interface BaseMaskingRule {
   id: string;
   description?: string;
+  /** Preserve structural properties of the value in its placeholder. */
+  preserveStructure?: PreserveStructure;
+  /** Opt-out flag for the config-loader low-entropy warning. */
+  lowEntropy?: boolean;
 }
 
 export interface LiteralMaskingRule extends BaseMaskingRule {
@@ -179,6 +212,7 @@ interface CompiledRegexRule {
   ruleId: string;
   description?: string;
   pattern: RegExp; // always has g + d flags
+  preserveStructure?: PreserveStructure;
 }
 
 type CompiledRule = CompiledLiteralRule | CompiledRegexRule;
@@ -192,9 +226,25 @@ interface ReplaceSpan {
   description?: string;
   /** Known up front only for literal rules; regex matches resolve it lazily during output. */
   placeholder?: string;
+  /** Carried from the matching rule for lazy placeholder generation. */
+  preserveStructure?: PreserveStructure;
 }
 
 export const MAX_COLLISION_ATTEMPTS = 10;
+
+/**
+ * Per-call masking options (provenance control, see file header).
+ * The default (no options) matches pre-provenance behavior: discover new
+ * values and mask them (user-message semantics).
+ */
+export interface MaskOptions {
+  /** Register newly discovered matching values. Default true; assistant
+   *  messages pass false: only already-protected values are replaced, and
+   *  new matches are recorded as LLM-invented. */
+  discover?: boolean;
+  /** Mask even values previously recorded as LLM-invented (tool results). */
+  ignoreInvented?: boolean;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -210,6 +260,10 @@ export class Masker {
 
   private sessionKey: Buffer | null;
   private dynamicMap: DynamicPlaceholderMap;
+  /** Values first seen in LLM output: never masked (first-seen is forever). */
+  private readonly llmInventedValues: Set<string>;
+  /** Values first seen in user/tool messages: masked in every role. */
+  private readonly protectedValues: Set<string>;
   private usedPlaceholders: Set<string> = new Set();
   /** Case flag for unmask patterns, mirrors the mask direction ("" or "i"). */
   private readonly caseFlag: string;
@@ -231,15 +285,23 @@ export class Masker {
    * @param dynamicMap   Shared map (regex-discovered real → placeholder)
    *                      reused across Masker rebuilds; lifecycle owned by
    *                      the caller (index.ts), cleared only on session_start
+   * @param llmInventedValues Shared set of values first seen in LLM output;
+   *                      never masked (see file header)
+   * @param protectedValues  Shared set of values first seen in user/tool
+   *                      messages; masked in every message role
    */
   constructor(
     rules: MaskingRule[],
     caseSensitive: boolean,
     sessionKey: Buffer | null = null,
-    dynamicMap: DynamicPlaceholderMap = new Map()
+    dynamicMap: DynamicPlaceholderMap = new Map(),
+    llmInventedValues: Set<string> = new Set(),
+    protectedValues: Set<string> = new Set()
   ) {
     this.sessionKey = sessionKey;
     this.dynamicMap = dynamicMap;
+    this.llmInventedValues = llmInventedValues;
+    this.protectedValues = protectedValues;
     this.caseFlag = caseSensitive ? "" : "i";
 
     for (const rule of rules) {
@@ -324,7 +386,13 @@ export class Masker {
       flagSet.add("g"); // scan all matches
       flagSet.add("d"); // capture group indices, needed for partial replacement
       const pattern = new RegExp(rule.pattern, Array.from(flagSet).join(""));
-      return { kind: "regex", ruleId: rule.id, description: rule.description, pattern };
+      return {
+        kind: "regex",
+        ruleId: rule.id,
+        description: rule.description,
+        pattern,
+        preserveStructure: rule.preserveStructure,
+      };
     } catch (err) {
       this.warnings.push(
         `Rule [${rule.id}] has an invalid regex and was skipped: ${(err as Error).message}`
@@ -337,19 +405,33 @@ export class Masker {
   private resolveDynamicPlaceholder(
     real: string,
     ruleId: string,
-    description: string | undefined
+    description: string | undefined,
+    preserveStructure: PreserveStructure | undefined
   ): string {
     const existing = this.dynamicMap.get(real);
-    if (existing) return existing.placeholder;
+    if (existing) {
+      this.protectedValues.add(real);
+      return existing.placeholder;
+    }
 
     let attempt = 0;
-    let candidate = generatePlaceholder(real, this.sessionKey ?? Buffer.alloc(32), attempt);
+    let candidate = generatePlaceholder(
+      real,
+      this.sessionKey ?? Buffer.alloc(32),
+      attempt,
+      preserveStructure
+    );
     while (
       (this.usedPlaceholders.has(candidate) || candidate === real) &&
       attempt < MAX_COLLISION_ATTEMPTS
     ) {
       attempt++;
-      candidate = generatePlaceholder(real, this.sessionKey ?? Buffer.alloc(32), attempt);
+      candidate = generatePlaceholder(
+        real,
+        this.sessionKey ?? Buffer.alloc(32),
+        attempt,
+        preserveStructure
+      );
     }
     if (this.usedPlaceholders.has(candidate) || candidate === real) {
       this.warnings.push(
@@ -359,6 +441,7 @@ export class Masker {
 
     this.usedPlaceholders.add(candidate);
     this.dynamicMap.set(real, { real, placeholder: candidate, ruleId, description });
+    this.protectedValues.add(real);
     this.protectPatternDirty = true;
     return candidate;
   }
@@ -486,10 +569,41 @@ export class Masker {
     return [{ start: fullStart, end: fullEnd, real: m[0] }];
   }
 
+  /**
+   * Provenance-aware masking decision (first-seen is forever):
+   *  - user/tool/system messages (discover, the default): a value is masked
+   *    and registered unless it was first seen in LLM output
+   *    (llmInventedValues) — except tool results, which always register
+   *    (ignoreInvented);
+   *  - assistant messages (discover: false, passed explicitly): only
+   *    already-protected values are replaced (restored echoes of user/tool
+   *    secrets); anything else is assumed to be LLM-invented content and is
+   *    recorded as such.
+   */
+  private shouldMaskSpan(
+    real: string,
+    opts: MaskOptions
+  ): { mask: boolean; register: boolean } {
+    if (opts.discover !== false) {
+      if (this.protectedValues.has(real)) return { mask: true, register: false };
+      if (opts.ignoreInvented !== true && this.llmInventedValues.has(real)) {
+        // First seen in LLM output — never masked, by design.
+        return { mask: false, register: false };
+      }
+      return { mask: true, register: true };
+    }
+
+    // Assistant message: mask only protected (user/tool-sourced) values;
+    // record everything else as LLM-invented.
+    if (this.protectedValues.has(real)) return { mask: true, register: false };
+    this.llmInventedValues.add(real);
+    return { mask: false, register: false };
+  }
+
   // ── mask: collect every rule's match spans over the original text, then
   //    reconstruct the output in one pass ───────────────────────────────────
 
-  private collectMaskSpans(text: string): ReplaceSpan[] {
+  private collectMaskSpans(text: string, opts: MaskOptions): ReplaceSpan[] {
     const claimed: Array<[number, number]> = [];
 
     // Compute which regions are already-masked content (placeholders from an
@@ -515,9 +629,14 @@ export class Masker {
           continue;
         }
         if (overlaps(claimed, fullStart, fullEnd)) continue;
-        claimed.push([fullStart, fullEnd]);
 
         if (rule.kind === "literal") {
+          const decision = this.shouldMaskSpan(rule.real, opts);
+          // Provenance says leave this value as-is; the region stays free so
+          // lower-priority rules can still claim it with their own decision.
+          if (!decision.mask) continue;
+          if (decision.register) this.protectedValues.add(rule.real);
+          claimed.push([fullStart, fullEnd]);
           if (this.isCovered(covered, fullStart, fullEnd)) continue;
           spans.push({
             start: fullStart,
@@ -529,17 +648,27 @@ export class Masker {
           });
         } else {
           const subSpans = this.extractSubSpans(m, fullStart, fullEnd);
-          for (const s of subSpans) {
+          const decided = subSpans.map((s) => ({
+            span: s,
+            decision: this.shouldMaskSpan(s.real, opts),
+          }));
+          // Claim the full match only when at least one captured part is
+          // actually masked, so skipped (LLM-invented) regions stay free
+          // for lower-priority rules.
+          if (decided.some((d) => d.decision.mask)) claimed.push([fullStart, fullEnd]);
+          for (const { span, decision } of decided) {
+            if (!decision.mask) continue;
             // Skip only sub-spans that are fully already-masked (e.g. a
             // capture group that re-matched its own placeholder); any
             // capture part reaching into unmasked text is still masked.
-            if (this.isCovered(covered, s.start, s.end)) continue;
+            if (this.isCovered(covered, span.start, span.end)) continue;
             spans.push({
-              start: s.start,
-              end: s.end,
-              real: s.real,
+              start: span.start,
+              end: span.end,
+              real: span.real,
               ruleId: rule.ruleId,
               description: rule.description,
+              preserveStructure: rule.preserveStructure,
               // placeholder left unset; resolved lazily during output
             });
           }
@@ -551,11 +680,10 @@ export class Masker {
     return spans;
   }
 
-  mask(text: string): MaskResult {
+  mask(text: string, opts: MaskOptions = {}): MaskResult {
     if (typeof text !== "string" || !text) return { text, count: 0, details: [] };
 
-    const spans = this.collectMaskSpans(text);
-    if (spans.length === 0) return { text, count: 0, details: [] };
+    const spans = this.collectMaskSpans(text, opts);    if (spans.length === 0) return { text, count: 0, details: [] };
 
     const detailMap = new Map<string, DetailAccumulator>();
     let result = "";
@@ -566,7 +694,12 @@ export class Masker {
       result += text.slice(cursor, span.start);
       const placeholder =
         span.placeholder ??
-        this.resolveDynamicPlaceholder(span.real, span.ruleId, span.description);
+        this.resolveDynamicPlaceholder(
+          span.real,
+          span.ruleId,
+          span.description,
+          span.preserveStructure
+        );
       result += placeholder;
       cursor = span.end;
       count++;
@@ -667,16 +800,16 @@ export class Masker {
 
   // ── Arbitrary-depth objects (recurse over all string values, keys untouched) ──
 
-  maskValue(value: unknown): { value: unknown; count: number; details: MaskDetail[] } {
+  maskValue(value: unknown, opts: MaskOptions = {}): { value: unknown; count: number; details: MaskDetail[] } {
     if (typeof value === "string") {
-      const { text, count, details } = this.mask(value);
+      const { text, count, details } = this.mask(value, opts);
       return { value: text, count, details };
     }
     if (Array.isArray(value)) {
       let count = 0;
       const detailMap = new Map<string, DetailAccumulator>();
       const arr = value.map((item) => {
-        const r = this.maskValue(item);
+        const r = this.maskValue(item, opts);
         count += r.count;
         r.details.forEach((d) => mergeDetailInto(detailMap, d));
         return r.value;
@@ -688,7 +821,7 @@ export class Masker {
       const detailMap = new Map<string, DetailAccumulator>();
       const obj: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        const r = this.maskValue(v);
+        const r = this.maskValue(v, opts);
         obj[k] = r.value;
         count += r.count;
         r.details.forEach((d) => mergeDetailInto(detailMap, d));

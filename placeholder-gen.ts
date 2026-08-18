@@ -49,17 +49,33 @@ export function generateSessionKey(): Buffer {
   return randomBytes(32);
 }
 
+/** Options controlling which structural properties of the real value are
+ *  preserved in the placeholder (mirrors PreserveStructure in masker.ts).
+ *  Preserving structure keeps claims like "starts with gs-" true in the
+ *  LLM's view; the kept parts are category markers / non-secret scaffolding,
+ *  never the secret entropy. */
+export interface PlaceholderOptions {
+  /** Keep the first segment (up to the first separator) of the real value
+   *  as-is; a number caps how many characters of that segment are kept. */
+  keepPrefix?: boolean | number;
+  /** For exact IPv4 values: keep the first N octets as-is (recommended 2
+   *  for private ranges); remaining octets are randomized within 0-255. */
+  keepIPv4Octets?: number;
+}
+
 /**
  * Generate a format-preserving placeholder for a real value.
  * Same real + same sessionKey + same attempt always yields the same result.
  *
  * @param attempt Collision-retry counter, default 0. Caller increments it
  *                when the result collides with an already-used placeholder.
+ * @param opts    Structure preservation options (keepPrefix / keepIPv4Octets).
  */
 export function generatePlaceholder(
   real: string,
   sessionKey: Buffer,
-  attempt = 0
+  attempt = 0,
+  opts: PlaceholderOptions = {}
 ): string {
   const bytes = deriveKeyStream(sessionKey, real, real.length + 64, attempt);
 
@@ -69,13 +85,19 @@ export function generatePlaceholder(
     }
   }
 
-  const ipv4Placeholder = replaceIPv4(real, bytes);
+  const ipv4Placeholder = replaceIPv4(real, bytes, opts.keepIPv4Octets);
   if (ipv4Placeholder !== null) return ipv4Placeholder;
 
-  // Default: format-preserving replacement over the whole string
-  return Array.from(real)
-    .map((ch, i) => fprChar(ch, bytes[i]))
-    .join("");
+  // Default: format-preserving replacement over the whole string, optionally
+  // keeping the first segment so prefix claims stay true. The byte stream is
+  // derived from the FULL real value, so determinism is unaffected; bytes for
+  // the kept prefix positions are simply unused.
+  const { prefix, body } = splitPrefix(real, opts.keepPrefix);
+  let result = prefix;
+  for (let i = 0; i < body.length; i++) {
+    result += fprChar(body[i], bytes[prefix.length + i]);
+  }
+  return result;
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────
@@ -107,15 +129,41 @@ function deriveKeyStream(
  * If real is exactly a valid IPv4 address (four octets, 0-255 each),
  * generate a placeholder by picking a random byte (already 0-255) per
  * octet. Returns null otherwise so the caller falls back to generic FPR.
+ * With keepOctets > 0, the leading octets are kept as-is (clamped so at
+ * least one octet is always randomized) — e.g. 2 for private ranges, where
+ * the network prefix is not the secret, the host is.
  */
-function replaceIPv4(real: string, bytes: number[]): string | null {
+function replaceIPv4(real: string, bytes: number[], keepOctets = 0): string | null {
   const m = real.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!m) return null;
 
   const octets = [m[1], m[2], m[3], m[4]].map(Number);
   if (octets.some((o) => o < 0 || o > 255)) return null; // not a valid IPv4, treat as plain text
 
-  return [0, 1, 2, 3].map((i) => String(bytes[i])).join(".");
+  const kept = Math.min(Math.max(0, Math.floor(keepOctets)), 3);
+  return [0, 1, 2, 3]
+    .map((i) => (i < kept ? String(octets[i]) : String(bytes[i])))
+    .join(".");
+}
+
+/**
+ * Split off the keepable prefix of a generic value: the first segment up to
+ * (and including) the first separator (- _ . : / @). A numeric cap limits
+ * how many characters are kept. When nothing would remain to be randomized
+ * (single-segment values), the whole value is randomized instead, so
+ * keepPrefix never yields a placeholder identical to the real value.
+ */
+function splitPrefix(
+  real: string,
+  keepPrefix: boolean | number | undefined
+): { prefix: string; body: string } {
+  if (!keepPrefix) return { prefix: "", body: real };
+  const m = real.match(/^([^\-_.:/@]*[\-_.:/@]?)/);
+  const segmentEnd = m ? m[1].length : 0;
+  if (segmentEnd >= real.length) return { prefix: "", body: real };
+  const keep = typeof keepPrefix === "number" ? Math.max(0, keepPrefix) : segmentEnd;
+  const n = Math.min(keep, segmentEnd);
+  return { prefix: real.slice(0, n), body: real.slice(n) };
 }
 
 /** Single-character format-preserving replacement */

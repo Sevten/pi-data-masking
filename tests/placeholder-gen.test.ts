@@ -86,3 +86,47 @@ test("generateSessionKey returns a 32-byte buffer", () => {
   assert.ok(Buffer.isBuffer(k));
   assert.equal(k.length, 32);
 });
+
+// ─── Structure preservation (keepPrefix / keepIPv4Octets) ──────────────────
+
+test("keepPrefix keeps the first segment deterministically", () => {
+  const real = "sk-prod-abc123456789";
+  const a = generatePlaceholder(real, KEY, 0, { keepPrefix: true });
+  const b = generatePlaceholder(real, KEY, 0, { keepPrefix: true });
+  assert.equal(a, b); // deterministic
+  assert.ok(a.startsWith("sk-"), a);
+  assert.notEqual(a, real);
+  // The body after the kept prefix is still format-preserving
+  assert.equal(a.length, real.length);
+});
+
+test("keepPrefix with a number caps the kept characters", () => {
+  const ph = generatePlaceholder("corp-internal-host", KEY, 0, { keepPrefix: 4 });
+  assert.ok(ph.startsWith("corp"), ph);
+});
+
+test("keepPrefix falls back to full randomization for single-segment values", () => {
+  // No separator: keeping the whole value would make the placeholder equal
+  // to the real value, so the prefix is dropped instead.
+  const real = "abcdef123456";
+  const ph = generatePlaceholder(real, KEY, 0, { keepPrefix: true });
+  assert.notEqual(ph, real);
+});
+
+test("keepIPv4Octets keeps leading octets and randomizes the rest", () => {
+  const ph = generatePlaceholder("192.168.10.7", KEY, 0, { keepIPv4Octets: 2 });
+  assert.ok(ph.startsWith("192.168."), ph);
+  assert.match(ph, /^\d{1,3}(\.\d{1,3}){3}$/);
+  assert.ok(ph.split(".").every((o) => Number(o) >= 0 && Number(o) <= 255));
+  // At least one octet is always randomized
+  const full = generatePlaceholder("192.168.10.7", KEY, 0, { keepIPv4Octets: 4 });
+  assert.notEqual(full, "192.168.10.7");
+});
+
+test("structure preservation is deterministic across attempts with collision retry", () => {
+  const real = "tok-abc123";
+  const a = generatePlaceholder(real, KEY, 1, { keepPrefix: true });
+  const b = generatePlaceholder(real, KEY, 1, { keepPrefix: true });
+  assert.equal(a, b);
+  assert.ok(a.startsWith("tok-"), a);
+});

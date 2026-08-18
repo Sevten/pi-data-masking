@@ -300,3 +300,102 @@ test("manual placeholder conflicts produce warnings", () => {
   assert.ok(m.warnings.some((w) => w.includes("already used by rule")));
   assert.ok(m.warnings.some((w) => w.includes("has no effect")));
 });
+
+// ─── Provenance: first-seen is forever ──────────────────────────────────────
+
+/** Build a Masker with fresh provenance state for one test. */
+function makeMasker(rules: MaskingRule[]) {
+  return new Masker(rules, true, KEY, new Map(), new Set(), new Set());
+}
+
+test("user message (discover) masks and registers new regex values", () => {
+  const m = makeMasker([{ id: "code", type: "regex", pattern: "\\b\\d{4}\\b" }]);
+  const masked = m.mask("my code is 4821", { discover: true });
+  assert.notEqual(masked.text, "my code is 4821");
+  assert.equal(masked.count, 1);
+  // The value is now protected: an assistant re-mask keeps it masked.
+  const again = m.mask("echo: 4821", { discover: false });
+  assert.ok(again.text.includes("my code is 4821".split(" ")[3]) === false);
+  assert.notEqual(again.text, "echo: 4821");
+});
+
+test("assistant message never registers LLM-invented values and keeps them real", () => {
+  const m = makeMasker([{ id: "code", type: "regex", pattern: "\\b\\d{4}\\b" }]);
+  // First appearance is in an assistant message → invented.
+  const assistant = m.mask("for example 4821 is weak", { discover: false });
+  assert.equal(assistant.text, "for example 4821 is weak", "invented value must stay real");
+  assert.equal(assistant.count, 0);
+  // First-seen is forever: even a later user message leaves it unmasked.
+  const user = m.mask("my code is 4821", { discover: true });
+  assert.equal(user.text, "my code is 4821", "invented value is never masked");
+  assert.equal(user.count, 0);
+});
+
+test("restored user-secret echoes are re-masked in assistant messages", () => {
+  const m = makeMasker([{ id: "code", type: "regex", pattern: "\\b\\d{4}\\b" }]);
+  // User sends the secret → registered + masked.
+  const user = m.mask("my code is 4821", { discover: true });
+  const placeholder = user.text.match(/\d{4}/)![0];
+  assert.notEqual(placeholder, "4821");
+  // message_end would restore the placeholder; the stored assistant message
+  // therefore contains the REAL value, and the next round's re-mask must
+  // mask it again so it never leaks back to the LLM.
+  const restored = user.text.replace(placeholder, "4821");
+  const assistant = m.mask(`got it, ${restored.split("is ")[1]}`, { discover: false });
+  assert.notEqual(assistant.text, `got it, 4821`, "restored echo must be re-masked");
+  assert.equal(assistant.count, 1);
+  // And it round-trips back to the real value via unmask.
+  assert.equal(m.unmask(assistant.text).text, "got it, 4821");
+});
+
+test("tool results (ignoreInvented) always register, even invented values", () => {
+  const m = makeMasker([{ id: "code", type: "regex", pattern: "\\b\\d{4}\\b" }]);
+  // LLM invented 4821 first.
+  m.mask("e.g. 4821", { discover: false });
+  // A tool result returns the same string: real data source → must register.
+  const tool = m.mask("file contains 4821", { discover: true, ignoreInvented: true });
+  assert.notEqual(tool.text, "file contains 4821", "tool result must be masked");
+  assert.equal(tool.count, 1);
+  // Registration wins: from now on assistant re-masks cover it too.
+  const assistant = m.mask("e.g. 4821", { discover: false });
+  assert.notEqual(assistant.text, "e.g. 4821");
+});
+
+test("literal rules follow the same first-seen semantics", () => {
+  const m = makeMasker([
+    { id: "dom", real: "company-internal.com", placeholder: "northstar-systems.com" },
+  ]);
+  // LLM invents the literal real value → never masked afterwards.
+  const assistant = m.mask("docs at company-internal.com", { discover: false });
+  assert.equal(assistant.text, "docs at company-internal.com");
+  const user = m.mask("my domain is company-internal.com", { discover: true });
+  assert.equal(user.text, "my domain is company-internal.com", "first-seen wins for literals too");
+  // But when the USER sends it first, it is masked everywhere.
+  const m2 = makeMasker([
+    { id: "dom", real: "company-internal.com", placeholder: "northstar-systems.com" },
+  ]);
+  const user2 = m2.mask("my domain is company-internal.com", { discover: true });
+  assert.notEqual(user2.text, "my domain is company-internal.com");
+  const assistant2 = m2.mask("docs at company-internal.com", { discover: false });
+  assert.notEqual(assistant2.text, "docs at company-internal.com");
+  assert.equal(m2.unmask(assistant2.text).text, "docs at company-internal.com");
+});
+
+test("skipped invented regions stay free for lower-priority protected rules", () => {
+  const m = makeMasker([
+    { id: "broad", type: "regex", pattern: "[A-Za-z0-9-]+" },
+    { id: "short", real: "abc", placeholder: "xyz" },
+  ]);
+  // User registers "abc" first (the broad rule claims it in the user message,
+  // so it is protected with a dynamic placeholder).
+  const user = m.mask("id is abc", { discover: true });
+  assert.notEqual(user.text, "id is abc");
+  // Assistant message contains "token-abc": the broad rule's span is
+  // LLM-invented and skipped — its region must stay free so the lower
+  // literal rule can still mask the protected "abc" inside it.
+  const assistant = m.mask("token-abc", { discover: false });
+  assert.notEqual(assistant.text, "token-abc", "protected 'abc' must not hide inside an invented token");
+  assert.ok(!assistant.text.includes("abc"));
+  // Round-trips back to the real value.
+  assert.equal(m.unmask(assistant.text).text, "token-abc");
+});

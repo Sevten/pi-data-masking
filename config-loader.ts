@@ -22,6 +22,10 @@ export interface MaskingOptions {
   caseSensitive: boolean;
   /** Whether to show masking status in the bottom status bar (default true) */
   showStatusBar: boolean;
+  /** Whether to append a guidance paragraph to the system prompt telling the
+   *  LLM that masked values are opaque placeholders and must not be inferred
+   *  from or transformed (default false; see docs/design-proposal.md D6). */
+  systemPromptGuidance: boolean;
 }
 
 export interface MaskingConfig {
@@ -64,6 +68,7 @@ function defaultConfig(): MaskingConfig {
     options: {
       caseSensitive: true,
       showStatusBar: true,
+      systemPromptGuidance: false,
     },
   };
 }
@@ -159,6 +164,16 @@ export function validateConfig(rawRules: unknown): { rules: MaskingRule[]; warni
         warnings.push(`Rule [${id}] has an invalid regex and was skipped: ${(err as Error).message}`);
         continue;
       }
+      if (rule.lowEntropy !== true) {
+        const est = estimateMatchLength(pattern);
+        if (est !== null && est.max > 0 && est.max <= 6) {
+          warnings.push(
+            `Rule [${id}] can only match values of at most ${est.max} character(s) — low entropy; ` +
+              `masking short/common values causes semantic contradictions and coincidental restores. ` +
+              `Consider not masking them; set "lowEntropy": true to silence this warning`
+          );
+        }
+      }
       rules.push(raw as MaskingRule);
       continue;
     }
@@ -168,6 +183,13 @@ export function validateConfig(rawRules: unknown): { rules: MaskingRule[]; warni
       if (!real) {
         warnings.push(`Rule [${id}] is literal but has no 'real' value; skipped`);
         continue;
+      }
+      if (rule.lowEntropy !== true && real.length < 8) {
+        warnings.push(
+          `Rule [${id}] masks a ${real.length}-character value — low entropy; ` +
+            `masking short/common values causes semantic contradictions and coincidental restores. ` +
+            `Consider not masking them; set "lowEntropy": true to silence this warning`
+        );
       }
       if (rule.placeholder !== undefined && rule.placeholder !== "auto") {
         if (typeof rule.placeholder !== "string" || rule.placeholder.length === 0) {
@@ -182,6 +204,142 @@ export function validateConfig(rawRules: unknown): { rules: MaskingRule[]; warni
     warnings.push(`Rule [${id}] has unknown type ${JSON.stringify(rule.type)} and was skipped`);
   }
   return { rules, warnings };
+}
+
+/**
+ * Heuristic: estimate the minimum/maximum number of characters a regex can
+ * match. Used to flag patterns that can only match very short (low-entropy)
+ * values, which are better left unmasked. Returns null when the pattern
+ * can't be analyzed (exotic constructs) — validation already rejected
+ * invalid regexes, so this only affects warning coverage, never correctness.
+ *
+ * Handles: literals, character classes, \d/\w/\s-style escapes, \b anchors,
+ * groups (capturing/non-capturing/lookaround), alternation, and quantifiers
+ * (?, *, +, {m}, {m,n}, {m,}). Lazy/possessive suffixes don't change length.
+ */
+function estimateMatchLength(pattern: string): { min: number; max: number } | null {
+  const INF = Number.POSITIVE_INFINITY;
+  let i = 0;
+
+  function parseAlternation(): { min: number; max: number } {
+    let min = INF;
+    let max = 0;
+    let first = true;
+    for (;;) {
+      const seg = parseSequence();
+      if (first) {
+        min = seg.min;
+        max = seg.max;
+        first = false;
+      } else {
+        min = Math.min(min, seg.min);
+        max = Math.max(max, seg.max);
+      }
+      if (i >= pattern.length || pattern[i] !== "|") break;
+      i++; // consume '|'
+    }
+    return { min, max };
+  }
+
+  function parseSequence(): { min: number; max: number } {
+    let min = 0;
+    let max = 0;
+    while (i < pattern.length && pattern[i] !== "|" && pattern[i] !== ")") {
+      const atom = parseAtom();
+      if (!atom) break;
+      let qmin = 1;
+      let qmax = 1;
+      if (i < pattern.length) {
+        const c = pattern[i];
+        if (c === "?") {
+          qmin = 0;
+          qmax = 1;
+          i++;
+        } else if (c === "*") {
+          qmin = 0;
+          qmax = INF;
+          i++;
+        } else if (c === "+") {
+          qmin = 1;
+          qmax = INF;
+          i++;
+        } else if (c === "{") {
+          const close = pattern.indexOf("}", i);
+          if (close !== -1) {
+            const parts = pattern.slice(i + 1, close).split(",").map((s) => s.trim());
+            const n = parseInt(parts[0] ?? "", 10);
+            if (!Number.isNaN(n)) {
+              qmin = n;
+              qmax = parts.length > 1 ? (parts[1] === "" ? INF : parseInt(parts[1], 10)) : n;
+              i = close + 1;
+            }
+          }
+        }
+      }
+      // Lazy (?) and possessive (+) suffixes don't change the length
+      if (i < pattern.length && (pattern[i] === "?" || pattern[i] === "+")) i++;
+      if (atom.max === INF || qmax === INF) max = INF;
+      else max += atom.max * qmax;
+      min += atom.min * qmin;
+    }
+    return { min, max };
+  }
+
+  function parseAtom(): { min: number; max: number } | null {
+    if (i >= pattern.length) return null;
+    const c = pattern[i];
+    if (c === "(") {
+      i++;
+      if (i < pattern.length && pattern[i] === "?") {
+        const next = pattern[i + 1];
+        if (next === ":" || next === "=" || next === "!") i += 2; // (?: (?= (?!
+        else if (next === "<") i += 3; // (?<= (?<!
+        else {
+          // Inline flags like (?i) — skip to the closing paren
+          const close = pattern.indexOf(")", i);
+          if (close === -1) return null;
+          i = close + 1;
+          return { min: 0, max: 0 };
+        }
+      }
+      const inner = parseAlternation();
+      if (i < pattern.length && pattern[i] === ")") i++;
+      return inner;
+    }
+    if (c === "[") {
+      i++;
+      if (i < pattern.length && pattern[i] === "^") i++;
+      while (i < pattern.length && pattern[i] !== "]") i++;
+      if (i < pattern.length) i++;
+      return { min: 1, max: 1 };
+    }
+    if (c === "\\") {
+      i += 2;
+      const esc = pattern[i - 1];
+      if (esc === "b" || esc === "B" || esc === "A" || esc === "z" || esc === "Z" || esc === "G") {
+        return { min: 0, max: 0 };
+      }
+      if (esc === "p" || esc === "P") {
+        const close = pattern.indexOf("}", i);
+        if (close !== -1) i = close + 1;
+        return { min: 1, max: 1 };
+      }
+      return { min: 1, max: 1 }; // \d \w \s \t ... or an escaped literal
+    }
+    if (c === ".") {
+      i++;
+      return { min: 1, max: INF };
+    }
+    if (c === "^" || c === "$") {
+      i++;
+      return { min: 0, max: 0 };
+    }
+    i++; // literal character
+    return { min: 1, max: 1 };
+  }
+
+  const result = parseAlternation();
+  return i < pattern.length ? null : result;
 }
 
 // ─── Placeholder filling ────────────────────────────────────────────────────
@@ -223,13 +381,13 @@ function fillPlaceholders(rules: MaskingRule[], sessionKey: Buffer, warnings: st
     }
 
     let attempt = 0;
-    let candidate = generatePlaceholder(rule.real, sessionKey, attempt);
+    let candidate = generatePlaceholder(rule.real, sessionKey, attempt, rule.preserveStructure);
     while (
       (used.has(candidate) || candidate === rule.real) &&
       attempt < MAX_COLLISION_ATTEMPTS
     ) {
       attempt++;
-      candidate = generatePlaceholder(rule.real, sessionKey, attempt);
+      candidate = generatePlaceholder(rule.real, sessionKey, attempt, rule.preserveStructure);
     }
     if (used.has(candidate) || candidate === rule.real) {
       warnings.push(
