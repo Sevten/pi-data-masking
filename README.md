@@ -4,42 +4,88 @@
 
 ## How it works
 
-Pi agent sessions routinely send and receive sensitive data — internal domains, database credentials, API keys, internal IP addresses, phone numbers, and so on. This extension keeps real values local: the **LLM only ever sees format-preserving placeholders**, while the user and any tools the agent calls still operate on the real data.
+Pi agent sessions routinely send and receive sensitive data — internal domains, database credentials, API keys, and so on. This extension keeps real values local: the **LLM only ever sees format-preserving placeholders**, while the user and any tools the agent calls still operate on the real data.
 
-- The **user** always sees real values
-- The **LLM** sees randomly generated placeholders that preserve the original format (letter→letter, digit→digit, separators kept as-is). Unlike an obvious marker such as `[TOKEN_REDACTED]`, these still look like usable keys, URLs, and identifiers, which helps avoid the model declining a tool call or searching for a replacement value.
-- **Tool calls** contain placeholders while the LLM plans them, then their arguments are unmasked back to real values immediately before execution
-- **Tool results** are protected too: matching data from file reads, directory searches, authenticated websites, APIs, and other tools remains real for the user but is masked again before becoming LLM context
-- Supports **literal exact match** and **regex fuzzy match** rules, freely mixed in one config
-- Rules are deliberately flexible: use literal values, regular expressions, and capture groups to cover custom sensitive formats; an AI assistant can help write rules for your environment
+- The **user** always sees real values.
+- The **LLM** sees placeholders that preserve the original format (letter→letter, digit→digit, separators kept) — they still look like usable keys and URLs, so the model doesn't decline tool calls or hunt for replacements.
+- **Tool calls** carry placeholders while the LLM plans them; their arguments are unmasked back to real values immediately before execution.
+- **Tool results** are re-masked before returning to LLM context: data from file reads, web fetches, and other tools stays real for you but never reaches the model.
+- **Literal** and **regex** rules mix freely in one config; capture groups and lookaheads cover custom formats.
 
-## Built around tool use
+Round-trip: user message or tool result → masked before the request → LLM reasons and plans tool calls with placeholders → arguments unmasked at the tool boundary → tool runs on real values → result re-masked before the next request.
 
-`pi-data-masking` protects both sides of an agent tool call without asking the LLM to work around redaction markers:
+---
 
-1. Before a request reaches the LLM, matching values in user messages, prior context, and tool results are replaced with format-preserving placeholders.
-2. The LLM can reason about and prepare a normal-looking tool call using those placeholders.
-3. Immediately before the tool runs, placeholders in its arguments are restored to their real local values.
-4. The user sees the real tool result. Before that result is included in later LLM context, matching sensitive values are masked again.
+## Known limitations and pitfalls (read this first)
 
-This is rule-based masking, not automatic PII detection: only values covered by a configured literal or regex rule are protected.
+Masking protects the **outbound** path only: rule-matching values become placeholders before reaching the LLM and are restored again for you and for tool execution. It is **not** a PII detector and **not** encryption. Live testing (v0.3.0) surfaced the failure modes below; the full scenario catalog with worked examples lives in [`docs/pitfalls.md`](docs/pitfalls.md).
+
+### Capability boundaries
+
+- **Not a PII detector.** Only values covered by a configured literal or regex rule are protected.
+- **Obfuscation, not encryption.** Placeholders make a value *look* real; the real security boundary is that the secret never leaves the machine.
+- **No masking of binary or non-string data.** Binary payloads, base64 blobs that aren't matched by a rule, and non-JSON tool outputs aren't scanned.
+- **Provider-boundary coverage depends on the runtime.** The `before_provider_request` safety net only runs for providers that emit that hook.
+- **Session files store real values** (`~/.pi/sessions/`) — manage their file permissions accordingly.
+
+### Known failure modes
+
+**You (the human) always see real values** — placeholders exist only in the model's view. Failures fall into two classes: **model output quality** and **protection gaps** (a secret still reaches the model).
+
+**Model output quality** — the model reasons on corrupted premises:
+
+| Scenario | What goes wrong | What you can do |
+|---|---|---|
+| **Semantic claims about a masked value** — "`123456` is a weak password" | The claim becomes a false premise ("`834919` is a weak password") the model reasons on — confused or self-correcting output. | Do **not** mask low-entropy values — the loader warns for literals < 8 chars and patterns matching ≤ 6 chars. |
+| **Structural claims about a masked value** — "the key starting with `sk-`" | The claim survives, but the masked value no longer starts with `sk-` — a visible contradiction. | Add `preserveStructure` (`keepPrefix`, `keepIPv4Octets`). Claims about body fragments ("the `mxr` part") have no solution: keep the fragment (leaks it) or break the claim. |
+| **Over-masking by a key-name-driven regex** — matching "sensitive keyword = value" assignments | Code, comments, and filenames get masked too (template history: `keyword_value_pairs` and its scoped successor `env_secret_values` both hit `KEY = Buffer.from`, `// Key: 32 hex chars`, `reg_key = HKDF-SHA256(` — while missing `DJANGO_SECRET_KEY=...`). | Mask by **value structure** (prefixes like `ghp_`, `AKIA`, `eyJ`, PEM blocks) or by **exact literal** for values you know — the example config ships no key-name-driven rule. |
+| **Coincidental restore** — the model's output happens to equal a known placeholder | The real value appears where the model never meant it; more likely with low-entropy (6-digit) placeholders. | Exclude low-entropy rules; cannot be eliminated completely. |
+| **Transforming a placeholder** — arithmetic, concatenation, or hashing | Results are computed on fake characters and can never be unmasked. | Pass placeholders **verbatim** to tools; enable `systemPromptGuidance`. |
+| **Judging by masked values** — AI work reasons about a placeholder as if it were the real value | AI-generated assertions/tests can be based on the placeholder's appearance (happened live in 0.3.0 testing), even though files written through the tool boundary are restored. | Review AI-generated logic; enable `options.systemPromptGuidance`; `keepPrefix` makes prefix-based reasoning reliable. |
+
+**Protection gaps** — a secret still reaches the model:
+
+| Scenario | What goes wrong | What you can do |
+|---|---|---|
+| **First-seen trade-off** — you later send a value the model invented earlier | It reaches the provider unmasked (first-seen is forever, literal rules included). | Negligible for high-entropy secrets; keep low-entropy values out of rules anyway. |
+| **Values not covered by any rule** | Sent as plaintext — masking is rule-based, not PII detection. | Review your rules against the data you handle (see Capability boundaries). |
+| **Provider without the safety-net hook / binary data** | `before_provider_request` doesn't run, or non-string payloads aren't scanned. | Use providers that emit the hook; keep secrets out of binary blobs (see Capability boundaries). |
+
+### Rule design checklist
+
+Following this avoids most of the failures above:
+
+1. **Literal first — the default choice.** Know the exact value? Use a literal rule (exact match, no false positives). Regex is only for value *classes* you can't enumerate (tokens, phone numbers, ...) — and those rules must be written narrowly (see 3).
+2. **Never mask low-entropy values** — 4-digit codes, short passwords, common words (the loader warns; they cause contradictions and coincidental restores).
+3. **Constrain regex**: word boundaries (`\b`), lookaheads (`(?=...)`), and capture groups that replace only the secret part — never an unconstrained `key = value` pattern.
+4. **Preserve structure** where the conversation describes the value (`preserveStructure.keepPrefix` / `keepIPv4Octets`).
+5. **Test every rule with `/masking-test`** before relying on it.
+6. **Enable `options.systemPromptGuidance`** if your model transforms or reuses placeholders.
+
+### Technical edges
+
+- **Literal matching is substring-based.** One root-domain rule covers all subdomains, but a short `real` can match inside unrelated text — prefer regex rules with `\b` boundaries for short or common patterns.
+- **Session-scoped only.** Placeholder mappings live only in memory for the current session; a new session means new placeholders for the same real values, by design.
+- **Already-masked text is never re-masked.** `mask()` treats a region as already masked only when it lies **entirely inside** placeholder text recorded earlier in the session (this keeps the provider-boundary fallback idempotent). A new sensitive value merely containing an old placeholder as prefix/substring is still masked in full; a value byte-identical to an existing placeholder is left as-is (vanishingly rare — placeholders are randomized per session and per value); a broad shape rule claiming a token adjacent to a masked placeholder absorbs the whole token — leak-safe either way.
+- **Deep-copy cost on large payloads.** `maskValue`/`unmaskValue` rebuild objects/arrays while recursing, so very large tool outputs or messages are copied and scanned on each boundary crossing.
 
 ## Contents
 
-1. [Install](#install)
-2. [Config file](#config-file)
-3. [Two-level config merge](#two-level-config-merge)
-4. [Placeholder generation](#placeholder-generation)
-5. [Regex fuzzy matching](#regex-fuzzy-matching)
-6. [Data flow](#data-flow)
-7. [Security boundaries](#security-boundaries)
-8. [Stats panel](#stats-panel)
-9. [Built-in commands](#built-in-commands)
-10. [Config field reference](#config-field-reference)
-11. [Limitations](#limitations)
-12. [Testing rules with /masking-test](#testing-rules-with-masking-test)
-13. [File overview](#file-overview)
-14. [Development](#development)
+1. [Known limitations and pitfalls (read this first)](#known-limitations-and-pitfalls-read-this-first)
+2. [Install](#install)
+3. [Config file](#config-file)
+4. [Two-level config merge](#two-level-config-merge)
+5. [Placeholder generation](#placeholder-generation)
+6. [Regex fuzzy matching](#regex-fuzzy-matching)
+7. [Provenance: first-seen is forever](#provenance-first-seen-is-forever)
+8. [Data flow](#data-flow)
+9. [Security boundaries](#security-boundaries)
+10. [Stats panel](#stats-panel)
+11. [Built-in commands](#built-in-commands)
+12. [Config field reference](#config-field-reference)
+13. [Testing rules with /masking-test](#testing-rules-with-masking-test)
+14. [File overview](#file-overview)
+15. [Development](#development)
 
 ---
 
@@ -59,7 +105,7 @@ mkdir -p /your/project/.pi/pi-data-masking
 cp ~/.pi/agent/pi-data-masking/masking.config.json /your/project/.pi/pi-data-masking/masking.config.json
 ```
 
-Config changes **hot-reload** automatically — no restart needed, even when the config file is created after the session starts. Config files are validated on load: invalid rules (missing `id`/`real`/`pattern`, invalid regex, unknown `type`) are skipped with a warning notification instead of silently breaking the extension, and JSON parse errors are surfaced the same way.
+Config changes **hot-reload** automatically — no restart needed. Config files are validated on load: invalid rules (missing `id`/`real`/`pattern`, invalid regex, unknown `type`) are skipped with a warning notification instead of breaking the extension.
 
 ---
 
@@ -102,16 +148,16 @@ Each rule has an optional `type` field:
 }
 ```
 
-Regex rules replace `real` with a `pattern` (see [Regex fuzzy matching](#regex-fuzzy-matching)); all kinds can be freely mixed — e.g. a domain rule for the host plus a regex rule for credentials inside a connection string. `masking.config.example.json` contains the full example.
+Regex rules replace `real` with a `pattern` (see [Regex fuzzy matching](#regex-fuzzy-matching)); literal and regex rules mix freely — `masking.config.example.json` contains the full example.
 
 ### What the example config covers
 
-The template ships with a ready-to-use starter set (16 rules) — each rule's `description` explains its purpose; **delete any rules you don't need** and replace the example values with your real ones:
+The template ships with a ready-to-use starter set (15 rules) — each rule's `description` explains its purpose; **delete any rules you don't need** and replace the example values with your real ones:
 
 | Category | Rules |
 |----------|-------|
 | Company identifiers | `company_root_domain` · `prod_api_key` · `employee_email_local_part` |
-| Credentials & secrets | `db_conn_credentials` · `url_userinfo_credentials` · `generic_bearer_token` · `keyword_value_pairs` · `pem_private_key_block` |
+| Credentials & secrets | `db_conn_credentials` · `url_userinfo_credentials` · `generic_bearer_token` · `pem_private_key_block` |
 | Platform access tokens | `github_pat` · `npm_token` · `huggingface_token` · `aws_access_key_id` · `slack_token` · `jwt_token` |
 | Network & contact info | `private_ip_address` · `us_mobile_number` |
 
@@ -163,6 +209,17 @@ placeholder: 233.84.19.207          ← each octet independently valid (0-255)
 
 **IPv4 special case**: naive per-character replacement can't keep every octet within 0-255 (`172` could become `988`). When a real value is exactly a valid IPv4 address, each octet is generated independently within 0-255.
 
+**Structure preservation (`preserveStructure`)**: masking changes a value's properties, so claims about them ("starts with `sk-`", "on the `192.168.` subnet") become false in the LLM's view. A rule can keep the least sensitive, most-asserted parts — category markers / scaffolding, never the secret entropy:
+
+```json
+{ "id": "prod_api_key", "real": "sk-prod-abc123456789", "preserveStructure": { "keepPrefix": true } }
+{ "id": "internal_ip", "type": "regex", "pattern": "\\b(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})\\b", "preserveStructure": { "keepIPv4Octets": 2 } }
+```
+
+- `keepPrefix: true` keeps the first segment up to the first separator (`sk-prod-abc123456789` → `sk-` + randomized body); a number caps how many characters of that segment are kept. Single-segment values fall back to full randomization so the placeholder never equals the real value.
+- `keepIPv4Octets: 2` keeps the leading octets of an exact IPv4 value (`192.168.10.7` → `192.168.x.y`), recommended for private ranges where the network prefix is not the secret. At least one octet is always randomized.
+- Connection strings and domains already keep scheme/port/path and TLD respectively — this option extends the same philosophy to generic values.
+
 **Two trigger points:**
 
 - **Literal rules**: the real value is known at config-load time, so the placeholder is generated **once** at session start (or config reload).
@@ -170,7 +227,7 @@ placeholder: 233.84.19.207          ← each octet independently valid (0-255)
 
 **Stability within a session**: the same real value always gets the same placeholder within a session. Hot reload, `/masking-reload`, and `/masking-toggle` never disturb existing mappings — only a brand-new session resets them. The regex-discovered mapping lives only in memory for the session and is never persisted to disk.
 
-**Collision protection**: in rare cases (very short real values, limited character space) a generated placeholder may collide with one already in use. The extension keeps a "used" set seeded with every manual placeholder and every rule's real value, and automatically retries (up to 10 times) on collision — for both literal and regex-discovered placeholders — so each placeholder maps back to exactly one real value. If manually configured placeholders still clash (two rules sharing one placeholder, or a placeholder equal to another rule's real value), a warning is shown at load time.
+**Collision protection**: in rare cases (very short real values, limited character space) a generated placeholder may collide with one already in use. A "used" set (seeded with every manual placeholder and rule real value) makes the generator retry up to 10 times on collision, for literal and regex placeholders alike — each placeholder maps back to exactly one real value. Manual placeholders that still clash (two rules sharing one, or a placeholder equal to another rule's real value) trigger a load-time warning.
 
 **Manual override**: literal rules only. Set an explicit `placeholder` to skip auto-generation. Regex rules don't support manual placeholders — a single pattern can match many different real values, so a fixed placeholder wouldn't make sense.
 
@@ -200,7 +257,7 @@ Effect: `Authorization: Bearer abcDEF123456` → `Authorization: Bearer xyzGHI78
 
 ### Lookahead: keep adjacent rules from claiming each other's territory
 
-A capture group only *replaces* the captured text, but the **whole match** is still registered as a claimed region. That's a problem when two rules sit right next to each other but each owns a different segment — e.g. masking an email's local part with one rule and its domain with another. If the local-part rule is written as `(local part)@domain`, the whole `local part@domain` gets claimed and the domain rule is skipped due to overlap.
+A capture group only *replaces* the captured text, but the **whole match** is registered as a claimed region — so a local-part rule written as `(local part)@domain` claims the whole `local part@domain` and blocks a separate domain rule.
 
 The fix is a lookahead `(?=...)`, which only *checks* what follows without consuming it:
 
@@ -208,7 +265,7 @@ The fix is a lookahead `(?=...)`, which only *checks* what follows without consu
 { "id": "employee_email_local_part", "type": "regex", "description": "Company email local part", "pattern": "[A-Za-z0-9._%+-]+(?=@company-internal\\.com)" }
 ```
 
-This only matches the local part before `@company-internal.com`; the domain isn't part of the match, so it doesn't conflict with a separate `company_root_domain` rule — the two rules can be in either order with identical results.
+This matches only the local part before `@company-internal.com`; the domain isn't consumed, so the two rules don't conflict regardless of order.
 
 ### Greedy match to the "last occurrence": prefer `[^\s]+` over `.+`
 
@@ -218,7 +275,7 @@ Some patterns need to match up to the *last* occurrence of a delimiter — e.g. 
 { "id": "db_conn_credentials", "type": "regex", "description": "Username:password in a DB connection string", "pattern": "(?:postgresql|mysql|mariadb|redis|mongodb):\\/\\/([^\\s]+)@" }
 ```
 
-`[^\s]+` (non-whitespace) is used instead of the broader `.+`: both backtrack to the last `@`, but `.+` can cross whitespace and newlines all the way to the *last `@` in the entire remaining text* — if an unrelated email appears later in the same message, `.+@` might swallow everything in between into the capture group. `[^\s]+` bounds the match to a single whitespace-free token.
+`[^\s]+` bounds the match to a single whitespace-free token; the broader `.+` would cross whitespace and newlines to the *last* `@` in the remaining text, swallowing unrelated content (e.g. a later email address) into the capture group.
 
 ### `flags`: each regex rule controls its own case sensitivity
 
@@ -271,14 +328,40 @@ User input ───────────────────────
 
 ---
 
+## Provenance: first-seen is forever
+
+Masking decisions are made per value, based on where the value **first appeared** in the session:
+
+- **User messages and tool results** are the only sources that register values for masking. Once registered, a value is masked in every message role — including assistant history — so a restored echo of your secret never leaks back into LLM context.
+- A value that **first appears in LLM output** is treated as *LLM-invented*: it is never masked for the whole session, even if you later send the same string. The LLM already knows the value (it generated it), and masking it would change the representation of its own messages mid-session — breaking the consistency of its reasoning and the provider's prefix cache.
+- **Tool results** always register, regardless of what the LLM happened to say earlier: real data from files/APIs is a legitimate secret source even if the same string coincidentally appeared in the model's output first.
+
+Consequences to be aware of:
+
+- **Placeholders are deterministic** (`HMAC(sessionKey, real)`), so the same real value always maps to the same placeholder — user view and LLM view stay internally consistent, and round-trips (user asks → masked → LLM answers → unmasked) restore correctly.
+- **Stats count only user/tool-side masks.** Assistant-history re-masking is provenance bookkeeping and LLM-invented values are never counted, so the panel reflects only genuinely intercepted input.
+- **Accepted trade-off**: if the LLM happens to output the exact string you later send, your message reaches the provider unmasked — negligible for high-entropy secrets; low-entropy values shouldn't be masked at all (see below).
+
+### Rule design: mask only high-entropy, semantically transparent values
+
+Masking short/common values causes more problems than it solves:
+
+- **Semantic contradictions**: format-preserving placeholders keep the shape but not the meaning — `"123456 is a weak password"` becomes `"834919 is a weak password"`, a false premise the model then reasons on.
+- **Coincidental restores**: short placeholders (e.g. 6-digit numbers) are likely to be hit accidentally by ordinary LLM output, restoring the secret into unrelated text.
+- Low-entropy values are guessable anyway, so the marginal security gain of masking them is near zero.
+
+The actionable checklist lives in [Known limitations and pitfalls](#rule-design-checklist).
+
+---
+
 ## Security boundaries
 
 Beyond the `context` hook, masking is enforced at two more outbound boundaries by default (no config needed):
 
-- **System prompt** (`before_agent_start`): the fully assembled system prompt is masked before each turn. If a rule fires there, a one-time-per-session warning is shown so you can tell whether a rule is accidentally matching instructions or tool schemas.
-- **Provider request** (`before_provider_request`): the final request payload (`messages`, `system`, `prompt`) is deep-masked right before it is sent, as a safety net for content that was injected after `context` — for example by another extension. If anything is caught at this boundary, a warning is shown (at most once per turn); these fallback hits are not added to the stats panel to avoid double-counting. Re-masking is idempotent: values already replaced by an earlier masking pass (placeholders recorded in the session's mapping) are recognized and left untouched, so a provider-boundary pass over already-masked content is a no-op — only genuinely unmasked values intercept here.
+- **System prompt** (`before_agent_start`): the fully assembled system prompt is masked before each turn. A rule firing here shows a one-time-per-session warning (a rule is probably matching instructions or tool schemas).
+- **Provider request** (`before_provider_request`): the final request payload (`messages`, `system`, `prompt`) is deep-masked right before sending — a safety net for content injected after `context` (e.g. by another extension). Hits show a warning (once per turn max) and aren't counted in the stats panel. Re-masking is idempotent, so already-masked content passes through untouched.
 
-The `context` hook remains the primary masking boundary; `before_provider_request` is a defense-in-depth fallback, not a replacement — inbound unmasking for display (`message_end`) and tool execution (`tool_call`) still happens on the normalized message flow.
+The `context` hook remains the primary boundary; `before_provider_request` is a defense-in-depth fallback, not a replacement — inbound unmasking for display (`message_end`) and tool execution (`tool_call`) still happens on the normalized message flow.
 
 ---
 
@@ -292,9 +375,9 @@ After each AI turn, a panel below the editor shows this round's masking stats, a
   Any IPv4 address        10.4***×3  192.1***×2
 ```
 
-A single rule (especially a regex one) can hit several distinct real values in one turn; the panel lists each one's preview and count separately (up to 4 distinct values, with a "+N more" note beyond that). It shows only which rule fired and a real-value preview — **never the placeholder**.
+Each rule's distinct real values are listed with preview and count (up to 4, then "+N more"); placeholders are never shown.
 
-**What's counted**: only mask (outbound) events — user-sent messages and tool results sent back to the LLM. Each `context` event only counts newly added messages, avoiding double-counting history across turns. Use `/masking-history` to review the full session history (last 30 entries).
+**What's counted**: only mask events from **user messages and tool results** — never assistant-history re-masking or LLM-invented values. Each `context` event counts only newly added messages, avoiding double-counting across turns. Use `/masking-history` for the full history (last 30 entries).
 
 ---
 
@@ -323,6 +406,8 @@ A single rule (especially a regex one) can hit several distinct real values in o
 | `type` | `"literal"` | — | Can be omitted; defaults to literal |
 | `real` | string | ✅ | The exact real value to replace |
 | `placeholder` | string | — | Omit or `"auto"` to auto-generate; set explicitly to use as-is (manual wins) |
+| `preserveStructure` | object | — | `{ "keepPrefix": true \| number, "keepIPv4Octets": number }` — keep structural properties in the placeholder (see [Placeholder generation](#placeholder-generation)) |
+| `lowEntropy` | boolean | — | Silence the config-loader warning for values < 8 chars (literal) / patterns matching ≤ 6 chars (regex) if you still want to mask them |
 
 **Regex rule fields (`type: "regex"`):**
 
@@ -333,6 +418,8 @@ A single rule (especially a regex one) can hit several distinct real values in o
 | `type` | `"regex"` | ✅ | Must be explicitly `"regex"` |
 | `pattern` | string | ✅ | Regex source (no delimiters); a match is treated as sensitive. With capture groups, only the captured part is replaced |
 | `flags` | string | — | Optional; omit to follow global `caseSensitive`, set to take full control (overrides global). No need to include the global-match flag manually |
+| `preserveStructure` | object | — | Same as literal rules; applied to lazily generated placeholders |
+| `lowEntropy` | boolean | — | Same as literal rules |
 
 > Regex rules don't support `real` / `placeholder` — the real value is only known at runtime, so the placeholder can only be generated then too.
 
@@ -342,20 +429,7 @@ A single rule (especially a regex one) can hit several distinct real values in o
 |-------|------|---------|--------------|
 | `caseSensitive` | boolean | `true` | Case sensitivity for literal matching and for regex rules without their own `flags` |
 | `showStatusBar` | boolean | `true` | Whether to keep showing masking status in the bottom status bar |
-
----
-
-## Limitations
-
-- **Not a PII detector.** This extension only masks what you've explicitly written a rule for (literal value or regex pattern). Anything not covered by a rule is sent to the LLM as plain text.
-- **Obfuscation, not encryption.** The character-level replacement makes a value *look* real to the LLM; it is not cryptographically secure. The actual secret never leaves the machine, which is the real security boundary.
-- **Literal matching is substring-based.** A literal `real` value is matched wherever it appears as a substring, with no word-boundary check. This is intentional (one root-domain rule covers all subdomains) but means a short or generic `real` can match inside unrelated text. Prefer regex rules with `\b` boundaries for short or common patterns.
-- **Session-scoped only.** Placeholder mappings live only in memory for the current session; a new session means new placeholders for the same real values, by design.
-- **Session files store real values.** `context`-event masking happens in memory and is never written to the on-disk session file (`~/.pi/sessions/`); session files contain real values, so manage their file permissions accordingly.
-- **No masking of binary or non-string data.** `maskValue`/`unmaskValue` recurse through strings inside objects/arrays; binary payloads, base64 blobs that aren't matched by a rule, or non-JSON tool outputs aren't masked.
-- **Provider-boundary coverage depends on the runtime.** The `before_provider_request` safety net masks the final request payload, but it only runs for providers that emit that hook — a custom provider or raw API path that bypasses it won't be covered.
-- **Already-masked text is never re-masked.** `mask()` treats a region as already masked only when it lies **entirely inside** placeholder text recorded earlier in the session (this is what makes the provider-boundary fallback idempotent). A genuinely new sensitive value that merely contains an old placeholder as a prefix or substring is still masked in full — it is never allowed to hide inside an already-masked span. The converse edge exists: a new value that happens to be byte-identical to an existing placeholder is left as-is; placeholders are randomized per session and per value, so this collision is vanishingly rare. Likewise, when a broad shape rule claims a token that is adjacent to an already-masked placeholder (e.g. real text glued to a masked domain), the whole token is masked rather than only the new part — leak-safe, though the adjacent placeholder's own mapping is then absorbed into the new one.
-- **Deep-copy cost on large payloads.** `maskValue`/`unmaskValue` rebuild objects/arrays while recursing, so very large tool outputs or messages are copied and scanned on each boundary crossing.
+| `systemPromptGuidance` | boolean | `false` | Append a paragraph to the system prompt telling the LLM masked values are opaque placeholders — reduces confusion from structural claims about masked values (see [Provenance](#provenance-first-seen-is-forever)) |
 
 ---
 
@@ -379,9 +453,7 @@ The command applies all current masking rules to the text and shows what the LLM
 
 Behaviour notes:
 
-- It runs on a **temporary isolated `Masker`** — session placeholder mappings are never modified.
-- It **uses the current session key**, so output matches what a real conversation turn would produce (already-known regex values reuse their existing placeholders).
-- It requires masking to be enabled; otherwise it asks you to re-enable first.
+- Runs on a **temporary isolated `Masker`** (session mappings untouched) with the **current session key**, so output matches a real turn. Requires masking to be enabled.
 
 This is the recommended way to validate new rules before deploying a config change — no need to start a full conversation.
 
@@ -397,7 +469,7 @@ This is the recommended way to validate new rules before deploying a config chan
 | `config-loader.ts` | Loads, validates, and merges global + project config; fills auto placeholders; watches config paths for hot reload |
 | `details.ts` | Shared per-rule/per-value stats accumulation used by the engine and the entry point |
 | `tests/` | Unit tests (`node:test`) covering the masking engine, placeholder generation, and config loading |
-| `masking.config.example.json` | Ready-to-use starter config (16 rules) covering company identifiers, credentials, platform tokens, and network/contact info; edit before use |
+| `masking.config.example.json` | Ready-to-use starter config (15 rules) covering company identifiers, credentials, platform tokens, and network/contact info; edit before use |
 
 ---
 
