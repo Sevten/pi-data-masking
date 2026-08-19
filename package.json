@@ -28,7 +28,8 @@
     "test": "node --test \"tests/*.test.ts\""
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.3"
+    "@earendil-works/pi-coding-agent": "0.80.3",
+    "@earendil-works/pi-tui": "0.80.3"
   },
   "devDependencies": {
     "@types/node": "^26.0.1",

@@ -118,6 +118,8 @@ Config changes **hot-reload** automatically — no restart needed. Config files 
 
 The package template lives inside the installed npm package at `~/.pi/agent/npm/node_modules/@sevten/pi-data-masking/masking.config.example.json`. Treat that as read-only package content; put your edited config in one of the paths above.
 
+`/masking-toggle` stores its user-level on/off choice separately in `~/.pi/agent/pi-data-masking/toggle-state.json`. This override applies to new sessions and all projects, while leaving rule files unchanged. To return to the `enabled` value from the config files, delete that state file and run `/masking-reload` (or restart Pi).
+
 Each rule has an optional `type` field:
 
 | `type` | Meaning |
@@ -377,7 +379,7 @@ After each AI turn, a panel below the editor shows this round's masking stats, a
 
 Each rule's distinct real values are listed with preview and count (up to 4, then "+N more"); placeholders are never shown.
 
-**What's counted**: only mask events from **user messages and tool results** — never assistant-history re-masking or LLM-invented values. Each `context` event counts only newly added messages, avoiding double-counting across turns. Use `/masking-history` for the full history (last 30 entries).
+**What's counted**: only mask events from **user messages and tool results** — never assistant-history re-masking or LLM-invented values. Each `context` event counts only newly added messages, avoiding double-counting across turns. The per-turn statistics retain the latest 30 entries; `/masking-history` is instead a full-session local replay.
 
 ---
 
@@ -385,13 +387,11 @@ Each rule's distinct real values are listed with preview and count (up to 4, the
 
 | Command | Description |
 |---------|-------------|
-| `/masking-status` | Show current on/off state and rule count |
-| `/masking-list` | List all rules (literal rules show their current placeholder, regex rules show their pattern); real values never shown |
-| `/masking-history` | View this session's masking history (last 30 entries) |
-| `/masking-toggle` | Temporarily toggle on/off (doesn't touch the config file, resets on restart) |
+| `/masking-list` | Browse all rules in a full-screen, scrollable panel (↑↓ to navigate, Esc to close). Literal rules show their current placeholder, regex rules show their pattern; real values never shown |
+| `/masking-history` | Open a full-screen replay with three views: highlighted local original, highlighted model input (Ctrl+M or M), and side-by-side comparison (C). N/P cycles replacement details; Ctrl+O toggles tool output, Ctrl+T toggles thinking, and keyboard/mouse-wheel scrolling is supported |
+| `/masking-toggle` | Toggle on/off persistently for future sessions and projects; rules in config files are not changed |
 | `/masking-reload` | Manually reload the config file (reuses the current session key and dynamic regex map, placeholders stay stable) |
-| `/masking-clear` | Close the currently displayed panels (report, history, rule list, test) |
-| `/masking-test <text>` | Preview how a text snippet looks after all masking rules are applied — shows the masked output (what the LLM actually sees) in a widget, without affecting session state |
+| `/masking-test <text>` | Preview how a text snippet looks after all masking rules are applied — shows the masked output (what the LLM actually sees) for 20 seconds, without affecting session state |
 
 ---
 

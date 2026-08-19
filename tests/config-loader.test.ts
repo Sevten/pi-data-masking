@@ -9,7 +9,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadConfigFromPaths, validateConfig, watchConfigPaths } from "../config-loader.ts";
+import {
+  loadConfigFromPaths,
+  loadPersistentToggle,
+  savePersistentToggle,
+  validateConfig,
+  watchConfigPaths,
+} from "../config-loader.ts";
 import { Masker, isRegexRule } from "../masker.ts";
 import { generatePlaceholder } from "../placeholder-gen.ts";
 
@@ -18,6 +24,22 @@ const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 function makeTmp(): string {
   return mkdtempSync(join(tmpdir(), "masking-cfg-"));
 }
+
+test("persistent toggle survives a fresh read and is separate from rule config", async () => {
+  const dir = makeTmp();
+  try {
+    const statePath = join(dir, "pi-data-masking", "toggle-state.json");
+    assert.equal((await loadPersistentToggle(statePath)).enabled, undefined);
+
+    await savePersistentToggle(false, statePath);
+    assert.deepEqual(await loadPersistentToggle(statePath), { enabled: false });
+
+    await savePersistentToggle(true, statePath);
+    assert.deepEqual(await loadPersistentToggle(statePath), { enabled: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("project rules come first; options merge; project enabled wins", async () => {
   const dir = makeTmp();

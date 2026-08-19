@@ -7,8 +7,8 @@
  * known until runtime, so masker.ts generates their placeholders lazily.
  */
 
-import { readFile } from "node:fs/promises";
-import { watch, existsSync, type FSWatcher } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { watch, existsSync, statSync, type FSWatcher } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
@@ -40,6 +40,12 @@ export interface LoadResult {
   warnings: string[];
 }
 
+export interface PersistentToggleResult {
+  /** Undefined means no toggle has been saved; use the config-file value. */
+  enabled: boolean | undefined;
+  warning?: string;
+}
+
 export type { MaskingRule };
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
@@ -52,6 +58,17 @@ export const GLOBAL_CONFIG_PATH = join(
   AGENT_CONFIG_DIR,
   "pi-data-masking",
   "masking.config.json"
+);
+
+/**
+ * User-level switch state. It is intentionally separate from the rule config:
+ * the command must survive new sessions and project-level `enabled` settings
+ * without rewriting a user's rules.
+ */
+export const PERSISTENT_TOGGLE_PATH = join(
+  AGENT_CONFIG_DIR,
+  "pi-data-masking",
+  "toggle-state.json"
 );
 
 /** Project-level config path: <cwd>/.pi/pi-data-masking/masking.config.json */
@@ -92,6 +109,34 @@ async function tryReadJson(path: string): Promise<ReadJsonResult> {
     }
     return { data: null, error: `Failed to read/parse ${path}: ${(err as Error).message}` };
   }
+}
+
+/** Read the user-level override written by /masking-toggle. */
+export async function loadPersistentToggle(
+  path = PERSISTENT_TOGGLE_PATH
+): Promise<PersistentToggleResult> {
+  try {
+    const raw = await readFile(path, "utf8");
+    const data = JSON.parse(raw) as unknown;
+    if (!data || typeof data !== "object" || typeof (data as { enabled?: unknown }).enabled !== "boolean") {
+      return { enabled: undefined, warning: `Ignoring invalid persistent toggle state at ${path}` };
+    }
+    return { enabled: (data as { enabled: boolean }).enabled };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { enabled: undefined };
+    return { enabled: undefined, warning: `Failed to read persistent toggle state at ${path}: ${(err as Error).message}` };
+  }
+}
+
+/** Persist the user-controlled enabled state atomically and with user-only permissions. */
+export async function savePersistentToggle(
+  enabled: boolean,
+  path = PERSISTENT_TOGGLE_PATH
+): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify({ enabled }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await rename(tempPath, path);
 }
 
 // ─── Merge logic ──────────────────────────────────────────────────────────
@@ -539,8 +584,33 @@ export function watchConfigPaths(
   watchConfigFile(globalPath, handleChange, watchers);
   watchConfigFile(projectPath, handleChange, watchers);
 
+  // fs.watch can miss a file created immediately after a watcher is
+  // registered (notably on Linux/inotify). Polling the two small config files
+  // is a low-cost safety net for that race and for editor atomic replaces.
+  function fileSignature(path: string): string | null {
+    try {
+      const stat = statSync(path);
+      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return null;
+    }
+  }
+
+  let globalSignature = fileSignature(globalPath);
+  let projectSignature = fileSignature(projectPath);
+  const poller = setInterval(() => {
+    const nextGlobalSignature = fileSignature(globalPath);
+    const nextProjectSignature = fileSignature(projectPath);
+    if (nextGlobalSignature !== globalSignature || nextProjectSignature !== projectSignature) {
+      globalSignature = nextGlobalSignature;
+      projectSignature = nextProjectSignature;
+      handleChange();
+    }
+  }, 250);
+
   return () => {
     if (timer) clearTimeout(timer);
+    clearInterval(poller);
     watchers.forEach((w) => w.close());
   };
 }

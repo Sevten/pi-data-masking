@@ -50,13 +50,20 @@
  *   description  preview×N  preview×N  ...
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, SelectList, Spacer, Text, type SelectItem } from "@earendil-works/pi-tui";
 import { Masker, isRegexRule, makePreview } from "./masker.ts";
 import type { MaskDetail, DetailValue, DynamicPlaceholderMap, MaskOptions } from "./masker.ts";
-import { loadConfig, watchConfigs } from "./config-loader.ts";
+import { loadConfig, loadPersistentToggle, savePersistentToggle, watchConfigs } from "./config-loader.ts";
 import type { MaskingConfig } from "./config-loader.ts";
 import { generateSessionKey } from "./placeholder-gen.ts";
 import { mergeDetailInto, finalizeDetails, type DetailAccumulator } from "./details.ts";
+import {
+  createHistoryViewer,
+  mergePendingAssistant,
+  mergeTranscript,
+  type TranscriptEntry,
+} from "./history-viewer.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -139,6 +146,31 @@ function statusLabel(cfg: MaskingConfig): string {
     : `🔓 Masking: off`;
 }
 
+function ruleListItem(rule: MaskingConfig["rules"][number], index: number): SelectItem {
+  const number = String(index + 1).padStart(2);
+  if (isRegexRule(rule)) {
+    return {
+      value: String(index),
+      label: `${number}. [regex] /${rule.pattern}/${rule.flags ?? ""}`,
+      description: rule.description,
+    };
+  }
+  return {
+    value: String(index),
+    label: `${number}. ${rule.placeholder ?? "(auto placeholder)"}`,
+    description: rule.description,
+  };
+}
+
+function ruleListDetail(rule: MaskingConfig["rules"][number], index: number): string {
+  const header = `Rule ${index + 1}: ${rule.id}`;
+  const description = rule.description ? `\nDescription: ${rule.description}` : "";
+  if (isRegexRule(rule)) {
+    return `${header}\nRegex pattern: /${rule.pattern}/${rule.flags ?? ""}${description}`;
+  }
+  return `${header}\nPlaceholder: ${rule.placeholder ?? "(auto placeholder)"}${description}`;
+}
+
 // ─── Extension entry point ──────────────────────────────────────────────────
 
 export default async function (pi: ExtensionAPI) {
@@ -149,7 +181,8 @@ export default async function (pi: ExtensionAPI) {
   };
   let masker = new Masker([], true);
   let stopWatching: (() => void) | null = null;
-  let widgetTimer: ReturnType<typeof setTimeout> | null = null;
+  let reportTimer: ReturnType<typeof setTimeout> | null = null;
+  let testTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Session key: generated on session_start, stays constant for the whole
   // session (including hot reloads). Pre-initialized to a valid value to
@@ -167,6 +200,9 @@ export default async function (pi: ExtensionAPI) {
   let protectedValues: Set<string> = new Set();
 
   const history: HistoryEntry[] = [];
+  // A local-only replay of messages that crossed the model boundary. Unlike
+  // the stats history above, this retains the original and masked forms.
+  let transcript: TranscriptEntry[] = [];
 
   // One-time-per-session warning flags (reset on session_start)
   let fallbackNotifiedThisTurn = false;
@@ -213,6 +249,18 @@ export default async function (pi: ExtensionAPI) {
     return masker.warnings;
   }
 
+  /** Apply the user-level /masking-toggle override after config-file merging. */
+  async function applyPersistentToggle(cfg: MaskingConfig): Promise<{ config: MaskingConfig; warnings: string[] }> {
+    const persisted = await loadPersistentToggle();
+    if (persisted.enabled === undefined) {
+      return { config: cfg, warnings: persisted.warning ? [persisted.warning] : [] };
+    }
+    return {
+      config: { ...cfg, enabled: persisted.enabled },
+      warnings: persisted.warning ? [persisted.warning] : [],
+    };
+  }
+
   function notifyWarnings(ctx: ExtensionContext, warnings: string[]) {
     for (const w of warnings) ctx.ui.notify(`⚠️ ${w}`, "info");
   }
@@ -225,8 +273,8 @@ export default async function (pi: ExtensionAPI) {
   function showPanel(ctx: ExtensionContext, lines: string[]) {
     if (lines.length === 0) return;
     ctx.ui.setWidget("masking-report", lines, { placement: "belowEditor" });
-    if (widgetTimer) clearTimeout(widgetTimer);
-    widgetTimer = setTimeout(() => {
+    if (reportTimer) clearTimeout(reportTimer);
+    reportTimer = setTimeout(() => {
       ctx.ui.setWidget("masking-report", undefined);
     }, 20_000);
   }
@@ -246,6 +294,7 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     stopWatching?.();
     history.length = 0;
+    transcript = [];
     lastContextLength = 0;
     resetRoundCounters();
 
@@ -262,20 +311,22 @@ export default async function (pi: ExtensionAPI) {
     dynamicMapWarned = false;
     inventedMapWarned = false;
 
-    const { config: cfg, warnings } = await loadConfig(ctx.cwd, sessionKey);
-    const compileWarnings = rebuild(cfg);
-    notifyWarnings(ctx, [...warnings, ...compileWarnings]);
+    const loaded = await loadConfig(ctx.cwd, sessionKey);
+    const persisted = await applyPersistentToggle(loaded.config);
+    const compileWarnings = rebuild(persisted.config);
+    notifyWarnings(ctx, [...loaded.warnings, ...persisted.warnings, ...compileWarnings]);
 
     stopWatching = watchConfigs(ctx.cwd, async () => {
       // Hot reload: reuse the current session's sessionKey and dynamicPlaceholderMap
       const reloaded = await loadConfig(ctx.cwd, sessionKey);
-      const reloadWarnings = rebuild(reloaded.config);
+      const persistedReload = await applyPersistentToggle(reloaded.config);
+      const reloadWarnings = rebuild(persistedReload.config);
       resetRoundCounters();
       ctx.ui.notify(
-        `🔒 Masking config reloaded (${reloaded.config.rules.length} rule(s))`,
+        `🔒 Masking config reloaded (${persistedReload.config.rules.length} rule(s))`,
         "info"
       );
-      notifyWarnings(ctx, [...reloaded.warnings, ...reloadWarnings]);
+      notifyWarnings(ctx, [...reloaded.warnings, ...persistedReload.warnings, ...reloadWarnings]);
       updateStatus(ctx);
     });
 
@@ -285,15 +336,25 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     stopWatching?.();
     stopWatching = null;
-    if (widgetTimer) clearTimeout(widgetTimer);
+    if (reportTimer) clearTimeout(reportTimer);
+    if (testTimer) clearTimeout(testTimer);
   });
 
   // ── Hook 1: context — outbound masking ────────────────────────────────────
 
   pi.on("context", async (event, ctx) => {
-    if (!config.enabled || config.rules.length === 0) return;
-
     const messages = event.messages;
+    // Retain the complete local replay even while masking is off. When it is
+    // enabled, the same entries are replaced below with the actual masked form
+    // sent through this boundary.
+    if (!config.enabled || config.rules.length === 0) {
+      transcript = mergeTranscript(
+        transcript,
+        messages as unknown as Record<string, unknown>[],
+        messages as unknown as Record<string, unknown>[],
+      );
+      return;
+    }
 
     // Only count newly added messages: the LLM API resends the full history
     // on every request, so counting all messages would double-count history
@@ -334,18 +395,39 @@ export default async function (pi: ExtensionAPI) {
     const maskedMessages = messages.map((msg) =>
       masker.maskValue(msg, maskOptionsForRole((msg as { role?: string }).role)).value
     );
+    transcript = mergeTranscript(
+      transcript,
+      messages as unknown as Record<string, unknown>[],
+      maskedMessages as Record<string, unknown>[],
+    );
     return { messages: maskedMessages as typeof event.messages };
   });
 
   // ── Hook 2: message_end — inbound unmasking ───────────────────────────────
 
   pi.on("message_end", async (event, ctx) => {
-    if (!config.enabled || config.rules.length === 0) return;
-
     if (event.message.role !== "assistant") return;
+
+    if (!config.enabled || config.rules.length === 0) {
+      transcript = mergePendingAssistant(
+        transcript,
+        event.message as unknown as Record<string, unknown>,
+        event.message as unknown as Record<string, unknown>,
+      );
+      return;
+    }
 
     // Restore real values before storing, so the user always sees the real data
     const { message } = unmaskMessage(event.message, masker);
+    // The response is not part of the outbound context until the next model
+    // request. Keep a provisional snapshot so the viewer includes it now; the
+    // next context hook replaces it with the exact provider-boundary version.
+    const maskedForTranscript = masker.maskValue(message, maskOptionsForRole("assistant")).value;
+    transcript = mergePendingAssistant(
+      transcript,
+      message as unknown as Record<string, unknown>,
+      maskedForTranscript as Record<string, unknown>,
+    );
 
     // Show this round's mask stats panel
     if (currentRoundMaskCount > 0) {
@@ -457,77 +539,100 @@ export default async function (pi: ExtensionAPI) {
     resetRoundCounters();
   });
 
-  // ── Command: /masking-status ─────────────────────────────────────────────
-
-  pi.registerCommand("masking-status", {
-    description: "Show data masking extension status",
-    handler: async (_args, ctx) => {
-      const state = config.enabled ? "✅ enabled" : "❌ disabled";
-      const info =
-        config.rules.length === 0
-          ? "(no rules configured)"
-          : `(${config.rules.length} rule(s))`;
-      ctx.ui.notify(`Data masking ${state} ${info}`, "info");
-    },
-  });
-
   // ── Command: /masking-list ───────────────────────────────────────────────
 
   pi.registerCommand("masking-list", {
-    description: "List all masking rules (real values not shown)",
+    description: "Browse masking rules in a scrollable panel (real values not shown)",
     handler: async (_args, ctx) => {
       if (config.rules.length === 0) {
         ctx.ui.notify("No masking rules configured — check masking.config.json", "info");
         return;
       }
-      const lines = config.rules.map((r, i) => {
-        const desc = r.description ? `  —  ${r.description}` : "";
-        if (isRegexRule(r)) {
-          // Regex rules have no fixed placeholder (real values are only
-          // known at runtime); show the pattern itself instead.
-          return `${String(i + 1).padStart(2)}. [regex] /${r.pattern}/${r.flags ?? ""}${desc}`;
-        }
-        return `${String(i + 1).padStart(2)}. ${r.placeholder}${desc}`;
+      const rules = config.rules;
+      const items = rules.map(ruleListItem);
+
+      await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+        const container = new Container();
+        const detail = new Text(ruleListDetail(rules[0]!, 0), 1, 0);
+        const list = new SelectList(items, Math.max(3, tui.terminal.rows - 13), {
+          selectedPrefix: (text) => theme.fg("accent", text),
+          selectedText: (text) => theme.fg("accent", text),
+          description: (text) => theme.fg("muted", text),
+          scrollInfo: (text) => theme.fg("dim", text),
+          noMatch: (text) => theme.fg("warning", text),
+        });
+
+        list.onSelectionChange = (item) => {
+          const index = Number(item.value);
+          const rule = rules[index];
+          if (rule) detail.setText(ruleListDetail(rule, index));
+        };
+        list.onCancel = () => done();
+
+        container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+        container.addChild(new Text(theme.fg("accent", theme.bold(`Masking rules (${rules.length}, priority order)`)), 1, 0));
+        container.addChild(new Spacer(1));
+        container.addChild(list);
+        container.addChild(new Spacer(1));
+        container.addChild(detail);
+        container.addChild(new Spacer(1));
+        container.addChild(new Text(theme.fg("dim", "↑↓ browse  ·  Esc close"), 1, 0));
+        container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+
+        return {
+          render: (width) => {
+            const lines = container.render(width);
+            return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
+          },
+          invalidate: () => container.invalidate(),
+          handleInput: (data) => {
+            list.handleInput(data);
+            tui.requestRender();
+          },
+        };
+      }, {
+        overlay: true,
+        overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
       });
-      ctx.ui.setWidget("masking-rules-list", [
-        `Rules (${config.rules.length}, in priority order)`,
-        ...lines,
-      ]);
     },
   });
 
   // ── Command: /masking-history ────────────────────────────────────────────
 
   pi.registerCommand("masking-history", {
-    description: "View this session's masking history",
+    description: "Replay this session with original and masked text",
     handler: async (_args, ctx) => {
-      if (history.length === 0) {
-        ctx.ui.notify("No masking activity yet this session", "info");
+      if (transcript.length === 0) {
+        ctx.ui.notify("No conversation has reached the masking boundary yet", "info");
         return;
       }
-      const lines: string[] = [`📋 Masking history (${history.length} entries)`];
-      for (const entry of history) {
-        lines.push(`─── ${entry.time}  ${entry.masked} masked`);
-        for (const d of entry.details) {
-          const label = (d.description ?? d.ruleId).padEnd(20);
-          lines.push(`    ${label}  ${formatDetailValues(d.values)}`);
-        }
-      }
-      ctx.ui.setWidget("masking-history", lines);
+      await ctx.ui.custom<void>((tui, theme, keybindings, done) =>
+        createHistoryViewer(tui, theme, keybindings, transcript, done),
+      {
+        overlay: true,
+        overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
+      });
     },
   });
 
   // ── Command: /masking-toggle ──────────────────────────────────────────────
 
   pi.registerCommand("masking-toggle", {
-    description: "Toggle masking on/off temporarily (doesn't modify the config file)",
+    description: "Toggle masking on/off for future sessions too",
     handler: async (_args, ctx) => {
-      config = { ...config, enabled: !config.enabled };
-      masker = buildMasker(config.enabled ? config.rules : []);
+      const enabled = !config.enabled;
+      try {
+        await savePersistentToggle(enabled);
+      } catch (err) {
+        ctx.ui.notify(`Failed to save masking setting: ${(err as Error).message}`, "error");
+        return;
+      }
+      config = { ...config, enabled };
+      masker = buildMasker(enabled ? config.rules : []);
       // Rule set changed — reset stats; keep lastContextLength so messages
       // sent while disabled are counted exactly once on re-enable.
       resetRoundCounters();
-      ctx.ui.notify(`Data masking ${config.enabled ? "enabled" : "disabled"}`, "info");
+      ctx.ui.notify(`Data masking ${enabled ? "enabled" : "disabled"} (saved for future sessions)`, "info");
       notifyWarnings(ctx, masker.warnings);
       updateStatus(ctx);
     },
@@ -540,27 +645,16 @@ export default async function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       // Reuse the current session's sessionKey and dynamicPlaceholderMap so
       // placeholder mappings (including dynamic regex ones) stay stable
-      const { config: cfg, warnings } = await loadConfig(ctx.cwd, sessionKey);
-      const compileWarnings = rebuild(cfg);
+      const loaded = await loadConfig(ctx.cwd, sessionKey);
+      const persisted = await applyPersistentToggle(loaded.config);
+      const compileWarnings = rebuild(persisted.config);
       resetRoundCounters();
       ctx.ui.notify(
-        `Config reloaded: ${cfg.rules.length} rule(s), masking ${cfg.enabled ? "enabled" : "disabled"}`,
+        `Config reloaded: ${persisted.config.rules.length} rule(s), masking ${persisted.config.enabled ? "enabled" : "disabled"}`,
         "info"
       );
-      notifyWarnings(ctx, [...warnings, ...compileWarnings]);
+      notifyWarnings(ctx, [...loaded.warnings, ...persisted.warnings, ...compileWarnings]);
       updateStatus(ctx);
-    },
-  });
-
-  // ── Command: /masking-clear ───────────────────────────────────────────────
-
-  pi.registerCommand("masking-clear", {
-    description: "Close the currently displayed masking panel",
-    handler: async (_args, ctx) => {
-      if (widgetTimer) clearTimeout(widgetTimer);
-      ctx.ui.setWidget("masking-report", undefined);
-      ctx.ui.setWidget("masking-history", undefined);
-      ctx.ui.setWidget("masking-rules-list", undefined);
     },
   });
 
@@ -616,6 +710,10 @@ export default async function (pi: ExtensionAPI) {
         `─── After masking (what LLM sees)  ${summary}`,
         `  ${masked}`,
       ]);
+      if (testTimer) clearTimeout(testTimer);
+      testTimer = setTimeout(() => {
+        ctx.ui.setWidget("masking-test", undefined);
+      }, 20_000);
     },
   });
 }
