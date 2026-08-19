@@ -19,6 +19,8 @@ export interface TranscriptEntry {
   capturedAt: number;
   /** The newest assistant response has not yet been included in a provider request. */
   pending?: boolean;
+  /** Restored from a session that predates persisted model-input snapshots. */
+  snapshotMissing?: boolean;
 }
 
 interface HistoryTheme {
@@ -94,6 +96,7 @@ export function mergeTranscript(
       prior.masked = cloneMessage(maskedMessage);
       prior.capturedAt = capturedAt;
       prior.pending = false;
+      prior.snapshotMissing = false;
     } else {
       const entry: TranscriptEntry = {
         key,
@@ -360,6 +363,9 @@ function addToolCard(
     if (!expanded && totalLines > 10) {
       card.addChild(new Text(theme.fg("dim", `… (${totalLines - 10} more lines, Ctrl+O to expand)`), 1, 0));
     }
+    if (result.snapshotMissing) {
+      card.addChild(new Text(theme.fg("warning", "Historical model-input snapshot is unavailable for this tool result."), 1, 0));
+    }
   }
   container.addChild(card);
 }
@@ -434,6 +440,9 @@ function renderTranscript(
       if (entry.pending) container.addChild(new Text(theme.fg("dim", "Not yet included in a subsequent model request."), 1, 0));
     } else {
       container.addChild(new Text(theme.fg("muted", `Unsupported message type: ${String(role)}`), 1, 0));
+    }
+    if (entry.snapshotMissing) {
+      container.addChild(new Text(theme.fg("warning", "Historical model-input snapshot is unavailable for this message."), 1, 0));
     }
   }
   return container;

@@ -227,7 +227,7 @@ test("preserveStructure is honored when filling literal placeholders", async () 
   }
 });
 
-test("systemPromptGuidance defaults to false", async () => {
+test("history persistence defaults on while system-prompt guidance defaults off", async () => {
   const dir = makeTmp();
   try {
     const g = join(dir, "g.json");
@@ -236,6 +236,7 @@ test("systemPromptGuidance defaults to false", async () => {
     writeFileSync(p, JSON.stringify({ rules: [] }));
     const { config } = await loadConfigFromPaths(g, p, KEY);
     assert.equal(config.options.systemPromptGuidance, false);
+    assert.equal(config.options.persistHistory, true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

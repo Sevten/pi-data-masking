@@ -4,12 +4,12 @@
 
 ## How it works
 
-Pi agent sessions routinely send and receive sensitive data — internal domains, database credentials, API keys, and so on. This extension keeps real values local: the **LLM only ever sees format-preserving placeholders**, while the user and any tools the agent calls still operate on the real data.
+Pi agent sessions routinely send and receive sensitive data — internal domains, database credentials, API keys, and so on. For values covered by configured rules, this extension keeps the real values local and sends format-preserving placeholders to the LLM, while the main conversation and tools operate on the real data.
 
-- The **user** always sees real values.
-- The **LLM** sees placeholders that preserve the original format (letter→letter, digit→digit, separators kept) — they still look like usable keys and URLs, so the model doesn't decline tool calls or hunt for replacements.
+- The **main conversation** shows real values; `/masking-history` can intentionally switch between the local and model-input views.
+- The **LLM** sees placeholders that preserve the original format (letter→letter, digit→digit, separators kept) — keeping keys and URLs structurally plausible helps reduce avoidable tool-call refusals and replacement hunting.
 - **Tool calls** carry placeholders while the LLM plans them; their arguments are unmasked back to real values immediately before execution.
-- **Tool results** are re-masked before returning to LLM context: data from file reads, web fetches, and other tools stays real for you but never reaches the model.
+- **Tool results** are re-masked before returning to LLM context: matching data from file reads, web fetches, and other tools stays real for you but is replaced before reaching the model.
 - **Literal** and **regex** rules mix freely in one config; capture groups and lookaheads cover custom formats.
 
 Round-trip: user message or tool result → masked before the request → LLM reasons and plans tool calls with placeholders → arguments unmasked at the tool boundary → tool runs on real values → result re-masked before the next request.
@@ -23,14 +23,14 @@ Masking protects the **outbound** path only: rule-matching values become placeho
 ### Capability boundaries
 
 - **Not a PII detector.** Only values covered by a configured literal or regex rule are protected.
-- **Obfuscation, not encryption.** Placeholders make a value *look* real; the real security boundary is that the secret never leaves the machine.
+- **Obfuscation, not encryption.** Placeholders make a value *look* real; the security boundary is that a rule-matched value is replaced before it leaves the machine.
 - **No masking of binary or non-string data.** Binary payloads, base64 blobs that aren't matched by a rule, and non-JSON tool outputs aren't scanned.
 - **Provider-boundary coverage depends on the runtime.** The `before_provider_request` safety net only runs for providers that emit that hook.
-- **Session files store real values** (`~/.pi/sessions/`) — manage their file permissions accordingly.
+- **Session files store real values** (by default under `~/.pi/agent/sessions/`) — manage their file permissions accordingly. `persistHistory` metadata is stored in the same Pi session JSONL.
 
 ### Known failure modes
 
-**You (the human) always see real values** — placeholders exist only in the model's view. Failures fall into two classes: **model output quality** and **protection gaps** (a secret still reaches the model).
+The normal conversation shows real values; the history viewer can display either representation for auditing. Failures fall into two classes: **model output quality** and **protection gaps** (a secret still reaches the model).
 
 **Model output quality** — the model reasons on corrupted premises:
 
@@ -55,7 +55,7 @@ Masking protects the **outbound** path only: rule-matching values become placeho
 
 Following this avoids most of the failures above:
 
-1. **Literal first — the default choice.** Know the exact value? Use a literal rule (exact match, no false positives). Regex is only for value *classes* you can't enumerate (tokens, phone numbers, ...) — and those rules must be written narrowly (see 3).
+1. **Literal first — the default choice.** Know the exact value? Use a literal fixed-string rule. It replaces every substring occurrence, so choose a sufficiently specific value. Regex is only for value *classes* you can't enumerate (tokens, phone numbers, ...) — and those rules must be written narrowly (see 3).
 2. **Never mask low-entropy values** — 4-digit codes, short passwords, common words (the loader warns; they cause contradictions and coincidental restores).
 3. **Constrain regex**: word boundaries (`\b`), lookaheads (`(?=...)`), and capture groups that replace only the secret part — never an unconstrained `key = value` pattern.
 4. **Preserve structure** where the conversation describes the value (`preserveStructure.keepPrefix` / `keepIPv4Octets`).
@@ -65,7 +65,7 @@ Following this avoids most of the failures above:
 ### Technical edges
 
 - **Literal matching is substring-based.** One root-domain rule covers all subdomains, but a short `real` can match inside unrelated text — prefer regex rules with `\b` boundaries for short or common patterns.
-- **Session-scoped only.** Placeholder mappings live only in memory for the current session; a new session means new placeholders for the same real values, by design.
+- **Session-scoped, not process-scoped.** With `persistHistory: true`, the session key is stored as Pi session metadata and restored when the same conversation is reopened, so placeholders survive Pi restarts. A genuinely new conversation receives a new key and therefore new placeholders.
 - **Already-masked text is never re-masked.** `mask()` treats a region as already masked only when it lies **entirely inside** placeholder text recorded earlier in the session (this keeps the provider-boundary fallback idempotent). A new sensitive value merely containing an old placeholder as prefix/substring is still masked in full; a value byte-identical to an existing placeholder is left as-is (vanishingly rare — placeholders are randomized per session and per value); a broad shape rule claiming a token adjacent to a masked placeholder absorbs the whole token — leak-safe either way.
 - **Deep-copy cost on large payloads.** `maskValue`/`unmaskValue` rebuild objects/arrays while recursing, so very large tool outputs or messages are copied and scanned on each boundary crossing.
 
@@ -80,7 +80,7 @@ Following this avoids most of the failures above:
 7. [Provenance: first-seen is forever](#provenance-first-seen-is-forever)
 8. [Data flow](#data-flow)
 9. [Security boundaries](#security-boundaries)
-10. [Stats panel](#stats-panel)
+10. [Stats and history](#stats-and-history)
 11. [Built-in commands](#built-in-commands)
 12. [Config field reference](#config-field-reference)
 13. [Testing rules with /masking-test](#testing-rules-with-masking-test)
@@ -124,7 +124,7 @@ Each rule has an optional `type` field:
 
 | `type` | Meaning |
 |--------|---------|
-| omitted or `"literal"` | Literal exact match: `real` is a fixed string, compared char-for-char |
+| omitted or `"literal"` | Literal fixed-string matching: every occurrence of `real` is replaced, including substring occurrences |
 | `"regex"` | Regex fuzzy match: `pattern` can hit many different real values |
 
 ### Two examples
@@ -175,7 +175,8 @@ final config = merge(global config, project config)
 |-------|-----------------|
 | `rules` | project rules first (matched first), global rules appended after |
 | `options` | project fields override global fields with the same name |
-| `enabled` | project value wins if explicitly set, otherwise falls back to global |
+| config-file `enabled` | project value wins if explicitly set, otherwise falls back to global |
+| effective enabled state | a saved `/masking-toggle` value overrides both config files until `toggle-state.json` is removed |
 
 Example: global `rules = [A, B, C]`, project `rules = [X, Y]` → merged `[X, Y, A, B, C]`.
 
@@ -183,7 +184,7 @@ Example: global `rules = [A, B, C]`, project `rules = [X, Y]` → merged `[X, Y,
 
 ## Placeholder generation
 
-**Core algorithm (shared by literal and regex rules)**: derive a deterministic byte stream from HMAC(sessionKey, real value), then do **format-preserving replacement** — the placeholder matches the real value's format exactly, so the LLM can't tell it's fake from formatting alone.
+**Core algorithm (shared by literal and regex rules)**: derive a deterministic byte stream from HMAC(sessionKey, real value), then do **format-preserving replacement**. Generic values retain character classes and separators; IPv4 addresses and recognized connection strings use specialized structural handling.
 
 | Character type | Replacement |
 |-----------------|-------------|
@@ -196,14 +197,14 @@ Example: global `rules = [A, B, C]`, project `rules = [X, Y]` → merged `[X, Y,
 
 ```
 real:        sk-prod-abc123456789
-placeholder: sk-nqpz-mwx847312654   ← prefix and format preserved
+placeholder: sk-nqpz-mwx847312654   ← sk- kept by keepPrefix; remaining shape preserved
 
 real:        api.company-internal.com
-placeholder: kpz.xm7rqn-bfwtpj.com  ← hierarchy and TLD preserved
+placeholder: kpz.xm7rqn-bfwtpj.rkt  ← dot layout and segment lengths preserved; TLD text is replaced
 
 real:        postgresql://admin:MyS3cr3tP@ssw0rd@db.company.com:5432/prod
-placeholder: postgresql://bxkzp:NqW8vxLm@kpRwqn@wn.xm7rqnj.com:5432/prod
-             ↑ scheme/port/path kept; userinfo and host replaced
+placeholder: postgresql://bxkzp:NqW8vxLm@kpRwqn@wn.xm7rqnj.rkt:5432/prod
+             ↑ scheme/port/path kept; userinfo and the entire host replaced
 
 real:        172.16.254.1
 placeholder: 233.84.19.207          ← each octet independently valid (0-255)
@@ -219,15 +220,15 @@ placeholder: 233.84.19.207          ← each octet independently valid (0-255)
 ```
 
 - `keepPrefix: true` keeps the first segment up to the first separator (`sk-prod-abc123456789` → `sk-` + randomized body); a number caps how many characters of that segment are kept. Single-segment values fall back to full randomization so the placeholder never equals the real value.
-- `keepIPv4Octets: 2` keeps the leading octets of an exact IPv4 value (`192.168.10.7` → `192.168.x.y`), recommended for private ranges where the network prefix is not the secret. At least one octet is always randomized.
-- Connection strings and domains already keep scheme/port/path and TLD respectively — this option extends the same philosophy to generic values.
+- `keepIPv4Octets: 2` keeps the leading octets of an exact IPv4 value (`192.168.10.7` → e.g. `192.168.83.214`), recommended for private ranges where the network prefix is not the secret. At least one octet is always randomized.
+- Connection strings keep their scheme, port, and path. Generic domains keep separators and segment lengths but replace the TLD text; use a manual literal placeholder when a particular replacement domain/TLD matters.
 
 **Two trigger points:**
 
 - **Literal rules**: the real value is known at config-load time, so the placeholder is generated **once** at session start (or config reload).
 - **Regex rules**: the real value isn't known until a match occurs at runtime, so the placeholder is generated **lazily on first match** and reused for subsequent matches of the same value.
 
-**Stability within a session**: the same real value always gets the same placeholder within a session. Hot reload, `/masking-reload`, and `/masking-toggle` never disturb existing mappings — only a brand-new session resets them. The regex-discovered mapping lives only in memory for the session and is never persisted to disk.
+**Stability within a session**: the same real value always gets the same placeholder within a session. Hot reload, `/masking-reload`, and `/masking-toggle` reuse the current key and dynamic map. With `persistHistory: true`, reopening that Pi conversation restores its key and rebuilds dynamic mappings and first-seen provenance by replaying the active branch locally. A brand-new conversation starts with a new key. With persistence disabled, restarting Pi cannot guarantee the previous placeholders.
 
 **Collision protection**: in rare cases (very short real values, limited character space) a generated placeholder may collide with one already in use. A "used" set (seeded with every manual placeholder and rule real value) makes the generator retry up to 10 times on collision, for literal and regex placeholders alike — each placeholder maps back to exactly one real value. Manual placeholders that still clash (two rules sharing one, or a placeholder equal to another rule's real value) trigger a load-time warning.
 
@@ -328,6 +329,8 @@ User input ───────────────────────
                       next [context] masks it again for the LLM
 ```
 
+When history persistence is enabled, the `context` hook also records only the changed string positions and masked replacements as a non-LLM custom session entry. On `session_start`, the extension restores the active branch, reuses its saved session key, and rebuilds dynamic/provenance state locally before handling another request.
+
 ---
 
 ## Provenance: first-seen is forever
@@ -360,16 +363,18 @@ The actionable checklist lives in [Known limitations and pitfalls](#rule-design-
 
 Beyond the `context` hook, masking is enforced at two more outbound boundaries by default (no config needed):
 
-- **System prompt** (`before_agent_start`): the fully assembled system prompt is masked before each turn. A rule firing here shows a one-time-per-session warning (a rule is probably matching instructions or tool schemas).
+- **System prompt** (`before_agent_start`): the fully assembled system prompt is masked before each agent run. A rule firing here shows a one-time-per-session warning (a rule is probably matching instructions or tool schemas).
 - **Provider request** (`before_provider_request`): the final request payload (`messages`, `system`, `prompt`) is deep-masked right before sending — a safety net for content injected after `context` (e.g. by another extension). Hits show a warning (once per turn max) and aren't counted in the stats panel. Re-masking is idempotent, so already-masked content passes through untouched.
 
 The `context` hook remains the primary boundary; `before_provider_request` is a defense-in-depth fallback, not a replacement — inbound unmasking for display (`message_end`) and tool execution (`tool_call`) still happens on the normalized message flow.
 
 ---
 
-## Stats panel
+## Stats and history
 
-After each AI turn, a panel below the editor shows this round's masking stats, auto-hiding after 20 seconds:
+### Stats panel
+
+After an AI response in a round where at least one value was masked, a panel below the editor shows that round's stats and auto-hides after 20 seconds:
 
 ```
 🔒 Masked 7 value(s)  ·  14:23:01
@@ -379,7 +384,37 @@ After each AI turn, a panel below the editor shows this round's masking stats, a
 
 Each rule's distinct real values are listed with preview and count (up to 4, then "+N more"); placeholders are never shown.
 
-**What's counted**: only mask events from **user messages and tool results** — never assistant-history re-masking or LLM-invented values. Each `context` event counts only newly added messages, avoiding double-counting across turns. The per-turn statistics retain the latest 30 entries; `/masking-history` is instead a full-session local replay.
+**What's counted**: only mask events from **user messages and tool results** — never assistant-history re-masking or LLM-invented values. Each `context` event counts only newly added messages, avoiding double-counting across turns.
+
+### Full-screen history replay
+
+`/masking-history` replays the complete user/assistant/tool conversation on the active Pi branch. It starts in the local-original view: the original message remains structurally unchanged, while changed spans are highlighted instead of being annotated with parentheses or brackets.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+M` or `M` | Toggle between the local-original and model-input views |
+| `C` | Toggle comparison view; wide terminals use two columns, narrow terminals stack the versions |
+| `N` / `P` | Move through replacement mappings shown in the bottom inspector |
+| `Ctrl+O` | Expand/collapse all tool outputs (collapsed output previews the first 10 lines) |
+| `Ctrl+T` | Show/hide all thinking blocks |
+| `↑` / `↓`, `PageUp` / `PageDown`, `Home` / `End` | Scroll |
+| Mouse wheel | Scroll when Pi is running in full-screen TUI mode |
+| `Esc` | Close the viewer |
+
+The newest assistant response is shown immediately but remains provisional until it is included in a subsequent model request. Only confirmed outbound snapshots are persisted. The replay represents normalized messages captured by the `context` hook; content injected only at `before_provider_request` is still masked by the safety net and reported as a warning, but it may not correspond to a stored conversation message that can be replayed.
+
+### History persistence
+
+With `options.persistHistory` enabled (the default), the extension writes two kinds of Pi custom session entries:
+
+- one 32-byte session key, used to keep generated placeholders stable when the same conversation is reopened;
+- versioned masked-text position deltas for messages confirmed at the outbound context boundary.
+
+These custom entries do not participate in LLM context. They store hashes, positions, and masked replacements rather than another copy of the original secret text; Pi already stores the real conversation in its session JSONL. Snapshot batches are signature-deduplicated, and only a changed representation is appended. On restore, the extension reads the active branch only, so sibling fork snapshots are not mixed together.
+
+Sessions created before this feature can still be opened immediately: their original messages are loaded from Pi, while messages without a verifiable historical model-input snapshot are explicitly marked unavailable. After a message crosses a new outbound boundary, its current representation becomes available and is persisted.
+
+Setting `persistHistory` to `false` stops writing new session keys and snapshots; it does not delete metadata already present in an existing Pi session, and previously stored records can still be read. A new conversation created with persistence disabled has process-local replay only, so a later restart cannot recover its exact model-input representations or guarantee the previous placeholders.
 
 ---
 
@@ -388,10 +423,12 @@ Each rule's distinct real values are listed with preview and count (up to 4, the
 | Command | Description |
 |---------|-------------|
 | `/masking-list` | Browse all rules in a full-screen, scrollable panel (↑↓ to navigate, Esc to close). Literal rules show their current placeholder, regex rules show their pattern; real values never shown |
-| `/masking-history` | Open a full-screen replay with three views: highlighted local original, highlighted model input (Ctrl+M or M), and side-by-side comparison (C). N/P cycles replacement details; Ctrl+O toggles tool output, Ctrl+T toggles thinking, and keyboard/mouse-wheel scrolling is supported |
+| `/masking-history` | Open the full-screen local/model/comparison replay for the active session branch; see [Full-screen history replay](#full-screen-history-replay) |
 | `/masking-toggle` | Toggle on/off persistently for future sessions and projects; rules in config files are not changed |
 | `/masking-reload` | Manually reload the config file (reuses the current session key and dynamic regex map, placeholders stay stable) |
-| `/masking-test <text>` | Preview how a text snippet looks after all masking rules are applied — shows the masked output (what the LLM actually sees) for 20 seconds, without affecting session state |
+| `/masking-test <text>` | Preview rule transformation in an isolated widget for 20 seconds, without changing session mappings or provenance |
+
+Earlier releases exposed `/masking-status` and `/masking-clear`. They are intentionally no longer registered: the status bar already shows whether masking is enabled, and transient panels close with `Esc` or disappear automatically.
 
 ---
 
@@ -430,6 +467,7 @@ Each rule's distinct real values are listed with preview and count (up to 4, the
 | `caseSensitive` | boolean | `true` | Case sensitivity for literal matching and for regex rules without their own `flags` |
 | `showStatusBar` | boolean | `true` | Whether to keep showing masking status in the bottom status bar |
 | `systemPromptGuidance` | boolean | `false` | Append a paragraph to the system prompt telling the LLM masked values are opaque placeholders — reduces confusion from structural claims about masked values (see [Provenance](#provenance-first-seen-is-forever)) |
+| `persistHistory` | boolean | `true` | Write masked-text differences and the session key as non-LLM Pi session metadata, allowing `/masking-history` and stable placeholders to survive restart. Turning it off stops new writes but does not delete existing metadata |
 
 ---
 
@@ -441,7 +479,7 @@ To verify that a rule works without sending anything to the LLM:
 /masking-test <text to preview>
 ```
 
-The command applies all current masking rules to the text and shows what the LLM would receive:
+The command applies all current masking rules to the text in an isolated preview and shows the resulting transformation:
 
 ```
 🧪 Masking test  ·  21:09:00
@@ -453,7 +491,9 @@ The command applies all current masking rules to the text and shows what the LLM
 
 Behaviour notes:
 
-- Runs on a **temporary isolated `Masker`** (session mappings untouched) with the **current session key**, so output matches a real turn. Requires masking to be enabled.
+- Runs on a **temporary isolated `Masker`** with the current session key. It does not mutate the live dynamic map or provenance sets.
+- It is a rule preview, not an audit of the next provider request: first-seen provenance and mappings already discovered in the live conversation are intentionally not imported into the temporary masker.
+- Requires masking to be enabled. The widget closes automatically after 20 seconds.
 
 This is the recommended way to validate new rules before deploying a config change — no need to start a full conversation.
 
@@ -467,8 +507,10 @@ This is the recommended way to validate new rules before deploying a config chan
 | `masker.ts` | Core masking engine — the `Masker` class, rule compilation, span-based mask/unmask, collision tracking for regex-discovered placeholders |
 | `placeholder-gen.ts` | Format-preserving placeholder generation (HMAC-derived byte stream, connection-string and IPv4 special cases) |
 | `config-loader.ts` | Loads, validates, and merges global + project config; fills auto placeholders; watches config paths for hot reload |
+| `history-viewer.ts` | Full-screen original/model/comparison replay with scrolling, tool expansion, thinking visibility, and replacement inspection |
+| `history-persistence.ts` | Persists the per-session key and masked-text deltas in Pi custom entries, then restores the active session branch |
 | `details.ts` | Shared per-rule/per-value stats accumulation used by the engine and the entry point |
-| `tests/` | Unit tests (`node:test`) covering the masking engine, placeholder generation, and config loading |
+| `tests/` | Unit tests (`node:test`) covering masking, placeholder generation, configuration, history rendering, and persistence |
 | `masking.config.example.json` | Ready-to-use starter config (15 rules) covering company identifiers, credentials, platform tokens, and network/contact info; edit before use |
 
 ---

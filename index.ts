@@ -64,6 +64,16 @@ import {
   mergeTranscript,
   type TranscriptEntry,
 } from "./history-viewer.ts";
+import {
+  SESSION_STATE_ENTRY,
+  SNAPSHOT_ENTRY,
+  buildMessageSnapshot,
+  restoreHistory,
+  type MessageSnapshot,
+  type PersistedSessionState,
+  type SessionEntryLike,
+  type SnapshotBatch,
+} from "./history-persistence.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -177,7 +187,7 @@ export default async function (pi: ExtensionAPI) {
   let config: MaskingConfig = {
     enabled: false,
     rules: [],
-    options: { caseSensitive: true, showStatusBar: true, systemPromptGuidance: false },
+    options: { caseSensitive: true, showStatusBar: true, systemPromptGuidance: false, persistHistory: true },
   };
   let masker = new Masker([], true);
   let stopWatching: (() => void) | null = null;
@@ -203,12 +213,16 @@ export default async function (pi: ExtensionAPI) {
   // A local-only replay of messages that crossed the model boundary. Unlike
   // the stats history above, this retains the original and masked forms.
   let transcript: TranscriptEntry[] = [];
+  let snapshotSignatures = new Map<string, string>();
+  let requestSequence = 0;
+  let sessionStatePersisted = false;
 
   // One-time-per-session warning flags (reset on session_start)
   let fallbackNotifiedThisTurn = false;
   let systemPromptWarned = false;
   let dynamicMapWarned = false;
   let inventedMapWarned = false;
+  let persistenceWarned = false;
   const MAX_HISTORY = 30;
 
   // Per-round mask stats.
@@ -289,20 +303,72 @@ export default async function (pi: ExtensionAPI) {
     currentRoundAcc.clear();
   }
 
+  /** Persist only new/changed per-message model-input differences. */
+  function persistSnapshots(
+    ctx: ExtensionContext,
+    originals: Record<string, unknown>[],
+    masked: Record<string, unknown>[],
+  ) {
+    if (!config.options.persistHistory) return;
+    requestSequence++;
+    const changed: MessageSnapshot[] = [];
+    for (let index = 0; index < originals.length; index++) {
+      const original = originals[index]!;
+      const snapshot = buildMessageSnapshot(original, masked[index] ?? original, index);
+      if (snapshotSignatures.get(snapshot.messageKey) !== snapshot.signature) changed.push(snapshot);
+    }
+    if (changed.length === 0) return;
+
+    const batch: SnapshotBatch = {
+      version: 1,
+      requestSequence,
+      capturedAt: Date.now(),
+      messages: changed,
+    };
+    try {
+      pi.appendEntry(SNAPSHOT_ENTRY, batch);
+      for (const snapshot of changed) snapshotSignatures.set(snapshot.messageKey, snapshot.signature);
+    } catch (err) {
+      if (!persistenceWarned) {
+        persistenceWarned = true;
+        ctx.ui.notify(`⚠️ Failed to persist masking history: ${(err as Error).message}`, "warning");
+      }
+    }
+  }
+
+  function ensureSessionStatePersisted(ctx: ExtensionContext) {
+    if (!config.options.persistHistory || sessionStatePersisted) return;
+    const state: PersistedSessionState = { version: 1, sessionKey: sessionKey.toString("base64") };
+    try {
+      pi.appendEntry(SESSION_STATE_ENTRY, state);
+      sessionStatePersisted = true;
+    } catch (err) {
+      if (!persistenceWarned) {
+        persistenceWarned = true;
+        ctx.ui.notify(`⚠️ Failed to persist masking session state: ${(err as Error).message}`, "warning");
+      }
+    }
+  }
+
   // ── Session lifecycle ─────────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
     stopWatching?.();
     history.length = 0;
-    transcript = [];
     lastContextLength = 0;
     resetRoundCounters();
 
-    // Generate a fresh key and clear the dynamic map on every new session;
-    // hot reload / manual reload / toggle all reuse the same sessionKey and
-    // dynamicPlaceholderMap reference so mappings (including dynamically
-    // generated regex placeholders) stay stable within a session.
-    sessionKey = generateSessionKey();
+    const branchEntries = ctx.sessionManager.getBranch() as unknown as SessionEntryLike[];
+    const restored = restoreHistory(branchEntries);
+    transcript = restored.transcript;
+    snapshotSignatures = restored.signatures;
+    requestSequence = restored.requestSequence;
+    sessionStatePersisted = restored.sessionKey !== undefined;
+
+    // A resumed Pi session reuses its persisted key, keeping placeholders
+    // stable across process restarts. Sessions predating persistence get a new
+    // key and clearly marked missing snapshots for their existing messages.
+    sessionKey = restored.sessionKey ?? generateSessionKey();
     dynamicPlaceholderMap = new Map();
     llmInventedValues = new Set();
     protectedValues = new Set();
@@ -310,10 +376,21 @@ export default async function (pi: ExtensionAPI) {
     systemPromptWarned = false;
     dynamicMapWarned = false;
     inventedMapWarned = false;
+    persistenceWarned = false;
 
     const loaded = await loadConfig(ctx.cwd, sessionKey);
     const persisted = await applyPersistentToggle(loaded.config);
     const compileWarnings = rebuild(persisted.config);
+
+    // Replay the full active branch locally to rebuild dynamic mappings and
+    // first-seen provenance using the restored session key. Nothing from this
+    // pass is counted or sent to the model.
+    for (const message of restored.messages) {
+      const role = typeof message.role === "string" ? message.role : undefined;
+      masker.maskValue(message, maskOptionsForRole(role));
+    }
+
+    ensureSessionStatePersisted(ctx);
     notifyWarnings(ctx, [...loaded.warnings, ...persisted.warnings, ...compileWarnings]);
 
     stopWatching = watchConfigs(ctx.cwd, async () => {
@@ -321,6 +398,7 @@ export default async function (pi: ExtensionAPI) {
       const reloaded = await loadConfig(ctx.cwd, sessionKey);
       const persistedReload = await applyPersistentToggle(reloaded.config);
       const reloadWarnings = rebuild(persistedReload.config);
+      ensureSessionStatePersisted(ctx);
       resetRoundCounters();
       ctx.ui.notify(
         `🔒 Masking config reloaded (${persistedReload.config.rules.length} rule(s))`,
@@ -348,11 +426,13 @@ export default async function (pi: ExtensionAPI) {
     // enabled, the same entries are replaced below with the actual masked form
     // sent through this boundary.
     if (!config.enabled || config.rules.length === 0) {
+      const originals = messages as unknown as Record<string, unknown>[];
       transcript = mergeTranscript(
         transcript,
-        messages as unknown as Record<string, unknown>[],
-        messages as unknown as Record<string, unknown>[],
+        originals,
+        originals,
       );
+      persistSnapshots(ctx, originals, originals);
       return;
     }
 
@@ -397,6 +477,11 @@ export default async function (pi: ExtensionAPI) {
     );
     transcript = mergeTranscript(
       transcript,
+      messages as unknown as Record<string, unknown>[],
+      maskedMessages as Record<string, unknown>[],
+    );
+    persistSnapshots(
+      ctx,
       messages as unknown as Record<string, unknown>[],
       maskedMessages as Record<string, unknown>[],
     );
@@ -648,6 +733,7 @@ export default async function (pi: ExtensionAPI) {
       const loaded = await loadConfig(ctx.cwd, sessionKey);
       const persisted = await applyPersistentToggle(loaded.config);
       const compileWarnings = rebuild(persisted.config);
+      ensureSessionStatePersisted(ctx);
       resetRoundCounters();
       ctx.ui.notify(
         `Config reloaded: ${persisted.config.rules.length} rule(s), masking ${persisted.config.enabled ? "enabled" : "disabled"}`,

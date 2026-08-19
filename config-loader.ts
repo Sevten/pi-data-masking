@@ -26,6 +26,9 @@ export interface MaskingOptions {
    *  LLM that masked values are opaque placeholders and must not be inferred
    *  from or transformed (default false; see docs/design-proposal.md D6). */
   systemPromptGuidance: boolean;
+  /** Persist model-input history snapshots and the session key in the Pi
+   *  session so /masking-history survives restart (default true). */
+  persistHistory: boolean;
 }
 
 export interface MaskingConfig {
@@ -86,6 +89,7 @@ function defaultConfig(): MaskingConfig {
       caseSensitive: true,
       showStatusBar: true,
       systemPromptGuidance: false,
+      persistHistory: true,
     },
   };
 }
