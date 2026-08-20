@@ -16,12 +16,12 @@
  *    change the representation of its own messages. Only user messages and
  *    tool results register values (protectedValues); assistant history is
  *    re-masked only for already-registered values, so restored echoes never
- *    leak back to the LLM. Stats count only user/tool messages.
+ *    leak back to the LLM.
  *
  * Session key:
  *  - A random sessionKey is generated on session_start
- *  - It stays the same for the whole session (including hot reloads,
- *    /masking-reload, /masking-toggle)
+ *  - It stays the same for the whole session (including config hot reloads
+ *    and /masking-toggle)
  *  - This guarantees the same real value always maps to the same placeholder
  *    within a session
  *
@@ -30,34 +30,21 @@
  *    masker.ts generates their placeholders at runtime and records them in
  *    dynamicPlaceholderMap.
  *  - dynamicPlaceholderMap shares its lifecycle with sessionKey: created
- *    (cleared) only on session_start; every other path (hot reload,
- *    /masking-reload, /masking-toggle) reuses the same Map reference when
+ *    (cleared) only on session_start; every other path (config hot reload and
+ *    /masking-toggle) reuses the same Map reference when
  *    constructing a new Masker, so dynamically generated placeholders stay
  *    stable across rule changes or toggling — only a brand-new session
  *    resets them.
  *
- * Stats:
- *  - Only mask (outbound) counts are tracked — i.e. how many sensitive
- *    values were intercepted before reaching the LLM
- *  - Each context event counts only newly added messages, to avoid
- *    double-counting history across multiple turns
- *  - Covers both user-sent messages and tool results sent back to the LLM
- *  - A single regex rule may hit several distinct real values; stats are
- *    grouped by rule, then broken down per distinct value within the group
- *
- * Stats panel: shown after each AI turn, listing the rules triggered this
- * round and their counts:
- *   description  preview×N  preview×N  ...
  */
 
 import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, SelectList, Spacer, Text, type SelectItem } from "@earendil-works/pi-tui";
-import { Masker, isRegexRule, makePreview } from "./masker.ts";
-import type { MaskDetail, DetailValue, DynamicPlaceholderMap, MaskOptions } from "./masker.ts";
+import { Masker, isRegexRule } from "./masker.ts";
+import type { DynamicPlaceholderMap, MaskOptions } from "./masker.ts";
 import { loadConfig, loadPersistentToggle, savePersistentToggle, watchConfigs } from "./config-loader.ts";
 import type { MaskingConfig } from "./config-loader.ts";
 import { generateSessionKey } from "./placeholder-gen.ts";
-import { mergeDetailInto, finalizeDetails, type DetailAccumulator } from "./details.ts";
 import {
   createHistoryViewer,
   mergePendingAssistant,
@@ -78,16 +65,6 @@ import {
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 
-
-interface HistoryEntry {
-  time: string;
-  masked: number;
-  details: MaskDetail[];
-}
-
-// Max number of distinct values shown per rule in the panel, to avoid the
-// panel ballooning when a rule hits many different values.
-const MAX_DISPLAY_VALUES = 4;
 
 // Warn once per session when the dynamic placeholder map (regex-discovered
 // values) grows past this many entries — it only grows within a session.
@@ -115,39 +92,6 @@ function unmaskMessage<T>(
 ): { message: T } {
   const r = masker.unmaskValue(message);
   return { message: r.value as T };
-}
-
-/** Format all distinct real values hit by a rule as "preview***×N  preview***×N  ..." */
-function formatDetailValues(values: DetailValue[]): string {
-  const shown = values.slice(0, MAX_DISPLAY_VALUES);
-  const parts = shown.map((v) => `${makePreview(v.real)}×${v.occurrences}`);
-  if (values.length > MAX_DISPLAY_VALUES) {
-    parts.push(`...+${values.length - MAX_DISPLAY_VALUES} more`);
-  }
-  return parts.join("  ");
-}
-
-/**
- * Build the stats panel: which rules fired, and the preview + count for
- * each distinct real value. Placeholders are never shown — they're an
- * implementation detail; what the user needs to confirm is which real
- * values were intercepted, not what they became. A single regex rule
- * hitting several distinct values shows each one separately (up to 4).
- */
-function buildPanelLines(
-  count: number,
-  details: MaskDetail[],
-  time: string
-): string[] {
-  if (count === 0) return [];
-
-  const header = `🔒 Masked ${count} value(s)  ·  ${time}`;
-  const rows = details.map((d) => {
-    const label = (d.description ?? d.ruleId).padEnd(20);
-    return `  ${label}  ${formatDetailValues(d.values)}`;
-  });
-
-  return [header, ...rows];
 }
 
 function statusLabel(cfg: MaskingConfig): string {
@@ -191,11 +135,10 @@ export default async function (pi: ExtensionAPI) {
   };
   let masker = new Masker([], true);
   let stopWatching: (() => void) | null = null;
-  let reportTimer: ReturnType<typeof setTimeout> | null = null;
   let testTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Session key: generated on session_start, stays constant for the whole
-  // session (including hot reloads). Pre-initialized to a valid value to
+  // session (including config hot reloads). Pre-initialized to a valid value to
   // avoid a null pointer if another event fires before session_start.
   let sessionKey: Buffer = generateSessionKey();
 
@@ -209,9 +152,7 @@ export default async function (pi: ExtensionAPI) {
   let llmInventedValues: Set<string> = new Set();
   let protectedValues: Set<string> = new Set();
 
-  const history: HistoryEntry[] = [];
-  // A local-only replay of messages that crossed the model boundary. Unlike
-  // the stats history above, this retains the original and masked forms.
+  // A local-only replay of messages that crossed the model boundary.
   let transcript: TranscriptEntry[] = [];
   let snapshotSignatures = new Map<string, string>();
   let requestSequence = 0;
@@ -223,15 +164,6 @@ export default async function (pi: ExtensionAPI) {
   let dynamicMapWarned = false;
   let inventedMapWarned = false;
   let persistenceWarned = false;
-  const MAX_HISTORY = 30;
-
-  // Per-round mask stats.
-  // lastContextLength: number of messages already processed, used by each
-  // context event to find newly added messages and avoid double-counting
-  // history across turns. Reset only on session_start.
-  let lastContextLength = 0;
-  let currentRoundMaskCount = 0;
-  const currentRoundAcc = new Map<string, DetailAccumulator>();
 
   // ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -282,25 +214,6 @@ export default async function (pi: ExtensionAPI) {
   function updateStatus(ctx: ExtensionContext) {
     if (!config.options.showStatusBar) return;
     ctx.ui.setStatus("masking", statusLabel(config));
-  }
-
-  function showPanel(ctx: ExtensionContext, lines: string[]) {
-    if (lines.length === 0) return;
-    ctx.ui.setWidget("masking-report", lines, { placement: "belowEditor" });
-    if (reportTimer) clearTimeout(reportTimer);
-    reportTimer = setTimeout(() => {
-      ctx.ui.setWidget("masking-report", undefined);
-    }, 20_000);
-  }
-
-  function pushHistory(entry: HistoryEntry) {
-    history.unshift(entry);
-    if (history.length > MAX_HISTORY) history.pop();
-  }
-
-  function resetRoundCounters() {
-    currentRoundMaskCount = 0;
-    currentRoundAcc.clear();
   }
 
   /** Persist only new/changed per-message model-input differences. */
@@ -354,10 +267,6 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     stopWatching?.();
-    history.length = 0;
-    lastContextLength = 0;
-    resetRoundCounters();
-
     const branchEntries = ctx.sessionManager.getBranch() as unknown as SessionEntryLike[];
     const restored = restoreHistory(branchEntries);
     transcript = restored.transcript;
@@ -399,7 +308,6 @@ export default async function (pi: ExtensionAPI) {
       const persistedReload = await applyPersistentToggle(reloaded.config);
       const reloadWarnings = rebuild(persistedReload.config);
       ensureSessionStatePersisted(ctx);
-      resetRoundCounters();
       ctx.ui.notify(
         `🔒 Masking config reloaded (${persistedReload.config.rules.length} rule(s))`,
         "info"
@@ -414,7 +322,6 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     stopWatching?.();
     stopWatching = null;
-    if (reportTimer) clearTimeout(reportTimer);
     if (testTimer) clearTimeout(testTimer);
   });
 
@@ -436,24 +343,11 @@ export default async function (pi: ExtensionAPI) {
       return;
     }
 
-    // Only count newly added messages: the LLM API resends the full history
-    // on every request, so counting all messages would double-count history
-    // across turns.
-    const newMessages = messages.slice(lastContextLength);
-    lastContextLength = messages.length;
-
-    for (const msg of newMessages) {
-      const role = (msg as { role?: string }).role;
-      const isAssistant = role === "assistant";
-      const { count, details } = masker.maskValue(msg, maskOptionsForRole(role));
-      // Only user-sent messages and tool results count toward the stats:
-      // assistant-history re-masking is provenance bookkeeping, and
-      // LLM-invented values are never registered or counted.
-      if (!isAssistant) {
-        currentRoundMaskCount += count;
-        details.forEach((d) => mergeDetailInto(currentRoundAcc, d));
-      }
-    }
+    // Mask everything (including history) before returning to the LLM, so
+    // it only ever sees placeholders for protected values.
+    const maskedMessages = messages.map((msg) =>
+      masker.maskValue(msg, maskOptionsForRole((msg as { role?: string }).role)).value
+    );
 
     if (!dynamicMapWarned && dynamicPlaceholderMap.size >= DYNAMIC_MAP_WARN_THRESHOLD) {
       dynamicMapWarned = true;
@@ -470,11 +364,6 @@ export default async function (pi: ExtensionAPI) {
       );
     }
 
-    // Mask everything (including history) before returning to the LLM, so
-    // it only ever sees placeholders for protected values.
-    const maskedMessages = messages.map((msg) =>
-      masker.maskValue(msg, maskOptionsForRole((msg as { role?: string }).role)).value
-    );
     transcript = mergeTranscript(
       transcript,
       messages as unknown as Record<string, unknown>[],
@@ -514,15 +403,6 @@ export default async function (pi: ExtensionAPI) {
       maskedForTranscript as Record<string, unknown>,
     );
 
-    // Show this round's mask stats panel
-    if (currentRoundMaskCount > 0) {
-      const time = nowTime();
-      const details = finalizeDetails(currentRoundAcc);
-      pushHistory({ time, masked: currentRoundMaskCount, details });
-      showPanel(ctx, buildPanelLines(currentRoundMaskCount, details, time));
-      resetRoundCounters();
-    }
-
     return { message: message as typeof event.message };
   });
 
@@ -539,7 +419,6 @@ export default async function (pi: ExtensionAPI) {
     for (const key of Object.keys(unmasked)) {
       (event.input as Record<string, unknown>)[key] = unmasked[key];
     }
-    // No extra notification needed — mask stats are already shown in the message_end panel
   });
 
   // ── Hook 4: turn_start — reset the per-turn fallback notification flag ────
@@ -615,13 +494,6 @@ export default async function (pi: ExtensionAPI) {
     }
 
     return payload;
-  });
-
-  // ── Hook 7: session_compact — reset the history pointer for sane stats ─────
-
-  pi.on("session_compact", async () => {
-    lastContextLength = 0;
-    resetRoundCounters();
   });
 
   // ── Command: /masking-list ───────────────────────────────────────────────
@@ -714,32 +586,8 @@ export default async function (pi: ExtensionAPI) {
       }
       config = { ...config, enabled };
       masker = buildMasker(enabled ? config.rules : []);
-      // Rule set changed — reset stats; keep lastContextLength so messages
-      // sent while disabled are counted exactly once on re-enable.
-      resetRoundCounters();
       ctx.ui.notify(`Data masking ${enabled ? "enabled" : "disabled"} (saved for future sessions)`, "info");
       notifyWarnings(ctx, masker.warnings);
-      updateStatus(ctx);
-    },
-  });
-
-  // ── Command: /masking-reload ──────────────────────────────────────────────
-
-  pi.registerCommand("masking-reload", {
-    description: "Manually reload the masking config file",
-    handler: async (_args, ctx) => {
-      // Reuse the current session's sessionKey and dynamicPlaceholderMap so
-      // placeholder mappings (including dynamic regex ones) stay stable
-      const loaded = await loadConfig(ctx.cwd, sessionKey);
-      const persisted = await applyPersistentToggle(loaded.config);
-      const compileWarnings = rebuild(persisted.config);
-      ensureSessionStatePersisted(ctx);
-      resetRoundCounters();
-      ctx.ui.notify(
-        `Config reloaded: ${persisted.config.rules.length} rule(s), masking ${persisted.config.enabled ? "enabled" : "disabled"}`,
-        "info"
-      );
-      notifyWarnings(ctx, [...loaded.warnings, ...persisted.warnings, ...compileWarnings]);
       updateStatus(ctx);
     },
   });

@@ -80,7 +80,7 @@ Following this avoids most of the failures above:
 7. [Provenance: first-seen is forever](#provenance-first-seen-is-forever)
 8. [Data flow](#data-flow)
 9. [Security boundaries](#security-boundaries)
-10. [Stats and history](#stats-and-history)
+10. [History viewer](#history-viewer)
 11. [Built-in commands](#built-in-commands)
 12. [Config field reference](#config-field-reference)
 13. [Testing rules with /masking-test](#testing-rules-with-masking-test)
@@ -118,7 +118,7 @@ Config changes **hot-reload** automatically — no restart needed. Config files 
 
 The package template lives inside the installed npm package at `~/.pi/agent/npm/node_modules/@sevten/pi-data-masking/masking.config.example.json`. Treat that as read-only package content; put your edited config in one of the paths above.
 
-`/masking-toggle` stores its user-level on/off choice separately in `~/.pi/agent/pi-data-masking/toggle-state.json`. This override applies to new sessions and all projects, while leaving rule files unchanged. To return to the `enabled` value from the config files, delete that state file and run `/masking-reload` (or restart Pi).
+`/masking-toggle` stores its user-level on/off choice separately in `~/.pi/agent/pi-data-masking/toggle-state.json`. This override applies to new sessions and all projects, while leaving rule files unchanged. To return to the `enabled` value from the config files, delete that state file and restart Pi.
 
 Each rule has an optional `type` field:
 
@@ -225,10 +225,10 @@ placeholder: 233.84.19.207          ← each octet independently valid (0-255)
 
 **Two trigger points:**
 
-- **Literal rules**: the real value is known at config-load time, so the placeholder is generated **once** at session start (or config reload).
+- **Literal rules**: the real value is known at config-load time, so the placeholder is generated **once** at session start (and refreshed automatically after a config change).
 - **Regex rules**: the real value isn't known until a match occurs at runtime, so the placeholder is generated **lazily on first match** and reused for subsequent matches of the same value.
 
-**Stability within a session**: the same real value always gets the same placeholder within a session. Hot reload, `/masking-reload`, and `/masking-toggle` reuse the current key and dynamic map. With `persistHistory: true`, reopening that Pi conversation restores its key and rebuilds dynamic mappings and first-seen provenance by replaying the active branch locally. A brand-new conversation starts with a new key. With persistence disabled, restarting Pi cannot guarantee the previous placeholders.
+**Stability within a session**: the same real value always gets the same placeholder within a session. Automatic config refreshes and `/masking-toggle` reuse the current key and dynamic map. With `persistHistory: true`, reopening that Pi conversation restores its key and rebuilds dynamic mappings and first-seen provenance by replaying the active branch locally. A brand-new conversation starts with a new key. With persistence disabled, restarting Pi cannot guarantee the previous placeholders.
 
 **Collision protection**: in rare cases (very short real values, limited character space) a generated placeholder may collide with one already in use. A "used" set (seeded with every manual placeholder and rule real value) makes the generator retry up to 10 times on collision, for literal and regex placeholders alike — each placeholder maps back to exactly one real value. Manual placeholders that still clash (two rules sharing one, or a placeholder equal to another rule's real value) trigger a load-time warning.
 
@@ -321,7 +321,7 @@ User input ───────────────────────
               ▼                               ▼
  conversation (real values)          tool runs with real arguments
  user sees real values                       │
- stats panel shown                          ▼
+ user sees real values                     ▼
                               external API response (real values)
                                               │
                                               ▼
@@ -344,7 +344,7 @@ Masking decisions are made per value, based on where the value **first appeared*
 Consequences to be aware of:
 
 - **Placeholders are deterministic** (`HMAC(sessionKey, real)`), so the same real value always maps to the same placeholder — user view and LLM view stay internally consistent, and round-trips (user asks → masked → LLM answers → unmasked) restore correctly.
-- **Stats count only user/tool-side masks.** Assistant-history re-masking is provenance bookkeeping and LLM-invented values are never counted, so the panel reflects only genuinely intercepted input.
+- **Audit from the history viewer.** `/masking-history` highlights protected user/tool-side values and restored assistant echoes without adding an automatic panel to the main workspace.
 - **Accepted trade-off**: if the LLM happens to output the exact string you later send, your message reaches the provider unmasked — negligible for high-entropy secrets; low-entropy values shouldn't be masked at all (see below).
 
 ### Rule design: mask only high-entropy, semantically transparent values
@@ -364,27 +364,13 @@ The actionable checklist lives in [Known limitations and pitfalls](#rule-design-
 Beyond the `context` hook, masking is enforced at two more outbound boundaries by default (no config needed):
 
 - **System prompt** (`before_agent_start`): the fully assembled system prompt is masked before each agent run. A rule firing here shows a one-time-per-session warning (a rule is probably matching instructions or tool schemas).
-- **Provider request** (`before_provider_request`): the final request payload (`messages`, `system`, `prompt`) is deep-masked right before sending — a safety net for content injected after `context` (e.g. by another extension). Hits show a warning (once per turn max) and aren't counted in the stats panel. Re-masking is idempotent, so already-masked content passes through untouched.
+- **Provider request** (`before_provider_request`): the final request payload (`messages`, `system`, `prompt`) is deep-masked right before sending — a safety net for content injected after `context` (e.g. by another extension). Hits show a warning at most once per turn. Re-masking is idempotent, so already-masked content passes through untouched.
 
 The `context` hook remains the primary boundary; `before_provider_request` is a defense-in-depth fallback, not a replacement — inbound unmasking for display (`message_end`) and tool execution (`tool_call`) still happens on the normalized message flow.
 
 ---
 
-## Stats and history
-
-### Stats panel
-
-After an AI response in a round where at least one value was masked, a panel below the editor shows that round's stats and auto-hides after 20 seconds:
-
-```
-🔒 Masked 7 value(s)  ·  14:23:01
-  Production API domain   api.c***×2
-  Any IPv4 address        10.4***×3  192.1***×2
-```
-
-Each rule's distinct real values are listed with preview and count (up to 4, then "+N more"); placeholders are never shown.
-
-**What's counted**: only mask events from **user messages and tool results** — never assistant-history re-masking or LLM-invented values. Each `context` event counts only newly added messages, avoiding double-counting across turns.
+## History viewer
 
 ### Full-screen history replay
 
@@ -425,10 +411,9 @@ Setting `persistHistory` to `false` stops writing new session keys and snapshots
 | `/masking-list` | Browse all rules in a full-screen, scrollable panel (↑↓ to navigate, Esc to close). Literal rules show their current placeholder, regex rules show their pattern; real values never shown |
 | `/masking-history` | Open the full-screen local/model/comparison replay for the active session branch; see [Full-screen history replay](#full-screen-history-replay) |
 | `/masking-toggle` | Toggle on/off persistently for future sessions and projects; rules in config files are not changed |
-| `/masking-reload` | Manually reload the config file (reuses the current session key and dynamic regex map, placeholders stay stable) |
 | `/masking-test <text>` | Preview rule transformation in an isolated widget for 20 seconds, without changing session mappings or provenance |
 
-Earlier releases exposed `/masking-status` and `/masking-clear`. They are intentionally no longer registered: the status bar already shows whether masking is enabled, and transient panels close with `Esc` or disappear automatically.
+Earlier releases exposed `/masking-status`, `/masking-clear`, and an automatic per-round statistics panel. They are intentionally no longer present: the status bar shows whether masking is enabled, `/masking-history` provides detailed auditing, full-screen views close with `Esc`, and `/masking-test` disappears automatically.
 
 ---
 
@@ -503,13 +488,13 @@ This is the recommended way to validate new rules before deploying a config chan
 
 | File | Purpose |
 |------|---------|
-| `index.ts` | Extension entry point: registers the `context` / `message_end` / `tool_call` / `before_agent_start` / `before_provider_request` hooks, session lifecycle, stats panel, and all `/masking-*` commands |
+| `index.ts` | Extension entry point: registers the `context` / `message_end` / `tool_call` / `before_agent_start` / `before_provider_request` hooks, session lifecycle, status bar, and all `/masking-*` commands |
 | `masker.ts` | Core masking engine — the `Masker` class, rule compilation, span-based mask/unmask, collision tracking for regex-discovered placeholders |
 | `placeholder-gen.ts` | Format-preserving placeholder generation (HMAC-derived byte stream, connection-string and IPv4 special cases) |
 | `config-loader.ts` | Loads, validates, and merges global + project config; fills auto placeholders; watches config paths for hot reload |
 | `history-viewer.ts` | Full-screen original/model/comparison replay with scrolling, tool expansion, thinking visibility, and replacement inspection |
 | `history-persistence.ts` | Persists the per-session key and masked-text deltas in Pi custom entries, then restores the active session branch |
-| `details.ts` | Shared per-rule/per-value stats accumulation used by the engine and the entry point |
+| `details.ts` | Shared per-rule/per-value match-detail accumulation used by the masking engine |
 | `tests/` | Unit tests (`node:test`) covering masking, placeholder generation, configuration, history rendering, and persistence |
 | `masking.config.example.json` | Ready-to-use starter config (15 rules) covering company identifiers, credentials, platform tokens, and network/contact info; edit before use |
 
