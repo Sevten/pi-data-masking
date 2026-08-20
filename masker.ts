@@ -53,7 +53,7 @@
  *    no longer collides (bounded retries; falls back to accepting the
  *    result with a warning).
  *
- * Provenance (first-seen is forever, per docs/design-proposal.md D1/O1):
+ * Provenance (first-seen is forever):
  *  - The caller owns two session-scoped sets alongside dynamicMap:
  *      llmInventedValues: values first seen in LLM output. They are never
  *        masked for the whole session — the LLM already knows them, and

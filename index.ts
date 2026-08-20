@@ -10,7 +10,7 @@
  *  3. tool_call event   — pre-execution unmasking: restore tool arguments in
  *                          place so tools run with real values
  *
- * Provenance (first-seen is forever, see docs/design-proposal.md D1/O1):
+ * Provenance (first-seen is forever):
  *  - Values first seen in LLM output are never masked for the session
  *    (llmInventedValues): the LLM already knows them, and masking them would
  *    change the representation of its own messages. Only user messages and
@@ -72,7 +72,7 @@ const DYNAMIC_MAP_WARN_THRESHOLD = 5000;
 
 // System-prompt guidance paragraph (options.systemPromptGuidance, default
 // off): appended after the masked system prompt to reduce the chance the LLM
-// treats placeholder appearance as meaningful (docs/design-proposal.md D6).
+// treats placeholder appearance as meaningful.
 const SYSTEM_PROMPT_GUIDANCE =
   "[System note: some values in this conversation are masked placeholders. " +
   "Treat them as opaque tokens: never infer their original values from their " +

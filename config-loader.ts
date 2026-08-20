@@ -24,7 +24,7 @@ export interface MaskingOptions {
   showStatusBar: boolean;
   /** Whether to append a guidance paragraph to the system prompt telling the
    *  LLM that masked values are opaque placeholders and must not be inferred
-   *  from or transformed (default false; see docs/design-proposal.md D6). */
+   *  from or transformed (default false). */
   systemPromptGuidance: boolean;
   /** Persist model-input history snapshots and the session key in the Pi
    *  session so /masking-history survives restart (default true). */
