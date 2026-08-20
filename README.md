@@ -310,3 +310,5 @@ npm test
 ```
 
 CI runs the type check and test suite on pushes and pull requests.
+
+See [CHANGELOG.md](CHANGELOG.md) for the version history.
