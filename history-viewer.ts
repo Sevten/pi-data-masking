@@ -373,7 +373,7 @@ function addToolCard(
 function addAssistant(
   container: Container,
   entry: TranscriptEntry,
-  toolResults: Map<string, TranscriptEntry>,
+  toolResults: ReadonlyMap<string, TranscriptEntry>,
   expanded: boolean,
   thinkingVisible: boolean,
   theme: HistoryTheme,
@@ -415,8 +415,9 @@ function addAssistant(
   flushThinking();
 }
 
-function renderTranscript(
-  entries: readonly TranscriptEntry[],
+function renderTranscriptEntry(
+  entry: TranscriptEntry,
+  toolResults: ReadonlyMap<string, TranscriptEntry>,
   expanded: boolean,
   thinkingVisible: boolean,
   theme: HistoryTheme,
@@ -424,26 +425,22 @@ function renderTranscript(
   selected: Replacement | undefined,
 ): Component {
   const container = new Container();
-  const toolResults = new Map(entries.filter((entry) => entry.original.role === "toolResult").map((entry) => [entry.key, entry]));
-  for (const entry of entries) {
-    const role = entry.original.role;
-    if (role === "toolResult") continue; // rendered beneath its tool call
-    container.addChild(new Spacer(1));
-    if (role === "user") {
-      const box = new Box(0, 0, (text) => theme.bg("userMessageBg", text));
-      box.addChild(new Text(theme.fg("muted", "You"), 1, 0));
-      addMessageText(box, contentText(entry.original.content), contentText(entry.masked.content), theme, "user", mode, selected);
-      container.addChild(box);
-    } else if (role === "assistant") {
-      container.addChild(new Text(theme.fg("accent", "Assistant"), 1, 0));
-      addAssistant(container, entry, toolResults, expanded, thinkingVisible, theme, mode, selected);
-      if (entry.pending) container.addChild(new Text(theme.fg("dim", "Not yet included in a subsequent model request."), 1, 0));
-    } else {
-      container.addChild(new Text(theme.fg("muted", `Unsupported message type: ${String(role)}`), 1, 0));
-    }
-    if (entry.snapshotMissing) {
-      container.addChild(new Text(theme.fg("warning", "Historical model-input snapshot is unavailable for this message."), 1, 0));
-    }
+  const role = entry.original.role;
+  container.addChild(new Spacer(1));
+  if (role === "user") {
+    const box = new Box(0, 0, (text) => theme.bg("userMessageBg", text));
+    box.addChild(new Text(theme.fg("muted", "You"), 1, 0));
+    addMessageText(box, contentText(entry.original.content), contentText(entry.masked.content), theme, "user", mode, selected);
+    container.addChild(box);
+  } else if (role === "assistant") {
+    container.addChild(new Text(theme.fg("accent", "Assistant"), 1, 0));
+    addAssistant(container, entry, toolResults, expanded, thinkingVisible, theme, mode, selected);
+    if (entry.pending) container.addChild(new Text(theme.fg("dim", "Not yet included in a subsequent model request."), 1, 0));
+  } else {
+    container.addChild(new Text(theme.fg("muted", `Unsupported message type: ${String(role)}`), 1, 0));
+  }
+  if (entry.snapshotMissing) {
+    container.addChild(new Text(theme.fg("warning", "Historical model-input snapshot is unavailable for this message."), 1, 0));
   }
   return container;
 }
@@ -462,21 +459,20 @@ export function createHistoryViewer(
   entries: readonly TranscriptEntry[],
   done: () => void,
 ): Component {
-  let scrollOffset = 0;
   let toolsExpanded = false;
   let thinkingVisible = true;
   let viewMode: ViewMode = "original";
   let modeBeforeCompare: Exclude<ViewMode, "compare"> = "original";
-  let lastBodyLines: string[] = [];
   let replacementIndex = 0;
-  let bodyCache: {
-    width: number;
-    toolsExpanded: boolean;
-    thinkingVisible: boolean;
-    viewMode: ViewMode;
-    replacementIndex: number;
-    lines: string[];
-  } | undefined;
+  let lastWidth = 80;
+  let cacheVersion = 0;
+  let position = { entry: 0, line: 0 };
+
+  const toolResults = new Map(entries
+    .filter((entry) => entry.original.role === "toolResult")
+    .map((entry) => [entry.key, entry]));
+  const displayEntries = entries.filter((entry) => entry.original.role !== "toolResult");
+  const entryCache = new Map<number, { width: number; version: number; lines: string[] }>();
 
   const replacementMap = new Map<string, Replacement>();
   for (const entry of entries) collectReplacements(entry.original, entry.masked, replacementMap);
@@ -484,14 +480,65 @@ export function createHistoryViewer(
   const selectedReplacement = () => replacements[replacementIndex];
 
   const pageSize = () => Math.max(3, tui.terminal.rows - 4);
-  const scroll = (amount: number) => {
-    scrollOffset = Math.max(0, Math.min(Math.max(0, lastBodyLines.length - pageSize()), scrollOffset + amount));
+  const entryLines = (index: number, width: number): string[] => {
+    const cached = entryCache.get(index);
+    if (cached?.width === width && cached.version === cacheVersion) return cached.lines;
+    const entry = displayEntries[index];
+    if (!entry) return [];
+    const lines = renderTranscriptEntry(
+      entry,
+      toolResults,
+      toolsExpanded,
+      thinkingVisible,
+      theme,
+      viewMode,
+      selectedReplacement(),
+    ).render(width);
+    entryCache.set(index, { width, version: cacheVersion, lines });
+    return lines;
+  };
+
+  const advance = (start: typeof position, amount: number, width: number) => {
+    const next = { ...start };
+    while (amount > 0 && next.entry < displayEntries.length) {
+      const lines = entryLines(next.entry, width);
+      const remaining = Math.max(0, lines.length - next.line);
+      if (amount < remaining) {
+        next.line += amount;
+        return next;
+      }
+      amount -= remaining;
+      next.entry++;
+      next.line = 0;
+    }
+    return next;
+  };
+
+  const retreat = (start: typeof position, amount: number, width: number) => {
+    const next = { ...start };
+    while (amount > 0 && (next.entry > 0 || next.line > 0)) {
+      if (next.line === 0) {
+        next.entry--;
+        next.line = entryLines(next.entry, width).length;
+      }
+      const step = Math.min(amount, next.line);
+      next.line -= step;
+      amount -= step;
+    }
+    return next;
+  };
+
+  const move = (amount: number) => {
+    position = amount < 0
+      ? retreat(position, -amount, lastWidth)
+      : advance(position, amount, lastWidth);
   };
 
   const toggleModelView = () => {
     if (viewMode === "compare") viewMode = modeBeforeCompare;
     viewMode = viewMode === "original" ? "model" : "original";
     modeBeforeCompare = viewMode;
+    cacheVersion++;
   };
 
   const toggleCompareView = () => {
@@ -500,44 +547,49 @@ export function createHistoryViewer(
       modeBeforeCompare = viewMode;
       viewMode = "compare";
     }
+    cacheVersion++;
+  };
+
+  const visiblePage = (width: number) => {
+    const renderFromPosition = () => {
+      while (position.entry < displayEntries.length) {
+        const lines = entryLines(position.entry, width);
+        if (position.line < lines.length) break;
+        position = { entry: position.entry + 1, line: 0 };
+      }
+      const visible: string[] = [];
+      let cursor = { ...position };
+      while (visible.length < pageSize() && cursor.entry < displayEntries.length) {
+        const lines = entryLines(cursor.entry, width);
+        const take = Math.min(pageSize() - visible.length, Math.max(0, lines.length - cursor.line));
+        visible.push(...lines.slice(cursor.line, cursor.line + take));
+        cursor.line += take;
+        if (cursor.line >= lines.length) cursor = { entry: cursor.entry + 1, line: 0 };
+      }
+      return { visible, cursor };
+    };
+
+    let page = renderFromPosition();
+    if (page.cursor.entry === displayEntries.length && page.visible.length < pageSize()) {
+      position = retreat({ entry: displayEntries.length, line: 0 }, pageSize(), width);
+      page = renderFromPosition();
+    }
+    return page;
   };
 
   return {
-    invalidate: () => undefined,
+    invalidate: () => {
+      cacheVersion++;
+      entryCache.clear();
+    },
     render: (width) => {
-      const cacheMatches = bodyCache !== undefined
-        && bodyCache.width === width
-        && bodyCache.toolsExpanded === toolsExpanded
-        && bodyCache.thinkingVisible === thinkingVisible
-        && bodyCache.viewMode === viewMode
-        && bodyCache.replacementIndex === replacementIndex;
-      if (!cacheMatches) {
-        const body = renderTranscript(
-          entries,
-          toolsExpanded,
-          thinkingVisible,
-          theme,
-          viewMode,
-          selectedReplacement(),
-        );
-        lastBodyLines = body.render(width);
-        bodyCache = {
-          width,
-          toolsExpanded,
-          thinkingVisible,
-          viewMode,
-          replacementIndex,
-          lines: lastBodyLines,
-        };
-      } else {
-        lastBodyLines = bodyCache!.lines;
-      }
-      scroll(0);
-      const visible = lastBodyLines.slice(scrollOffset, scrollOffset + pageSize());
+      lastWidth = width;
+      const { visible, cursor } = visiblePage(width);
       const modeLabel = viewMode === "original" ? "LOCAL ORIGINAL" : viewMode === "model" ? "MODEL INPUT" : "SIDE-BY-SIDE COMPARE";
       const header = theme.fg("accent", theme.bold(`Masking history · ${entries.length} messages · ${modeLabel}`));
-      const progress = lastBodyLines.length > pageSize()
-        ? ` ${scrollOffset + 1}-${Math.min(lastBodyLines.length, scrollOffset + pageSize())}/${lastBodyLines.length}`
+      const visibleEnd = Math.min(cursor.entry + (cursor.line > 0 ? 1 : 0), displayEntries.length);
+      const progress = displayEntries.length > 0
+        ? ` messages ${Math.min(position.entry + 1, displayEntries.length)}-${visibleEnd}/${displayEntries.length}`
         : "";
       const selected = selectedReplacement();
       const inspector = selected
@@ -560,23 +612,31 @@ export function createHistoryViewer(
     },
     handleInput: (data) => {
       const wheel = wheelDelta(data);
-      if (wheel !== undefined) scroll(wheel);
-      else if (keybindings.matches(data, "app.tools.expand")) toolsExpanded = !toolsExpanded;
-      else if (keybindings.matches(data, "app.thinking.toggle")) thinkingVisible = !thinkingVisible;
+      if (wheel !== undefined) move(wheel);
+      else if (keybindings.matches(data, "app.tools.expand")) {
+        toolsExpanded = !toolsExpanded;
+        cacheVersion++;
+      }
+      else if (keybindings.matches(data, "app.thinking.toggle")) {
+        thinkingVisible = !thinkingVisible;
+        cacheVersion++;
+      }
       else if (data === "m" || data === "M" || matchesKey(data, "ctrl+m")) toggleModelView();
       else if (data === "c" || data === "C") toggleCompareView();
       else if ((data === "n" || data === "N") && replacements.length > 0) {
         replacementIndex = (replacementIndex + 1) % replacements.length;
+        cacheVersion++;
       }
       else if ((data === "p" || data === "P") && replacements.length > 0) {
         replacementIndex = (replacementIndex - 1 + replacements.length) % replacements.length;
+        cacheVersion++;
       }
-      else if (keybindings.matches(data, "tui.select.up")) scroll(-1);
-      else if (keybindings.matches(data, "tui.select.down")) scroll(1);
-      else if (keybindings.matches(data, "tui.select.pageUp")) scroll(-pageSize());
-      else if (keybindings.matches(data, "tui.select.pageDown")) scroll(pageSize());
-      else if (data === "\x1b[H" || data === "\x1bOH") scrollOffset = 0;
-      else if (data === "\x1b[F" || data === "\x1bOF") scroll(lastBodyLines.length);
+      else if (keybindings.matches(data, "tui.select.up")) move(-1);
+      else if (keybindings.matches(data, "tui.select.down")) move(1);
+      else if (keybindings.matches(data, "tui.select.pageUp")) move(-pageSize());
+      else if (keybindings.matches(data, "tui.select.pageDown")) move(pageSize());
+      else if (data === "\x1b[H" || data === "\x1bOH") position = { entry: 0, line: 0 };
+      else if (data === "\x1b[F" || data === "\x1bOF") position = { entry: displayEntries.length, line: 0 };
       else if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) done();
       else return;
       tui.requestRender();

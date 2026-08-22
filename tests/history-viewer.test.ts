@@ -38,7 +38,7 @@ test("text diff keeps replacement spans separate without injecting punctuation",
   );
 });
 
-test("history scrolling reuses the rendered transcript", () => {
+test("history scrolling renders only the visible transcript window", () => {
   let backgroundRenders = 0;
   let renderRequests = 0;
   const theme = {
@@ -54,7 +54,7 @@ test("history scrolling reuses the rendered transcript", () => {
   const keybindings = {
     matches: (data: string, keybinding: string) => data === keybinding,
   };
-  const entries = Array.from({ length: 40 }, (_, index) => ({
+  const entries = Array.from({ length: 1_000 }, (_, index) => ({
     key: `user:${index}`,
     original: { role: "user", content: `message ${index}` },
     masked: { role: "user", content: `message ${index}` },
@@ -69,15 +69,19 @@ test("history scrolling reuses the rendered transcript", () => {
   );
 
   viewer.render(100);
-  const initialBackgroundRenders = backgroundRenders;
-  assert.ok(initialBackgroundRenders > 0);
+  const firstPageRenders = backgroundRenders;
+  assert.ok(firstPageRenders > 0);
+  assert.ok(firstPageRenders < 20, `first page rendered ${firstPageRenders} message backgrounds`);
 
   viewer.handleInput?.("tui.select.pageDown");
   viewer.render(100);
 
   assert.equal(renderRequests, 1);
-  assert.equal(backgroundRenders, initialBackgroundRenders);
+  assert.ok(backgroundRenders > firstPageRenders);
+  assert.ok(backgroundRenders < 40, `two pages rendered ${backgroundRenders} message backgrounds`);
 
-  viewer.render(80);
-  assert.ok(backgroundRenders > initialBackgroundRenders);
+  const twoPageRenders = backgroundRenders;
+  viewer.handleInput?.("tui.select.pageUp");
+  viewer.render(100);
+  assert.equal(backgroundRenders, twoPageRenders);
 });
