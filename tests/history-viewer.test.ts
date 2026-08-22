@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { diffText, mergePendingAssistant, mergeTranscript } from "../history-viewer.ts";
+import { createHistoryViewer, diffText, mergePendingAssistant, mergeTranscript } from "../history-viewer.ts";
 
 test("history transcript updates a context message instead of duplicating it", () => {
   const original = { role: "user", timestamp: 1, content: "secret" };
@@ -36,4 +36,48 @@ test("text diff keeps replacement spans separate without injecting punctuation",
       { original: "; keep=this", masked: "; keep=this", changed: false },
     ],
   );
+});
+
+test("history scrolling reuses the rendered transcript", () => {
+  let backgroundRenders = 0;
+  let renderRequests = 0;
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (_color: unknown, text: string) => {
+      backgroundRenders++;
+      return text;
+    },
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    underline: (text: string) => text,
+  };
+  const keybindings = {
+    matches: (data: string, keybinding: string) => data === keybinding,
+  };
+  const entries = Array.from({ length: 40 }, (_, index) => ({
+    key: `user:${index}`,
+    original: { role: "user", content: `message ${index}` },
+    masked: { role: "user", content: `message ${index}` },
+    capturedAt: index,
+  }));
+  const viewer = createHistoryViewer(
+    { terminal: { rows: 12 }, requestRender: () => { renderRequests++; } },
+    theme,
+    keybindings,
+    entries,
+    () => undefined,
+  );
+
+  viewer.render(100);
+  const initialBackgroundRenders = backgroundRenders;
+  assert.ok(initialBackgroundRenders > 0);
+
+  viewer.handleInput?.("tui.select.pageDown");
+  viewer.render(100);
+
+  assert.equal(renderRequests, 1);
+  assert.equal(backgroundRenders, initialBackgroundRenders);
+
+  viewer.render(80);
+  assert.ok(backgroundRenders > initialBackgroundRenders);
 });

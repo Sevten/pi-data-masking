@@ -416,7 +416,7 @@ function addAssistant(
 }
 
 function renderTranscript(
-  entries: TranscriptEntry[],
+  entries: readonly TranscriptEntry[],
   expanded: boolean,
   thinkingVisible: boolean,
   theme: HistoryTheme,
@@ -469,6 +469,14 @@ export function createHistoryViewer(
   let modeBeforeCompare: Exclude<ViewMode, "compare"> = "original";
   let lastBodyLines: string[] = [];
   let replacementIndex = 0;
+  let bodyCache: {
+    width: number;
+    toolsExpanded: boolean;
+    thinkingVisible: boolean;
+    viewMode: ViewMode;
+    replacementIndex: number;
+    lines: string[];
+  } | undefined;
 
   const replacementMap = new Map<string, Replacement>();
   for (const entry of entries) collectReplacements(entry.original, entry.masked, replacementMap);
@@ -497,15 +505,33 @@ export function createHistoryViewer(
   return {
     invalidate: () => undefined,
     render: (width) => {
-      const body = renderTranscript(
-        [...entries],
-        toolsExpanded,
-        thinkingVisible,
-        theme,
-        viewMode,
-        selectedReplacement(),
-      );
-      lastBodyLines = body.render(width);
+      const cacheMatches = bodyCache !== undefined
+        && bodyCache.width === width
+        && bodyCache.toolsExpanded === toolsExpanded
+        && bodyCache.thinkingVisible === thinkingVisible
+        && bodyCache.viewMode === viewMode
+        && bodyCache.replacementIndex === replacementIndex;
+      if (!cacheMatches) {
+        const body = renderTranscript(
+          entries,
+          toolsExpanded,
+          thinkingVisible,
+          theme,
+          viewMode,
+          selectedReplacement(),
+        );
+        lastBodyLines = body.render(width);
+        bodyCache = {
+          width,
+          toolsExpanded,
+          thinkingVisible,
+          viewMode,
+          replacementIndex,
+          lines: lastBodyLines,
+        };
+      } else {
+        lastBodyLines = bodyCache!.lines;
+      }
       scroll(0);
       const visible = lastBodyLines.slice(scrollOffset, scrollOffset + pageSize());
       const modeLabel = viewMode === "original" ? "LOCAL ORIGINAL" : viewMode === "model" ? "MODEL INPUT" : "SIDE-BY-SIDE COMPARE";
