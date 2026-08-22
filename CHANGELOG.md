@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The entries before 0.4.0 were reconstructed from the Git history and existing tags because the project did not previously publish GitHub Releases.
 
+## [0.4.2] - 2026-08-22
+
+### Fixed
+
+- Reworked `/masking-history` scrolling to render and cache only the visible transcript window instead of eagerly rendering the complete conversation.
+- Preserved fast back-navigation by caching rendered message blocks and correctly invalidating them when the theme or display mode changes.
+
 ## [0.4.1] - 2026-08-22
 
 ### Fixed
