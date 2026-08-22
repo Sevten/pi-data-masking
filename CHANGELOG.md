@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The entries before 0.4.0 were reconstructed from the Git history and existing tags because the project did not previously publish GitHub Releases.
 
+## [0.4.1] - 2026-08-22
+
+### Fixed
+
+- Made `/masking-history` scrolling fast in long conversations by reusing the rendered transcript while paging, with automatic refresh when display settings or terminal width change.
+
 ## [0.4.0] - 2026-08-20
 
 ### Added
