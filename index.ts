@@ -16,7 +16,8 @@
  *    change the representation of its own messages. Only user messages and
  *    tool results register values (protectedValues); assistant history is
  *    re-masked only for already-registered values, so restored echoes never
- *    leak back to the LLM.
+ *    leak back to the LLM. Provenance is immutable: a later user message or
+ *    tool result cannot promote an LLM-invented value to protected.
  *
  * Session key:
  *  - A random sessionKey is generated on session_start
@@ -66,6 +67,7 @@ import {
 import type {
   ConfiguredMaskingRule,
   ConfigScope,
+  ConfigSourceSnapshot,
   MaskingConfig,
   RawConfigRule,
   RuleEnabledChange,
@@ -108,10 +110,6 @@ const SYSTEM_PROMPT_GUIDANCE =
   "the original value, not the placeholder.]";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
-
-function nowTime(): string {
-  return new Date().toLocaleTimeString("en-US", { hour12: false });
-}
 
 function unmaskMessage<T>(
   message: T,
@@ -195,8 +193,7 @@ export default async function (pi: ExtensionAPI) {
   };
   let masker = new Masker([], true);
   let stopWatching: (() => void) | null = null;
-  let testTimer: ReturnType<typeof setTimeout> | null = null;
-  let maskingListAliasNotified = false;
+  let configSnapshot: ConfigSourceSnapshot | undefined;
 
   // Session key: generated on session_start, stays constant for the whole
   // session (including config hot reloads). Pre-initialized to a valid value to
@@ -208,7 +205,7 @@ export default async function (pi: ExtensionAPI) {
   let dynamicPlaceholderMap: DynamicPlaceholderMap = new Map();
 
   // Provenance sets (see file header): values first seen in LLM output are
-  // never masked; values first seen in user/tool messages are masked in
+  // never masked; values first seen outside model output are masked in
   // every message role. Same lifecycle as dynamicPlaceholderMap.
   let llmInventedValues: Set<string> = new Set();
   let protectedValues: Set<string> = new Set();
@@ -241,12 +238,11 @@ export default async function (pi: ExtensionAPI) {
   }
 
   /** Per-role masking options: assistant history is only re-masked for values
-   *  that are already protected (restored echoes); user and tool messages
-   *  discover/register new values; tool results always register (real data
-   *  sources, regardless of what the LLM said earlier). */
+   *  that are already protected (restored echoes); every non-assistant source
+   *  may register only values whose first-seen provenance is still unknown. */
   function maskOptionsForRole(role: string | undefined): MaskOptions {
     if (role === "assistant") return { discover: false };
-    return { discover: true, ignoreInvented: role === "toolResult" };
+    return { discover: true };
   }
 
   /** Rebuild masker and return any regex-compile warnings for the caller to surface */
@@ -281,7 +277,8 @@ export default async function (pi: ExtensionAPI) {
   }
 
   async function reloadConfigNow(ctx: ExtensionContext): Promise<void> {
-    const loaded = await loadConfig(ctx.cwd, sessionKey);
+    const loaded = await loadConfig(ctx.cwd, sessionKey, configSnapshot);
+    configSnapshot = loaded.snapshot;
     const persisted = await applyPersistentToggle(loaded.config);
     const compileWarnings = rebuild(persisted.config);
     notifyWarnings(ctx, [...loaded.warnings, ...persisted.warnings, ...compileWarnings]);
@@ -359,7 +356,9 @@ export default async function (pi: ExtensionAPI) {
     inventedMapWarned = false;
     persistenceWarned = false;
 
+    configSnapshot = undefined;
     const loaded = await loadConfig(ctx.cwd, sessionKey);
+    configSnapshot = loaded.snapshot;
     const persisted = await applyPersistentToggle(loaded.config);
     const compileWarnings = rebuild(persisted.config);
 
@@ -376,7 +375,8 @@ export default async function (pi: ExtensionAPI) {
 
     stopWatching = watchConfigs(ctx.cwd, async () => {
       // Hot reload: reuse the current session's sessionKey and dynamicPlaceholderMap
-      const reloaded = await loadConfig(ctx.cwd, sessionKey);
+      const reloaded = await loadConfig(ctx.cwd, sessionKey, configSnapshot);
+      configSnapshot = reloaded.snapshot;
       const persistedReload = await applyPersistentToggle(reloaded.config);
       const reloadWarnings = rebuild(persistedReload.config);
       ensureSessionStatePersisted(ctx);
@@ -394,7 +394,6 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     stopWatching?.();
     stopWatching = null;
-    if (testTimer) clearTimeout(testTimer);
   });
 
   // ── Hook 1: context — outbound masking ────────────────────────────────────
@@ -568,7 +567,7 @@ export default async function (pi: ExtensionAPI) {
     return payload;
   });
 
-  // ── Commands: /masking-config + /masking-list compatibility alias ────────
+  // ── Command: /masking ────────────────────────────────────────────────────
 
   async function chooseExistingSource(
     ctx: ExtensionContext,
@@ -912,7 +911,37 @@ export default async function (pi: ExtensionAPI) {
       if (!selectedPreset) return;
     }
 
-    const built = await ctx.ui.custom<{ source: typeof sources[number]; rule: RawConfigRule } | undefined>((tui, theme, keybindings, done) => {
+    type BuiltRule = { source: typeof sources[number]; rule: RawConfigRule; createdSource: boolean };
+    let sourceCreatedDuringBuilder = false;
+
+    async function persistBuilderDraft(source: typeof sources[number], rule: RawConfigRule): Promise<void> {
+      if (!existsSync(source.path)) {
+        const initial = buildInitialConfig([]);
+        try {
+          await createJsonFileExclusive(source.path, {
+            $schema: initial.$schema,
+            version: initial.version,
+            rules: [],
+          });
+          sourceCreatedDuringBuilder = true;
+        } catch (err) {
+          if (!existsSync(source.path)) throw err;
+        }
+      }
+      const mutations = editing
+        ? source.path === editing.configured.path
+          ? [{ kind: "replace" as const, path: editing.configured.path, sourceIndex: editing.configured.sourceIndex, id: editing.configured.rule.id, rule }]
+          : [
+              { kind: "delete" as const, path: editing.configured.path, sourceIndex: editing.configured.sourceIndex, id: editing.configured.rule.id },
+              { kind: "append" as const, path: source.path, rule },
+            ]
+        : [{ kind: "append" as const, path: source.path, rule }];
+      const saved = await saveConfigRuleMutations(mutations);
+      notifyWarnings(ctx, saved.warnings);
+      await reloadConfigNow(ctx);
+    }
+
+    const built = await ctx.ui.custom<BuiltRule | undefined>((tui, theme, keybindings, done) => {
       const editorTheme: EditorTheme = {
         borderColor: (text) => theme.fg("accent", text),
         selectList: {
@@ -938,12 +967,15 @@ export default async function (pi: ExtensionAPI) {
           }
           saveMessage = "";
           warningSignature = "";
+          discardConfirmation = false;
           tui.requestRender();
         };
         return editor;
       };
       let saveMessage = "";
       let warningSignature = "";
+      let saving = false;
+      let discardConfirmation = false;
       let builderType: BuilderType = selectedType;
       let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
       let focusIndex = 0;
@@ -1113,6 +1145,12 @@ export default async function (pi: ExtensionAPI) {
         }
       }
 
+      const draftSignature = (): string => {
+        const draft = currentDraft();
+        return `${currentSource().path}\n${draft.rule ? JSON.stringify(draft.rule) : draft.text}`;
+      };
+      const initialDraftSignature = draftSignature();
+
       function importJsonToForm(): boolean {
         const draft = currentDraft();
         if (!draft.rule) {
@@ -1233,7 +1271,7 @@ export default async function (pi: ExtensionAPI) {
         lines.push(...editor.render(width));
       }
 
-      function attemptSave(): void {
+      async function attemptSave(): Promise<void> {
         const draft = currentDraft();
         if (!draft.rule) {
           saveMessage = `Cannot save: ${draft.error}`;
@@ -1275,7 +1313,17 @@ export default async function (pi: ExtensionAPI) {
           tui.requestRender();
           return;
         }
-        done({ source: currentSource(), rule: draft.rule });
+        saving = true;
+        saveMessage = "Saving…";
+        tui.requestRender();
+        try {
+          await persistBuilderDraft(currentSource(), draft.rule);
+          done({ source: currentSource(), rule: draft.rule, createdSource: sourceCreatedDuringBuilder });
+        } catch (err) {
+          saving = false;
+          saveMessage = `Cannot save: ${(err as Error).message} · draft retained`;
+          tui.requestRender();
+        }
       }
 
       return {
@@ -1339,8 +1387,28 @@ export default async function (pi: ExtensionAPI) {
         },
         invalidate: () => Object.values(editors).forEach((editor) => editor.invalidate()),
         handleInput: (data) => {
+          if (saving) return;
+          if (discardConfirmation) {
+            if (matchesKey(data, "y") || keybindings.matches(data, "tui.select.confirm")) {
+              done(undefined);
+            } else if (
+              matchesKey(data, "n")
+              || keybindings.matches(data, "tui.select.cancel")
+              || keybindings.matches(data, "app.interrupt")
+            ) {
+              discardConfirmation = false;
+              saveMessage = "Editing resumed";
+              tui.requestRender();
+            }
+            return;
+          }
           if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
-            done(undefined);
+            if (draftSignature() === initialDraftSignature) done(undefined);
+            else {
+              discardConfirmation = true;
+              saveMessage = "Discard unsaved changes? Y / Enter discard · N / Esc continue editing";
+              tui.requestRender();
+            }
             return;
           }
           if (matchesKey(data, Key.f2)) {
@@ -1371,7 +1439,7 @@ export default async function (pi: ExtensionAPI) {
               // Save before forwarding Enter to Editor: Editor clears its
               // contents before invoking onSubmit, which would make the form
               // draft observe an empty current field.
-              attemptSave();
+              void attemptSave();
             }
             return;
           }
@@ -1409,39 +1477,14 @@ export default async function (pi: ExtensionAPI) {
 
     if (!built) return;
     const id = String(built.rule.id);
-    let createdSource = false;
-    if (!existsSync(built.source.path)) {
-      const initial = buildInitialConfig([]);
-      try {
-        await createJsonFileExclusive(built.source.path, {
-          $schema: initial.$schema,
-          version: initial.version,
-          rules: [],
-        });
-        createdSource = true;
-        ctx.ui.notify(
-          `Created minimal ${built.source.scope} config: ${built.source.path}${built.source.scope === "project" ? " · this file may be tracked by Git" : ""}`,
-          built.source.scope === "project" ? "warning" : "info",
-        );
-      } catch (err) {
-        if (!existsSync(built.source.path)) {
-          ctx.ui.notify(`Failed to create ${built.source.scope} config: ${(err as Error).message}`, "error");
-          return;
-        }
-      }
-    }
-    const mutations = editing
-      ? built.source.path === editing.configured.path
-        ? [{ kind: "replace" as const, path: editing.configured.path, sourceIndex: editing.configured.sourceIndex, id: editing.configured.rule.id, rule: built.rule }]
-        : [
-            { kind: "delete" as const, path: editing.configured.path, sourceIndex: editing.configured.sourceIndex, id: editing.configured.rule.id },
-            { kind: "append" as const, path: built.source.path, rule: built.rule },
-          ]
-      : [{ kind: "append" as const, path: built.source.path, rule: built.rule }];
-    if (await saveStructuralChanges(ctx, mutations)) {
-      const action = editing && built.source.path !== editing.configured.path ? "Moved and updated" : editing ? "Updated" : "Added";
-      ctx.ui.notify(`${action} rule [${id}] in ${built.source.scope} config`, "info");
-      if (createdSource && built.source.scope === "project") {
+    const action = editing && built.source.path !== editing.configured.path ? "Moved and updated" : editing ? "Updated" : "Added";
+    ctx.ui.notify(`${action} rule [${id}] in ${built.source.scope} config`, "info");
+    if (built.createdSource) {
+      ctx.ui.notify(
+        `Created minimal ${built.source.scope} config: ${built.source.path}${built.source.scope === "project" ? " · this file may be tracked by Git" : ""}`,
+        built.source.scope === "project" ? "warning" : "info",
+      );
+      if (built.source.scope === "project") {
         const addIgnore = await ctx.ui.confirm(
           "Exclude project masking config from Git?",
           `Add .pi/pi-data-masking/masking.config.json to ${ctx.cwd}/.gitignore?\n\nChoose Yes if this config may contain exact literal values.`,
@@ -1466,7 +1509,7 @@ export default async function (pi: ExtensionAPI) {
       const data = await readRawConfigFile(configured.path);
       const original = data.rules[configured.sourceIndex];
       if (!original || typeof original !== "object" || original.id !== configured.rule.id) {
-        throw new Error("source position changed; reopen /masking-config");
+        throw new Error("source position changed; reopen /masking");
       }
       const initial = configured.sourceKind === "preset" ? { ...configured.rule } : { ...original };
       await addConfigRule(ctx, { configured, original, initial });
@@ -1510,7 +1553,7 @@ export default async function (pi: ExtensionAPI) {
           "Optional flags include i (case-insensitive), m (multiline), and s (dot matches newline); g is automatic.",
           "Without capture groups the whole match is masked; with groups, only captured portions are masked.",
           "",
-          theme.fg("muted", "Rules run from top to bottom. Prefer narrow patterns and test them with T before relying on them."),
+          theme.fg("muted", "Rules run from top to bottom. Prefer narrow patterns and use the embedded test area before relying on them."),
           "",
           theme.fg("dim", "Enter / Esc / H close help"),
         ];
@@ -1650,12 +1693,7 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
-  async function openMaskingConfig(ctx: ExtensionContext, legacyAlias = false): Promise<void> {
-    if (legacyAlias && !maskingListAliasNotified) {
-      maskingListAliasNotified = true;
-      ctx.ui.notify("/masking-list now opens /masking-config; use /masking-config next time", "info");
-    }
-
+  async function openMaskingConfig(ctx: ExtensionContext): Promise<void> {
     const filters = ["all", "enabled", "disabled", "project", "global", "literal", "regex", "preset"] as const;
     let filterIndex = 0;
     let searchQuery = "";
@@ -2021,14 +2059,9 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
-  pi.registerCommand("masking-config", {
+  pi.registerCommand("masking", {
     description: "View and configure masking rules (real values stay hidden)",
     handler: async (_args, ctx) => openMaskingConfig(ctx),
-  });
-
-  pi.registerCommand("masking-list", {
-    description: "Compatibility alias for /masking-config",
-    handler: async (_args, ctx) => openMaskingConfig(ctx, true),
   });
 
   // ── Command: /masking-history ────────────────────────────────────────────
@@ -2069,62 +2102,4 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  // ── Command: /masking-test ────────────────────────────────────────────────
-
-  pi.registerCommand("masking-test", {
-    description: "Preview how a text snippet looks after masking rules are applied",
-    handler: async (args, ctx) => {
-      const input = (args ?? "").trim();
-      if (!input) {
-        ctx.ui.notify("Usage: /masking-test <text to preview>", "info");
-        return;
-      }
-      if (!config.enabled) {
-        ctx.ui.notify(
-          "Masking is currently disabled — enable it first with /masking-toggle",
-          "info"
-        );
-        return;
-      }
-      if (config.rules.length === 0) {
-        ctx.ui.notify(
-          "No masking rules configured — check masking.config.json",
-          "info"
-        );
-        return;
-      }
-
-      // Create a temporary, isolated Masker using the current session key.
-      // A fresh empty map and provenance sets are passed so test runs never
-      // pollute the real session's dynamicPlaceholderMap / provenance state.
-      const tempMap: DynamicPlaceholderMap = new Map();
-      const tempMasker = new Masker(
-        config.rules,
-        config.options.caseSensitive,
-        sessionKey,
-        tempMap,
-        new Set(),
-        new Set()
-      );
-
-      const { text: masked, count } = tempMasker.mask(input);
-
-      const summary =
-        count > 0
-          ? `🔒 ${count} value(s) masked`
-          : "✅ No values masked by current rules";
-
-      ctx.ui.setWidget("masking-test", [
-        `🧪 Masking test  ·  ${nowTime()}`,
-        `─── Original`,
-        `  ${input}`,
-        `─── After masking (what LLM sees)  ${summary}`,
-        `  ${masked}`,
-      ]);
-      if (testTimer) clearTimeout(testTimer);
-      testTimer = setTimeout(() => {
-        ctx.ui.setWidget("masking-test", undefined);
-      }, 20_000);
-    },
-  });
 }

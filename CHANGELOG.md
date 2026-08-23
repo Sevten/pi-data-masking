@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Make first-seen provenance immutable: a value first seen in model output can
+  no longer be promoted to protected by a later tool result, preventing prior
+  model-facing history and cache prefixes from changing between requests.
+- Add multi-turn extension coverage for model-first values across assistant,
+  user, tool-result, and subsequent context requests.
+- Rewrite the public README around the extension's primary invariant: masking
+  must preserve model reasoning, transparent tool execution, and stable
+  model-facing prefixes for prompt-cache reuse; clearly separate the project's
+  immutable-first-seen trade-off, masking's inherent limitations, partial
+  mitigations, and implementation boundaries, while documenting low-entropy
+  identity ambiguity and the history viewer's comparison mode.
+- Rename the unified configuration center from `/masking-config` to `/masking`
+  and remove `/masking-test`; active-rule and candidate-rule testing now live
+  inside the configuration UI. `/masking-list`, `/masking-init`, and
+  `/masking-rule` also remain unregistered.
+- Expand the packaged example to cover exact, environment, custom-regex, and
+  preset rules, including a realistic-looking private DNS replacement.
+- Keep the last successfully parsed project/global config active during
+  transient read, JSON, root-shape, or `rules`-shape failures.
+- Add rollback-protected multi-file config publishing so a later failure
+  restores already-published files instead of leaving a partial scope move.
+- Keep Rule Builder mounted until persistence succeeds, retain the complete
+  draft after failures, and confirm before discarding only a changed draft.
+- Add Pi/TUI integration coverage for focus switching, in-place toggle and
+  reorder selection, failed-save draft retention, and discard confirmation.
+- Mark validation errors from disabled rules with explicit disabled-state
+  context.
 - Add advisory excessive-backtracking diagnostics for nested unbounded
   quantifiers, overlapping repeated alternatives, and adjacent overlapping
   repetitions while preserving native JavaScript regex compatibility.
@@ -116,9 +143,9 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 ### Added
 
 - Per-rule `enabled` switches, defaulting to enabled for backward compatibility.
-- `/masking-config` for browsing, filtering, searching, testing, adding, editing, deleting, and reordering project/global rules without showing literal real values.
+- `/masking` for browsing, filtering, searching, testing, adding, editing, deleting, and reordering project/global rules without showing literal real values.
 - Scope-aware, atomic rule-state writes with user-only file permissions on filesystems that support POSIX modes.
-- A guided project/global initializer inside `/masking-config`, including preset selection, option preview, no-overwrite creation, and an optional project `.gitignore` entry.
+- A guided project/global initializer inside `/masking`, including preset selection, option preview, no-overwrite creation, and an optional project `.gitignore` entry.
 - Ten built-in regex presets referenced by stable names and expanded at load time.
 - Environment-backed literal rules through mutually exclusive `realFromEnv` values.
 - `masking.config.schema.json` for editor completion and validation.
@@ -129,9 +156,15 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 ### Changed
 
 - The status bar and reload notifications now distinguish active rules from all configured rules.
-- `/masking-list` is now a compatibility alias for `/masking-config`.
-- The packaged example is now a minimal configuration using presets and `realFromEnv`; advanced regex guidance remains in README.
+- The formal command set is reduced to `/masking`, `/masking-toggle`, and `/masking-history`.
+- The packaged example now demonstrates exact, environment, custom-regex, and preset rules; advanced regex guidance remains in README.
 - Pressing `Space` now atomically applies a rule switch immediately with no blocking confirmation; disabling emits a non-blocking risk warning, so `Ctrl+S` is no longer needed.
+
+### Removed
+
+- `/masking-config` in favor of the shorter `/masking` entry point.
+- `/masking-test` because equivalent testing with rule attribution is embedded in `/masking` and the Rule Builder.
+- `/masking-list`, `/masking-init`, and `/masking-rule`; their workflows are covered by `/masking`.
 
 ## [0.4.2] - 2026-08-22
 

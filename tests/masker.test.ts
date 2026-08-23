@@ -364,17 +364,43 @@ test("restored user-secret echoes are re-masked in assistant messages", () => {
   assert.equal(m.unmask(assistant.text).text, "got it, 4821");
 });
 
-test("tool results (ignoreInvented) always register, even invented values", () => {
+test("protected-first tool roundtrips preserve one stable model-facing value", () => {
+  const m = makeMasker([{ id: "code", type: "regex", pattern: "\\b\\d{4}\\b" }]);
+  const user = m.mask("my code is 4821", { discover: true });
+  const placeholder = user.text.match(/\d{4}/)![0];
+  assert.notEqual(placeholder, "4821");
+
+  const toolInput = m.unmask(`write ${placeholder}`);
+  assert.equal(toolInput.text, "write 4821");
+  const toolResult = m.mask("file contains 4821", { discover: true });
+  assert.equal(toolResult.text, `file contains ${placeholder}`);
+});
+
+test("protected-first values cannot distinguish a later independent low-entropy model use", () => {
+  const m = makeMasker([{ id: "code", type: "regex", pattern: "\\b\\d{4}\\b" }]);
+  const user = m.mask("my code is 4821", { discover: true });
+  const placeholder = user.text.match(/\d{4}/)![0];
+
+  // The engine cannot know that this identical string has a different meaning.
+  const assistant = m.mask("ordinary example 4821", { discover: false });
+  assert.equal(assistant.text, `ordinary example ${placeholder}`);
+});
+
+test("model-first provenance remains immutable across user and tool sources", () => {
   const m = makeMasker([{ id: "code", type: "regex", pattern: "\\b\\d{4}\\b" }]);
   // LLM invented 4821 first.
-  m.mask("e.g. 4821", { discover: false });
-  // A tool result returns the same string: real data source → must register.
-  const tool = m.mask("file contains 4821", { discover: true, ignoreInvented: true });
-  assert.notEqual(tool.text, "file contains 4821", "tool result must be masked");
-  assert.equal(tool.count, 1);
-  // Registration wins: from now on assistant re-masks cover it too.
+  const firstAssistant = m.mask("e.g. 4821", { discover: false });
+  assert.equal(firstAssistant.text, "e.g. 4821");
+  // Neither a later user message nor a tool result may promote it to protected.
+  const user = m.mask("my code is 4821", { discover: true });
+  const tool = m.mask("file contains 4821", { discover: true });
+  assert.equal(user.text, "my code is 4821");
+  assert.equal(user.count, 0);
+  assert.equal(tool.text, "file contains 4821");
+  assert.equal(tool.count, 0);
+  // A future replay of the original assistant text must remain byte-stable.
   const assistant = m.mask("e.g. 4821", { discover: false });
-  assert.notEqual(assistant.text, "e.g. 4821");
+  assert.equal(assistant.text, "e.g. 4821");
 });
 
 test("literal rules follow the same first-seen semantics", () => {

@@ -71,6 +71,11 @@ export interface RuleEnabledChange {
   enabled: boolean;
 }
 
+interface ConfigCommitHooks {
+  /** Test seam used to simulate a publish failure after earlier files changed. */
+  beforePublish?: (path: string, index: number) => void | Promise<void>;
+}
+
 export type RawConfigRule = Record<string, unknown>;
 
 export type ConfigRuleMutation =
@@ -82,6 +87,11 @@ export type ConfigRuleMutation =
 export interface RawConfigFile {
   [key: string]: unknown;
   rules: RawConfigRule[];
+}
+
+interface PendingConfigWrite {
+  path: string;
+  content: string;
 }
 
 export interface InitialConfigOptions {
@@ -106,6 +116,13 @@ export interface LoadResult {
   config: MaskingConfig;
   /** Non-fatal problems found while reading/validating the config */
   warnings: string[];
+  /** Last successfully parsed source data, reused when a watched file is temporarily invalid. */
+  snapshot: ConfigSourceSnapshot;
+}
+
+export interface ConfigSourceSnapshot {
+  global: Partial<MaskingConfig> | null;
+  project: Partial<MaskingConfig> | null;
 }
 
 export interface PersistentToggleResult {
@@ -163,7 +180,7 @@ export function generateUniqueRuleId(name: string, existingIds: Iterable<string>
   return `${stem}-${suffix}`;
 }
 
-/** Build the minimal config written by the /masking-config initializer. */
+/** Build the minimal config written by the /masking configuration center. */
 export function buildInitialConfig(
   presetNames: readonly string[],
   options: InitialConfigOptions = { showStatusBar: true, persistHistory: true },
@@ -734,9 +751,10 @@ function fillPlaceholders(rules: MaskingRule[], sessionKey: Buffer, warnings: st
  */
 export async function loadConfig(
   cwd: string,
-  sessionKey: Buffer
+  sessionKey: Buffer,
+  previous?: ConfigSourceSnapshot,
 ): Promise<LoadResult> {
-  return loadConfigFromPaths(GLOBAL_CONFIG_PATH, getProjectConfigPath(cwd), sessionKey);
+  return loadConfigFromPaths(GLOBAL_CONFIG_PATH, getProjectConfigPath(cwd), sessionKey, process.env, previous);
 }
 
 /**
@@ -747,6 +765,7 @@ export async function loadConfigFromPaths(
   projectPath: string,
   sessionKey: Buffer,
   env: NodeJS.ProcessEnv = process.env,
+  previous?: ConfigSourceSnapshot,
 ): Promise<LoadResult> {
   const [globalResult, projectResult] = await Promise.all([
     tryReadJson(globalPath),
@@ -754,17 +773,29 @@ export async function loadConfigFromPaths(
   ]);
 
   const warnings: string[] = [];
-  if (globalResult.error) warnings.push(globalResult.error);
-  if (projectResult.error) warnings.push(projectResult.error);
-
-  if (globalResult.data && globalResult.data.rules !== undefined && !Array.isArray(globalResult.data.rules)) {
-    warnings.push("global config.rules is not an array; its rules were ignored");
+  function resolveSource(
+    result: ReadJsonResult,
+    scope: ConfigScope,
+    previousData: Partial<MaskingConfig> | null | undefined,
+  ): Partial<MaskingConfig> | null {
+    let problem = result.error;
+    if (!problem && result.data !== null) {
+      if (typeof result.data !== "object" || Array.isArray(result.data)) {
+        problem = `${scope} config root is not an object`;
+      } else if (result.data.rules !== undefined && !Array.isArray(result.data.rules)) {
+        problem = `${scope} config.rules is not an array`;
+      }
+    }
+    if (!problem) return result.data;
+    const canFallback = previousData !== undefined;
+    warnings.push(`${problem}${canFallback ? `; continuing with the last valid ${scope} config` : "; its rules were ignored"}`);
+    return canFallback ? previousData : null;
   }
-  if (projectResult.data && projectResult.data.rules !== undefined && !Array.isArray(projectResult.data.rules)) {
-    warnings.push("project config.rules is not an array; its rules were ignored");
-  }
 
-  const config = mergeConfigs(globalResult.data, projectResult.data);
+  const globalData = resolveSource(globalResult, "global", previous?.global);
+  const projectData = resolveSource(projectResult, "project", previous?.project);
+
+  const config = mergeConfigs(globalData, projectData);
   const configuredRules: ConfiguredMaskingRule[] = [];
 
   function collect(
@@ -778,13 +809,18 @@ export async function loadConfigFromPaths(
       const rawRecord = raw as unknown as Record<string, unknown>;
       const rawId = typeof rawRecord?.id === "string" ? rawRecord.id : undefined;
       if (rawId && seenIds.has(rawId)) {
-        warnings.push(`${scope} Rule [${rawId}] duplicates an earlier ID in the same config and was skipped`);
+        warnings.push(
+          `${scope} Rule [${rawId}] duplicates an earlier ID in the same config and was skipped` +
+            `${rawRecord.enabled === false ? " (rule is currently disabled)" : ""}`,
+        );
         return;
       }
       if (rawId) seenIds.add(rawId);
 
       const validated = validateConfig([raw], env);
-      warnings.push(...validated.warnings.map((warning) => `${scope} ${warning}`));
+      warnings.push(...validated.warnings.map(
+        (warning) => `${scope} ${warning}${rawRecord.enabled === false ? " (rule is currently disabled)" : ""}`,
+      ));
       const presetName = typeof rawRecord.preset === "string" ? rawRecord.preset : undefined;
       const realFromEnv = typeof rawRecord.realFromEnv === "string" ? rawRecord.realFromEnv : undefined;
       let rule = validated.rules[0];
@@ -821,8 +857,8 @@ export async function loadConfigFromPaths(
   }
 
   // Preserve the established priority: project rules before global rules.
-  collect(projectResult.data, "project", projectPath);
-  collect(globalResult.data, "global", globalPath);
+  collect(projectData, "project", projectPath);
+  collect(globalData, "global", globalPath);
 
   config.configuredRules = configuredRules;
   config.rules = configuredRules
@@ -831,7 +867,11 @@ export async function loadConfigFromPaths(
 
   // Disabled rules must not reserve or generate placeholders.
   fillPlaceholders(config.rules, sessionKey, warnings);
-  return { config, warnings };
+  return {
+    config,
+    warnings,
+    snapshot: { global: globalData, project: projectData },
+  };
 }
 
 /**
@@ -849,7 +889,7 @@ export async function saveRuleEnabledChanges(changes: RuleEnabledChange[]): Prom
     byPath.set(change.path, group);
   }
 
-  const pending: Array<{ path: string; tempPath: string; content: string }> = [];
+  const pending: PendingConfigWrite[] = [];
   for (const [path, pathChanges] of byPath) {
     const raw = await readFile(path, "utf8");
     const parsed = JSON.parse(raw) as unknown;
@@ -873,32 +913,73 @@ export async function saveRuleEnabledChanges(changes: RuleEnabledChange[]): Prom
       (candidate as { enabled?: boolean }).enabled = change.enabled;
     }
 
-    const tempPath = `${path}.${process.pid}.${Date.now()}.${pending.length}.tmp`;
-    pending.push({ path, tempPath, content: `${JSON.stringify(data, null, 2)}\n` });
+    pending.push({ path, content: `${JSON.stringify(data, null, 2)}\n` });
   }
+  await publishConfigWrites(pending);
+}
 
+/**
+ * Publish prepared config contents with rollback across every affected file.
+ * Each original is hard-linked to a private backup before the first rename;
+ * if any later publish/chmod fails, already-published paths are restored in
+ * reverse order. This provides all-or-nothing behavior for ordinary I/O
+ * failures while keeping every individual replacement atomic.
+ */
+async function publishConfigWrites(
+  writes: readonly PendingConfigWrite[],
+  hooks: ConfigCommitHooks = {},
+): Promise<void> {
+  const nonce = `${process.pid}.${Date.now()}.${randomUUID()}`;
+  const prepared = writes.map((write, index) => ({
+    ...write,
+    tempPath: `${write.path}.${nonce}.${index}.tmp`,
+    backupPath: `${write.path}.${nonce}.${index}.bak`,
+  }));
+  const backups = new Set<string>();
+  const published: typeof prepared = [];
   try {
-    for (const item of pending) {
+    for (const item of prepared) {
       await mkdir(dirname(item.path), { recursive: true });
-      await writeFile(item.tempPath, item.content, { encoding: "utf8", mode: 0o600 });
-      // Some mounted/cross-platform filesystems ignore the create mode.
+      await writeFile(item.tempPath, item.content, { encoding: "utf8", mode: 0o600, flag: "wx" });
       await chmod(item.tempPath, 0o600);
     }
-    for (const item of pending) {
+    for (const item of prepared) {
+      await link(item.path, item.backupPath);
+      backups.add(item.backupPath);
+    }
+    for (let index = 0; index < prepared.length; index++) {
+      const item = prepared[index]!;
+      await hooks.beforePublish?.(item.path, index);
       await rename(item.tempPath, item.path);
-      // Re-assert after rename for filesystems that preserve destination mode.
+      published.push(item);
       await chmod(item.path, 0o600);
     }
   } catch (err) {
-    await Promise.all(pending.map(async (item) => {
+    const rollbackErrors: string[] = [];
+    const failedRollbackBackups = new Set<string>();
+    for (const item of [...published].reverse()) {
       try {
-        await unlink(item.tempPath);
-      } catch {
-        // Ignore missing/already-renamed temps and cleanup failures.
+        await rename(item.backupPath, item.path);
+        backups.delete(item.backupPath);
+      } catch (rollbackError) {
+        failedRollbackBackups.add(item.backupPath);
+        rollbackErrors.push(`${item.path}: ${(rollbackError as Error).message} (backup kept at ${item.backupPath})`);
       }
+    }
+    await Promise.all(prepared.map(async ({ tempPath }) => {
+      try { await unlink(tempPath); } catch { /* Missing or already published. */ }
     }));
+    await Promise.all([...backups].filter((backupPath) => !failedRollbackBackups.has(backupPath)).map(async (backupPath) => {
+      try { await unlink(backupPath); } catch { /* Preserve the original error. */ }
+    }));
+    if (rollbackErrors.length > 0) {
+      throw new Error(`${(err as Error).message}; rollback also failed: ${rollbackErrors.join("; ")}`);
+    }
     throw err;
   }
+  await Promise.all([...backups].map(async (backupPath) => {
+    try { await unlink(backupPath); } catch { /* A stale backup is safer than reporting a false write failure. */ }
+  }));
 }
 
 export function validateRawConfigRule(rule: RawConfigRule): string[] {
@@ -970,6 +1051,7 @@ export async function createJsonFileExclusive(path: string, data: unknown): Prom
  */
 export async function saveConfigRuleMutations(
   mutations: readonly ConfigRuleMutation[],
+  hooks: ConfigCommitHooks = {},
 ): Promise<{ warnings: string[] }> {
   if (mutations.length === 0) return { warnings: [] };
   const byPath = new Map<string, ConfigRuleMutation[]>();
@@ -979,7 +1061,7 @@ export async function saveConfigRuleMutations(
     byPath.set(mutation.path, group);
   }
 
-  const pending: Array<{ path: string; tempPath: string; content: string }> = [];
+  const pending: PendingConfigWrite[] = [];
   const warnings: string[] = [];
   for (const [path, pathMutations] of byPath) {
     const data = await readRawConfigFile(path);
@@ -1018,29 +1100,9 @@ export async function saveConfigRuleMutations(
       }
     }
 
-    const tempPath = `${path}.${process.pid}.${Date.now()}.${pending.length}.tmp`;
-    pending.push({ path, tempPath, content: `${JSON.stringify(data, null, 2)}\n` });
+    pending.push({ path, content: `${JSON.stringify(data, null, 2)}\n` });
   }
-
-  try {
-    for (const item of pending) {
-      await writeFile(item.tempPath, item.content, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      await chmod(item.tempPath, 0o600);
-    }
-    for (const item of pending) {
-      await rename(item.tempPath, item.path);
-      await chmod(item.path, 0o600);
-    }
-  } catch (err) {
-    await Promise.all(pending.map(async ({ tempPath }) => {
-      try {
-        await unlink(tempPath);
-      } catch {
-        // Ignore missing/already-renamed temps and cleanup failures.
-      }
-    }));
-    throw err;
-  }
+  await publishConfigWrites(pending, hooks);
   return { warnings };
 }
 

@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -177,6 +177,28 @@ test("invalid per-rule enabled is warned and never activated", async () => {
     assert.deepEqual(config.rules, []);
     assert.deepEqual(config.configuredRules, []);
     assert.ok(warnings.some((warning) => warning.includes("invalid 'enabled'")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("invalid disabled rules keep their disabled-state context in load warnings", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    const projectPath = join(dir, "project.json");
+    writeFileSync(globalPath, JSON.stringify({ rules: [
+      { id: "disabled-broken", enabled: false, type: "regex", pattern: "(" },
+    ] }));
+    writeFileSync(projectPath, JSON.stringify({ rules: [] }));
+
+    const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
+    assert.deepEqual(config.rules, []);
+    assert.ok(warnings.some((warning) =>
+      warning.includes("disabled-broken")
+      && warning.includes("invalid regex")
+      && warning.includes("currently disabled")
+    ));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -378,6 +400,36 @@ test("structural rule mutations validate targets and preserve unrelated config f
   }
 });
 
+test("cross-file structural mutations roll back every file when a later publish fails", async () => {
+  const dir = makeTmp();
+  try {
+    const projectPath = join(dir, "project.json");
+    const globalPath = join(dir, "global.json");
+    writeFileSync(projectPath, JSON.stringify({ rules: [{ id: "move-me", real: "project-secret-value" }] }));
+    writeFileSync(globalPath, JSON.stringify({ rules: [{ id: "keep", real: "global-secret-value" }] }));
+    const beforeProject = readFileSync(projectPath, "utf8");
+    const beforeGlobal = readFileSync(globalPath, "utf8");
+
+    await assert.rejects(
+      saveConfigRuleMutations([
+        { kind: "delete", path: projectPath, sourceIndex: 0, id: "move-me" },
+        { kind: "append", path: globalPath, rule: { id: "move-me", real: "project-secret-value" } },
+      ], {
+        beforePublish: (_path, index) => {
+          if (index === 1) throw new Error("simulated second-file publish failure");
+        },
+      }),
+      /simulated second-file publish failure/,
+    );
+
+    assert.equal(readFileSync(projectPath, "utf8"), beforeProject);
+    assert.equal(readFileSync(globalPath, "utf8"), beforeGlobal);
+    assert.equal(readdirSync(dir).some((name) => name.endsWith(".tmp") || name.endsWith(".bak")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("redacted exports hide literals and are created without overwrite", async () => {
   const dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "masking-export-"));
   try {
@@ -462,6 +514,38 @@ test("invalid JSON produces a warning instead of silent failure", async () => {
     const { config, warnings } = await loadConfigFromPaths(g, p, KEY);
     assert.equal(config.enabled, true);
     assert.ok(warnings.some((w) => w.includes("Failed to read/parse")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("reload keeps the last valid source when a config is temporarily invalid", async () => {
+  const dir = makeTmp();
+  try {
+    const g = join(dir, "g.json");
+    const p = join(dir, "p.json");
+    writeFileSync(g, JSON.stringify({ rules: [{ id: "global", real: "global-secret-value" }] }));
+    writeFileSync(p, JSON.stringify({ rules: [{ id: "project", real: "project-secret-value" }] }));
+    const first = await loadConfigFromPaths(g, p, KEY);
+
+    writeFileSync(p, "{ temporarily invalid");
+    const fallback = await loadConfigFromPaths(g, p, KEY, process.env, first.snapshot);
+    assert.deepEqual(fallback.config.rules.map((rule) => rule.id), ["project", "global"]);
+    assert.ok(fallback.warnings.some((warning) => warning.includes("last valid project config")));
+
+    writeFileSync(p, JSON.stringify({ rules: [{ id: "repaired", real: "repaired-secret-value" }] }));
+    const repaired = await loadConfigFromPaths(g, p, KEY, process.env, fallback.snapshot);
+    assert.deepEqual(repaired.config.rules.map((rule) => rule.id), ["repaired", "global"]);
+
+    writeFileSync(p, JSON.stringify({ rules: "not-an-array" }));
+    const shapeFallback = await loadConfigFromPaths(g, p, KEY, process.env, repaired.snapshot);
+    assert.deepEqual(shapeFallback.config.rules.map((rule) => rule.id), ["repaired", "global"]);
+    assert.ok(shapeFallback.warnings.some((warning) => warning.includes("project config.rules is not an array")
+      && warning.includes("last valid project config")));
+
+    rmSync(p);
+    const deleted = await loadConfigFromPaths(g, p, KEY, process.env, shapeFallback.snapshot);
+    assert.deepEqual(deleted.config.rules.map((rule) => rule.id), ["global"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

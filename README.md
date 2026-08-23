@@ -1,561 +1,174 @@
 # pi-data-masking
 
-A Pi extension that replaces configured sensitive values before they reach the LLM, restores them at the tool-execution boundary, and masks matching tool results before they return to model context.
+**Protect sensitive values from the LLM provider without degrading agent reasoning, tool calls, or prompt-cache reuse.**
 
-The main conversation and tools use real values. The model receives stable, format-preserving placeholders.
+Real values stay in the local Pi conversation. The model receives stable, realistic-looking placeholders; tools receive the real values again immediately before execution.
 
 ```text
-user/tool data → mask → LLM → unmask tool arguments → tool runs on real data
+user/tool data → mask → LLM → restore tool arguments → tool uses real data
                               tool result → mask → next LLM request
 ```
 
-## Security scope
+## Design principles
 
-This extension is rule-based masking, not a PII detector or encryption.
+Masking is useful only if the agent can continue working normally. The extension is therefore designed around three requirements: preserve reasoning quality, keep tool execution transparent, and keep the model-facing conversation stable for prefix caching.
 
-- Only strings matched by configured literal or regex rules are protected.
-- Pi session files contain the real conversation by default under `~/.pi/agent/sessions/`; protect their file permissions.
-- Binary and non-string data is not scanned.
-- The final `before_provider_request` safety net depends on provider support for that hook.
-- Format-preserving placeholders retain shape, not meaning. Do not mask short/common values such as PINs, weak passwords, or ordinary words.
+### Plausible values, not redaction markers
 
-See [Limitations and rule design](#limitations-and-rule-design) before relying on the extension for sensitive workloads.
+An obvious marker such as `[REDACTED]` tells the model that data is missing. That can change its reasoning, make it ask for the value again, or make it refuse a tool call.
 
-## Install
+Automatic placeholders instead preserve character classes and separators: letters remain letters, digits remain digits, and URL/token structure remains usable. Rules can preserve safe prefixes or IP octets, and literal rules may specify a deliberately realistic replacement.
+
+```text
+sk-prod-abc123456789  → sk-nqpz-mwx847312654  (with keepPrefix)
+172.16.254.1          → 233.84.19.207
+db.prod.internal      → db-primary.prod.corpnet.internal
+```
+
+The placeholder keeps the value operationally believable, not semantically equivalent. This is why rules should target high-entropy secrets rather than values whose meaning depends on their exact characters.
+
+### Stable model context
+
+The same real value maps to the same placeholder throughout a conversation. Reopening a persisted Pi conversation restores its session key and confirmed model-facing snapshots, keeping earlier prefixes stable and preserving the opportunity for provider prompt-cache hits. A new conversation uses a new key.
+
+### Transparent tool execution
+
+The model plans tool calls using placeholders. Immediately before a tool runs, matching placeholders in its arguments are restored to their real values. Tool results remain real in the local conversation; protected values are masked again before the next model request.
+
+The model must pass placeholders verbatim. Arithmetic, slicing, concatenation, or hashing performed on placeholder characters cannot be reversed.
+
+### Inspectable model view
+
+`/masking-history` makes the otherwise invisible boundary auditable. It highlights replacements and switches among the local original, the exact model-facing representation, and a comparison view. Wide terminals show the comparison side by side; narrow terminals stack both versions.
+
+## Project-specific trade-off: immutable first-seen
+
+This extension deliberately makes provenance immutable to protect reasoning consistency and cache prefixes. The first matching occurrence fixes one state for the entire conversation:
+
+- First seen in user, system, or tool-result data: `protected`. It is masked consistently, including later assistant echoes.
+- First seen in model output: `model-known`. Later occurrences from the user or tools remain unmasked.
+
+If the model saw a value first, protecting it later would rewrite text the model had already seen. pi-data-masking therefore preserves the established model view and accepts that a later secret with the same string will not be protected. This loss of coverage is a conscious project policy, not an unavoidable property of every masking implementation.
+
+First-seen does not create the identical-string ambiguity described below; it provides a deterministic choice once that ambiguity occurs. With high-entropy secrets, the model independently generating the exact same value is extremely unlikely.
+
+## Inherent limitations of masking
+
+> Do not mask a value whose exact characters or meaning the model must analyze. A realistic placeholder is an operational substitute, not a semantic equivalent, and the model can confidently reason from it incorrectly.
+
+These limitations follow from replacing a value and apply to masking systems generally:
+
+- **Hidden characters cannot be analyzed.** Password-strength judgments, numeric comparisons, parsing, encoding, and logic based on actual characters can be confidently wrong because the model sees the replacement.
+- **Derived values cannot be restored.** Arithmetic, slicing, concatenation, hashing, checksums, and signatures operate on placeholder characters rather than the real value.
+- **One string cannot carry two semantic identities.** A global matcher cannot know whether `123456` is a password, an ordinary example, or test data when the text is identical.
+
+The last limitation is especially dangerous for low-entropy and common values. If `123456` is protected first and the model later independently writes an ordinary `123456`, matching occurrences are still treated as protected. If the model used `123456` first, immutable first-seen leaves a later password with that value unprotected. No global string-replacement scheme can reliably satisfy both meanings.
+
+Use pi-data-masking for high-entropy, opaque operational values—API keys, access tokens, private hostnames, and connection credentials—that the model should pass through to tools rather than inspect or independently reproduce.
+
+## Mitigations, not guarantees
+
+| Measure | What it helps | What it cannot guarantee |
+|---|---|---|
+| Format-preserving or custom realistic placeholders | Normal reasoning flow and tool-call willingness | The real value's meaning |
+| Stable HMAC mapping and persisted snapshots | Context consistency and cache-prefix reuse | Correct reasoning about hidden characters |
+| `keepPrefix` / `keepIPv4Octets` | Selected prefix or network assertions | Unpreserved structure or semantics |
+| High-entropy values and narrow contextual rules | Accidental matches and same-string ambiguity | Perfect semantic identity |
+| `systemPromptGuidance` | Discouraging placeholder transformation | Model compliance |
+| `/masking-history` comparison | Detecting unexpected model views and semantic drift | Preventing the problem automatically |
+
+## Quick start
 
 ```bash
 pi install npm:@sevten/pi-data-masking
 ```
 
-Run Pi and open `/masking-config`, then choose `＋ Add new rule`. The Rule
-Builder's `Scope` row selects project or global storage. If that config does not
-exist, saving the first rule creates a minimal file without overwriting another
-file. After project creation, the UI asks whether to add
-`.pi/pi-data-masking/masking.config.json` to the project's `.gitignore`. No separate
-initializer or `/masking-init` command is required.
+Restart Pi and open `/masking`. Select `＋ Add new rule`, choose project or global scope, and test the rule in the same screen before saving.
 
-For manual setup, choose where the initial configuration should apply.
+| Scope | Configuration path |
+|---|---|
+| Project | `<project>/.pi/pi-data-masking/masking.config.json` |
+| Global | `~/.pi/agent/pi-data-masking/masking.config.json` |
 
-For a global configuration shared by all projects:
+When the first project rule is saved, Pi can add the configuration path to `.gitignore`. Configuration files use strict JSON and reload automatically.
 
-```bash
-mkdir -p ~/.pi/agent/pi-data-masking
-cp ~/.pi/agent/npm/node_modules/@sevten/pi-data-masking/masking.config.example.json \
-  ~/.pi/agent/pi-data-masking/masking.config.json
-```
-
-Or, for a configuration limited to the current project:
-
-```bash
-mkdir -p .pi/pi-data-masking
-cp ~/.pi/agent/npm/node_modules/@sevten/pi-data-masking/masking.config.example.json \
-  .pi/pi-data-masking/masking.config.json
-```
-
-Edit the chosen file and set `PROD_API_KEY` in Pi's environment, or replace the
-example rules with your own. Configuration changes are applied automatically
-without restarting Pi.
-
-Both scopes may be used together: keep shared rules in the global file and add only project-specific rules or option overrides to the project file. Do not copy the complete global configuration into the project file, because both rule lists are merged.
-
-## Quick configuration
+For manual configuration:
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/sevten/pi-data-masking/main/masking.config.schema.json",
   "version": 1,
   "enabled": true,
-  "options": {
-    "caseSensitive": true,
-    "showStatusBar": true,
-    "systemPromptGuidance": false,
-    "persistHistory": true
-  },
   "rules": [
     {
-      "id": "prod_api_key",
+      "id": "production-api-key",
       "name": "Production API key",
-      "enabled": true,
-      "description": "Credential used by the production deployment pipeline",
-      "realFromEnv": "PROD_API_KEY",
-      "preserveStructure": { "keepPrefix": true }
+      "realFromEnv": "PROD_API_KEY"
     },
     {
-      "id": "github_pat",
+      "id": "github-personal-access-token",
       "name": "GitHub personal access token",
-      "preset": "github-pat",
-      "enabled": false
+      "preset": "github-pat"
     }
   ]
 }
 ```
 
-Rule types:
+Environment-backed values must be present in the process that starts Pi:
 
-- A **literal rule** omits `type` or uses `"literal"`. Every fixed-string occurrence of `real` is replaced, including substring occurrences.
-- A **regex rule** uses `"type": "regex"`. Each value matched by `pattern` receives a stable placeholder when first encountered.
-- A **preset rule** uses `"preset"` and expands to a tested built-in regex at load time. Its position still determines priority.
-
-The packaged `masking.config.example.json` is deliberately small. Use presets
-for common value shapes and custom regex only when a preset does not fit.
-
-Every rule accepts an optional `enabled` boolean. It defaults to `true`, so existing configurations keep their current behavior. Set it to `false` to retain a rule and its priority position without running it:
-
-```json
-{
-  "id": "github_pat",
-  "name": "GitHub personal access token",
-  "type": "regex",
-  "enabled": false,
-  "pattern": "\\bghp_[A-Za-z0-9]{36}\\b"
-}
+```bash
+export PROD_API_KEY='sk-prod-example'
+pi
 ```
 
-Use `/masking-config` to browse all project and global rules. Press `Space` to
-apply a per-rule state change immediately with no confirmation dialog; disabling
-shows a non-blocking warning. Rule-list details hide literal real values by
-default; `R` reveals the selected exact or resolved environment value. Each
-write uses an atomic replacement and restricts the config file to user-only
-permissions where the filesystem supports POSIX modes.
+Enter only the variable name in `realFromEnv`, without `$`. A missing or empty variable leaves the rule in `WAIT` state.
 
-The home list uses a centered four-character state column: `[ ON ]`, `[OFF ]`,
-and `[WAIT]`. A dim `STATE / ORDER / SCOPE / TYPE / NAME` header identifies each
-aligned column, including the otherwise ambiguous execution-priority number.
-Its final selectable row is `＋ Add new rule`, so creation is
-discoverable with `Enter` while `A` remains available as a shortcut. Reordering
-retains the same selected rule instead of leaving the cursor at the old row.
+## Rules
 
-Configuration-center controls:
+| Rule source | Configuration | Best use |
+|---|---|---|
+| Exact literal | `real` | One known value |
+| Environment literal | `realFromEnv` | One known value that should not be stored in JSON |
+| Custom regex | `type: "regex"`, `pattern` | A narrowly defined class of values |
+| Built-in preset | `preset` | Common tokens, credentials, private keys, connection strings, or private IPs |
 
-| Key | Action |
-|---|---|
-| `Space` | Immediately enable/disable the selected rule without a confirmation dialog |
-| `Enter` | Edit the selected rule, or add one from the `＋ Add new rule` row |
-| `A` / `D` or `Delete` | Add or delete a rule |
-| `Ctrl+↑` / `Ctrl+↓` | Move a rule within its project/global scope |
-| `F` / `/` | Cycle filters or search names, IDs, descriptions, sources, and types |
-| `B` | Immediately enable or disable all currently visible rules after one summary confirmation |
-| `Tab` | Switch between the rule list and the embedded active-rules test panel |
-| `H` | Show an in-app guide to literal, preset, and regex rule configuration |
-| `I` / `X` | Import rules from a config or create a non-runnable redacted export |
+Every rule has a unique `id` within its file. `name` is the user-facing label; `enabled` defaults to `true`. Literal rules may use a fixed `placeholder` or automatic generation. Regex matches always receive generated placeholders because one pattern can discover many distinct values.
 
-Single-rule toggles and `Ctrl+Up`/`Ctrl+Down` reordering save in place without
-closing and recreating the configuration screen. The title briefly reports the
-save state, conflicting input is ignored while the atomic write and runtime
-reload complete, and the selected rule, scroll position, details, and local
-test panel remain mounted. A failed write leaves the displayed/runtime state
-unchanged and reports the error.
+Custom patterns use standard JavaScript `RegExp` syntax. Store the pattern source without `/.../` and escape backslashes for JSON, for example `"\\btoken_[A-Za-z0-9]{24}\\b"`. Standard flags such as `i`, `m`, and `s` are supported; global scanning and match indices are added internally. If capture groups exist, only the captured parts are masked. Earlier rules take priority over overlapping later rules.
 
-When adding an `Exact literal value`, the configuration center asks for the
-value once and then lets you choose either an automatically generated
-placeholder or an exact custom replacement. Prefer an environment-backed
-literal for secrets that should not be stored in JSON. Home details hide values
-by default and reveal only the selected rule with `R`. Entering the rule editor
-is an explicit inspection action, so a stored exact `real` value is shown there
-by default; environment-backed editing continues to show the variable name.
-
-When adding a `Literal from environment`, enter only the environment variable
-name (for example `PROD_API_KEY`, without `$`), then choose either an
-automatically generated placeholder or an exact custom replacement. The
-variable must be present in the environment of the process that starts Pi; a
-missing or empty value leaves the rule in the `WAIT` state.
-
-The configuration-center home screen includes a compact `Test active rules`
-panel. `Tab` is the only shortcut for switching between the rule list and test
-input. Input is evaluated locally as it changes and shows a
-masked preview plus rule-attributed match counts. It is cleared when the screen
-closes and never enters configuration, session history, live dynamic mappings,
-or model context. Both panels visibly identify focus through title color and
-the `focused` / `Tab to focus` suffix, without a leading arrow or indentation.
-The Rules title stays outside the two dividers that bound the actual rule list.
-Test titles stay outside the input editor's own border, avoiding duplicated
-lines. The home test editor uses its own `Enter text` placeholder instead of a
-second instruction line; an unfocused title adds `Tab to focus`.
-Selected-rule details avoid repeating the list's name and state columns. They
-show the description, effective regex or literal source/value, replacement
-mode, scope, and source path. An automatically generated literal placeholder is
-labelled as the current session's effective value; a disabled or waiting rule
-instead says it will be generated when active.
-The list's type column reports execution semantics (`exact`, `env`, or
-`regex`), so preset-backed regex rules also appear as `regex`; their preset
-origin remains visible in the selected-rule details and through the preset
-filter. Literal values are hidden on the home screen by default. Press `R` to
-reveal only the selected exact value or resolved environment value, and press
-it again—or move to another row—to hide it.
-The selected-rule details sit directly below the rule list's lower divider in a fixed
-six-row block. Shorter rule types are padded with blank rows, so moving among
-exact, environment, regex, preset-backed, and add-new rows does not shift the
-test panel.
-
-Existing rules open in the same structured Rule Builder used for creation, with
-a candidate-rule test area below. `F2` switches to complete JSON when advanced
-fields are needed, and `Tab` switches between editing and testing. Preset
-references are expanded into editable regex fields before editing.
-
-Adding a rule first asks only for the broad rule type. It
-then opens one focused Rule Builder instead of continuing through field-by-field
-prompts. The Builder contains only that type's contextual fields, local test
-input, validation, and masked preview. `Rule type` uses the same execution names as the home list and can switch
-among `exact`, `env`, and `regex`; the contextual fields update immediately and values are
-retained if the user switches back. `Scope` switches between `project` and
-`global`; when editing, changing it moves the rule between config files. A
-missing target config is created minimally when the rule is saved. A compact field list shows each label and
-editable value on one line, while one fixed line below shows only the selected
-field's description. That description remains in place when focus moves to the
-test area, so the form and test positions do not jump. Previously entered values
-remain visible, active values scroll horizontally around the cursor when needed,
-and focus changes never alter the form's height. `Up`/`Down` move between fields;
-the structured field area reserves eight rows, so changing type or showing a
-custom Placeholder does not shift the test panel. `Tab`/`Shift+Tab` switch only
-between the form and local test area.
-`Left`/`Right` or `Space` changes a selector. Non-preset rule fields start
-empty; examples remain in field descriptions instead of becoming accidental
-configuration values. `F2` switches between the structured form and complete
-JSON; switching back to the form derives the type from the JSON. `Enter`
-validates and saves from the editing area, and `Esc` cancels. Built-in presets
-expand into editable regex fields immediately. Because validation and testing
-are already live, there is no separate Review step.
-
-When adding a built-in preset, a dedicated selection step shows only readable
-labels in the list. The selected preset's description and verified matching
-example appear on separate fixed lines below the list. After selection, the
-Rule Builder uses the readable label as `Name`, generates a separate unique ID,
-and expands the description (including the example), pattern, flags, and
-structure-preservation options into editable fields. The resulting rule can be
-edited like any custom regex before saving.
-
-### Built-in presets
-
-Available names are `github-pat`, `npm-token`, `huggingface-token`,
-`aws-access-key-id`, `slack-token`, `jwt`, `pem-private-key`, `bearer-token`,
-`database-userinfo`, and `private-ipv4`.
-
-```json
-{ "id": "github_pat", "name": "GitHub personal access token", "preset": "github-pat", "enabled": true }
-```
-
-Preset references may override `name`, `description`, `enabled`, `lowEntropy`, and
-`preserveStructure`, but not the built-in pattern or flags. Unknown presets are
-reported and remain inactive. Existing config files may continue using these
-compact references. When one is opened in the configuration-center editor, it
-is expanded into a complete custom regex draft; saving the draft converts that
-rule from a preset reference into an independently editable regex.
-
-### Environment-backed literal values
-
-Use `realFromEnv` instead of `real` when a fixed secret should not be stored in
-JSON:
-
-```json
-{
-  "id": "prod_api_key",
-  "realFromEnv": "PROD_API_KEY",
-  "preserveStructure": { "keepPrefix": true }
-}
-```
-
-`real` and `realFromEnv` are mutually exclusive. A missing or empty environment
-variable leaves the rule inactive and produces a warning containing only the
-variable name. The value is resolved again on session start and config reload.
-
-### Configuration paths and merging
-
-| Path | Scope |
-|---|---|
-| `~/.pi/agent/pi-data-masking/masking.config.json` | All projects |
-| `<project>/.pi/pi-data-masking/masking.config.json` | Current project |
-
-When both files exist:
-
-- project rules are evaluated first, followed by global rules;
-- project option fields override matching global fields;
-- project `enabled` wins when explicitly set;
-- a saved `/masking-toggle` state overrides both files.
-
-`id` is a stable machine identifier used for editing, stale-write protection,
-warnings, and diagnostics. It must be unique within one config file. The same ID
-may appear once in the project config and once in the global config; those are
-independent rules identified by scope and path. `name` is the short label shown
-prominently in `/masking-config`, while `description` is optional longer help
-text. New rules created in the TUI ask for `name` and derive a readable unique
-ID automatically. Existing rules remain compatible and display
-`name ?? description ?? id`.
-
-`/masking-toggle` stores its state in `~/.pi/agent/pi-data-masking/toggle-state.json`. Delete that file and restart Pi to return control to the config-file `enabled` value.
-
-Invalid rules are skipped and reported instead of preventing the extension from loading.
+The packaged [`masking.config.example.json`](masking.config.example.json) contains exact, environment, custom-regex, and preset examples. [`masking.config.schema.json`](masking.config.schema.json) is the complete field reference and enables editor validation.
 
 ## Commands
 
-| Command | Description |
+| Command | Purpose |
 |---|---|
-| `/masking-config` | Browse, search, test, add, edit, delete, reorder, import/export, and immediately toggle project/global rules |
-| `/masking-list` | Compatibility alias for `/masking-config` |
-| `/masking-history` | Open the full-screen local/model/comparison history viewer |
-| `/masking-toggle` | Enable or disable masking persistently for future sessions and projects |
-| `/masking-test <text>` | Preview rule transformation locally for 20 seconds without changing live session mappings |
+| `/masking` | Manage, order, enable, edit, and locally test project/global rules |
+| `/masking-toggle` | Persistently enable or disable masking |
+| `/masking-history` | Audit highlighted local/model views and side-by-side comparison |
 
-When `showStatusBar` is enabled, the status bar shows whether masking is active. No automatic per-round panel is added to the main workspace; use `/masking-history` for auditing.
+In `/masking`, `Space` toggles a rule immediately, `Enter` edits or adds, `Ctrl+↑/↓` changes priority, `D`/`Delete` removes, `Tab` focuses local testing, and `R` reveals the selected literal value. The screen lists the remaining filter, search, batch, help, import, and redacted-export shortcuts.
 
-### History viewer controls
+The test areas are local: sample text does not enter model context, session history, configuration, or live placeholder mappings.
 
-`/masking-history` replays the complete user, assistant, and tool conversation on the active Pi branch.
+## Scope, persistence, and recovery
 
-| Key | Action |
-|---|---|
-| `Ctrl+M` or `M` | Toggle local-original and model-input views |
-| `C` | Toggle comparison view; wide terminals use columns and narrow terminals stack both versions |
-| `N` / `P` | Select the next/previous replacement in the inspector |
-| `Ctrl+O` | Expand or collapse tool outputs; collapsed output previews 10 lines |
-| `Ctrl+T` | Show or hide thinking blocks |
-| `↑` / `↓`, `PageUp` / `PageDown`, `Home` / `End` | Scroll |
-| Mouse wheel | Scroll when Pi uses full-screen TUI mode |
-| `Esc` | Close |
+When both configuration files exist, project rules run before global rules; project option fields override global fields. A saved `/masking-toggle` state overrides both files.
 
-The local view highlights sensitive original spans without injecting brackets or parentheses into the conversation. The model view highlights replacements. The comparison view shows both.
+Config writes are atomic and use user-only permissions where POSIX modes are available. Multi-file operations roll back on failure. If a watched file is temporarily invalid or unreadable, the last successfully parsed configuration remains active; deleting the file intentionally removes that scope.
 
-The newest assistant response is provisional until it participates in the next model request; only confirmed outbound representations are persisted.
+`persistHistory` defaults to `true`. It stores the session key and model-facing text differences in Pi custom session metadata so placeholders and `/masking-history` survive a restart. It does not duplicate original secrets, although Pi's normal session file already contains the real conversation.
 
-## Placeholder behavior
+Other options are `caseSensitive`, `showStatusBar`, and `systemPromptGuidance`; see the JSON Schema for their defaults and descriptions.
 
-Auto placeholders are derived from `HMAC(sessionKey, real value)` and preserve common structure:
+## Implementation and security boundaries
 
-| Input property | Behavior |
-|---|---|
-| Uppercase/lowercase/digits | Replaced with the same character class |
-| Separators such as `-`, `_`, `@`, `.`, `:` and `/` | Preserved |
-| Valid IPv4 address | Each replaced octet remains within `0–255` |
-| Known connection string | Scheme, port, and path are preserved; user info and host are replaced |
-
-Examples:
-
-```text
-sk-prod-abc123456789  → sk-nqpz-mwx847312654
-172.16.254.1          → 233.84.19.207
-postgresql://admin:secret@db.company.com:5432/prod
-                     → postgresql://bxkzp:qwerty@wn.xm7rqnj.rkt:5432/prod
-```
-
-The exact output is session-specific. With history persistence enabled, reopening the same Pi conversation restores its session key and placeholders. A new conversation receives a new key.
-
-### Preserving asserted structure
-
-Use `preserveStructure` when a conversation refers to a non-secret prefix or network segment:
-
-```json
-{
-  "id": "prod_api_key",
-  "real": "sk-prod-abc123456789",
-  "preserveStructure": { "keepPrefix": true }
-}
-```
-
-```json
-{
-  "id": "internal_ip",
-  "type": "regex",
-  "pattern": "\\b10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b",
-  "preserveStructure": { "keepIPv4Octets": 2 }
-}
-```
-
-- `keepPrefix: true` keeps the first segment through its separator, such as `sk-`. A number limits how many characters are retained.
-- `keepIPv4Octets: 2` keeps two leading octets and randomizes the rest. At least one octet is always randomized.
-
-Literal rules may set an explicit `placeholder`. Regex rules cannot because one pattern may discover many different real values.
-
-## Regex guidelines
-
-Use regex only for value classes you cannot enumerate. Prefer narrow patterns based on value structure, such as `ghp_`, `AKIA`, JWT, or PEM formats. Avoid broad “key name followed by anything” patterns; they tend to mask source code while missing real secrets.
-
-In `/masking-config`, choose `A` → `Custom regex` and provide:
-
-1. **Rule name** — the human-readable label shown in the configuration center;
-   a unique ID is generated from it.
-2. **JavaScript regex source** — the pattern only, without surrounding `/.../`.
-   Because it is stored in JSON, backslashes appear doubled in the resulting
-   file, for example `\btoken_[A-Za-z0-9]{24}\b`.
-3. **Regex flags (optional)** — JavaScript flags such as `i`, `m`, or `s`;
-   you need not add `g`, because global matching is handled internally.
-
-The commonly useful flags are:
-
-- `i` — case-insensitive matching. `token` also matches `TOKEN` and `Token`.
-- `m` — multiline anchors. With `^secret=.*$`, `^` and `$` apply to every line
-  instead of only the start and end of the complete input.
-- `s` — dot-all mode. `BEGIN(.*?)END` can cross newline characters because `.`
-  also matches a newline.
-- `g` — global matching. It finds every occurrence instead of stopping after
-  the first; pi-data-masking adds it automatically, so it need not be entered.
-
-Regex matches receive deterministic generated placeholders. A regex rule
-cannot use one fixed `placeholder`, since the same pattern may discover many
-different real values. If the pattern contains capture groups, only the
-captured portions are masked; without capture groups, the entire match is
-masked.
-
-For example, `\bnpm_[A-Za-z0-9]{36}\b` is composed of:
-
-- `\b` — a zero-width word boundary: a position between a word character
-  (`A-Z`, `a-z`, `0-9`, or `_`) and a non-word character, or the start/end of
-  text. It prevents this pattern from starting or ending inside a larger word.
-- `npm_` — those four literal characters.
-- `[A-Za-z0-9]` — one ASCII uppercase letter, lowercase letter, or digit.
-- `{36}` — repeat the preceding character class exactly 36 times.
-- the final `\b` — require the token to end at another word boundary.
-
-Thus it matches an `npm_` prefix followed by exactly 36 ASCII alphanumeric
-characters. In the JSON file each backslash is escaped, so the same pattern is
-displayed as `"\\bnpm_[A-Za-z0-9]{36}\\b"`.
-
-### Replace only part of a match
-
-When a pattern contains capture groups, only the captured values are replaced:
-
-```json
-{
-  "id": "bearer_token",
-  "type": "regex",
-  "pattern": "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)",
-  "flags": "i"
-}
-```
-
-This keeps `Authorization: Bearer` readable to the model.
-
-Use lookahead when adjacent rules must not claim each other's text:
-
-```json
-{
-  "id": "employee_email_local_part",
-  "type": "regex",
-  "pattern": "[A-Za-z0-9._%+-]+(?=@company-internal\\.com)"
-}
-```
-
-Rules run in list order and earlier matches claim overlapping regions. Put specific rules before broad rules. Regex `flags` override global `caseSensitive`; the extension adds global matching internally.
-
-The loader and Rule Builder also diagnose common JavaScript regex shapes that
-may take excessive time on a failing input: nested unbounded quantifiers such
-as `(a+)+`, overlapping alternatives such as `(foo|foobar)+`, and adjacent
-overlapping repetitions such as `.*.*`. These diagnostics are advisory because
-runtime cost depends on the input. The rule remains valid, and the Builder
-allows an explicit second `Enter` to save after reviewing the warning. Prefer
-a required separator, a narrower character class, or a fixed upper bound when
-possible. Built-in presets are covered by regression tests for these warnings.
-
-Test representative positive and negative examples with `/masking-test` before relying on a rule. This command uses an isolated `Masker`, so it previews rule behavior without importing or mutating live provenance and dynamic mappings.
-
-## History persistence
-
-`options.persistHistory` defaults to `true`. It stores Pi custom session entries containing:
-
-- the 32-byte session key used for stable placeholders;
-- changed string positions and masked replacements for confirmed model-input messages.
-
-These custom entries do not enter LLM context and do not duplicate the original secret text. Pi already stores the real conversation in its session JSONL.
-
-On restart, the extension restores the active branch only and rebuilds dynamic mappings and provenance locally. Sibling fork snapshots are not mixed together.
-
-For sessions created before persistence existed, original messages remain viewable. A model-input representation is marked unavailable until that message crosses a new outbound boundary.
-
-Setting `persistHistory` to `false` stops new metadata writes but does not delete existing entries. A new conversation created with persistence disabled cannot recover exact model-input history or guarantee identical placeholders after restart.
-
-## Limitations and rule design
-
-### First-seen is forever
-
-The first source of a value determines how it is handled for the rest of the session:
-
-- First seen in a user message or tool result: register and mask it in every role, including later assistant echoes.
-- First seen in model output: treat it as model-invented and never mask it later, even if the user subsequently sends the same string.
-- Tool results always register because they are real external data sources.
-
-This keeps historical model context stable and avoids changing the representation of the model's own earlier output. The trade-off is that a value invented by the model before the user supplies the same value is not protected. This is negligible for high-entropy secrets but unsafe for short/common values.
-
-### Practical rule checklist
-
-1. Prefer literal rules when you know the exact value.
-2. Do not mask low-entropy values such as short codes, weak passwords, or common words.
-3. Constrain regex with structure, boundaries, lookaheads, or capture groups.
-4. Preserve a prefix or IP subnet only when that structure is safe and important to model reasoning.
-5. Pass placeholders verbatim to tools; arithmetic, slicing, concatenation, and hashing operate on fake characters and cannot be reversed.
-6. Enable `systemPromptGuidance` if the model tends to transform placeholders or infer meaning from their appearance.
-
-Other boundaries:
-
-- A short literal may match inside unrelated text because literal matching is substring-based.
-- A model output that accidentally equals a known placeholder can be restored to the corresponding real value; high-entropy placeholders make this unlikely.
-- Very large message/tool payloads are recursively copied and scanned, which has a memory and CPU cost.
-- Content injected only at the final provider boundary is protected and reported, but may not correspond to a stored message that `/masking-history` can replay.
-
-## Configuration reference
-
-### Top level
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `$schema` | string | — | Schema URL for editor completion and inline validation |
-| `version` | `1` | — | Optional config format version; legacy files may omit it |
-| `enabled` | boolean | `true` | Config-file masking state; overridden by saved `/masking-toggle` state |
-| `rules` | array | `[]` | Ordered literal, regex, and preset rules |
-| `options` | object | defaults below | Runtime behavior |
-
-### Literal rule
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `id` | string | yes | Stable identifier, unique within this config file |
-| `name` | string | no | Short display name; TUI-created rules require it and generate `id` automatically |
-| `enabled` | boolean | no | Per-rule switch; defaults to `true` |
-| `description` | string | no | Optional longer explanation shown in rule details |
-| `type` | `"literal"` | no | May be omitted |
-| `real` | string | one source required | Fixed string to replace |
-| `realFromEnv` | string | one source required | Name of an environment variable containing the fixed value; mutually exclusive with `real` |
-| `placeholder` | string | no | Explicit replacement; omit or use `"auto"` to generate one |
-| `preserveStructure` | object | no | `keepPrefix` and/or `keepIPv4Octets` |
-| `lowEntropy` | boolean | no | Suppress the warning for an intentionally short value |
-
-### Regex rule
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `id` | string | yes | Stable identifier, unique within this config file |
-| `name` | string | no | Short display name; TUI-created rules require it and generate `id` automatically |
-| `enabled` | boolean | no | Per-rule switch; defaults to `true` |
-| `description` | string | no | Optional longer explanation shown in rule details |
-| `type` | `"regex"` | yes | Select regex matching |
-| `pattern` | string | yes | JavaScript regex source without delimiters, e.g. `\\btoken_[A-Za-z0-9]{24}\\b` in JSON |
-| `flags` | string | no | JavaScript flags such as `i`, `m`, or `s`; `g` is added internally |
-| `preserveStructure` | object | no | `keepPrefix` and/or `keepIPv4Octets` |
-| `lowEntropy` | boolean | no | Suppress the warning for an intentionally short match shape |
-
-Regex rules do not support `real` or a fixed `placeholder`.
-
-### Preset rule
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `id` | string | yes | Unique identifier within the source file |
-| `name` | string | no | Short display name; TUI-created rules require it |
-| `preset` | preset name | yes | Built-in preset to expand at load time |
-| `enabled` | boolean | no | Per-rule switch; defaults to `true` |
-| `description` | string | no | Override the built-in longer explanation |
-| `preserveStructure` | object | no | Override the preset's structure-preservation defaults |
-| `lowEntropy` | boolean | no | Acknowledge an intentionally low-entropy rule |
-
-The bundled [`masking.config.schema.json`](masking.config.schema.json) describes
-all three mutually exclusive rule shapes and supplies editor descriptions and
-examples.
-
-### Options
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `caseSensitive` | boolean | `true` | Literal matching and regex rules without their own flags |
-| `showStatusBar` | boolean | `true` | Show masking state in Pi's status bar |
-| `systemPromptGuidance` | boolean | `false` | Tell the model to treat placeholders as opaque values |
-| `persistHistory` | boolean | `true` | Persist model-input differences and the session key in Pi session metadata |
+- This is rule-based masking, not encryption or automatic PII detection. Only configured string matches are protected.
+- Pi session files contain the real conversation under `~/.pi/agent/sessions/`; protect their permissions and backups.
+- Binary and other non-string data is not scanned. The final provider-request safety pass also depends on provider support for that Pi hook.
+- PINs, weak passwords, ordinary words, and other low-entropy values are unsuitable; see [Inherent limitations of masking](#inherent-limitations-of-masking).
+- Literal matching includes substring occurrences. Prefer exact high-entropy values; use narrow regex rules for value classes and test positive and negative samples.
+- A custom placeholder must be unique and must not equal another real value. Generated placeholders include collision checks.
+- Content injected only at the final provider boundary can be protected without corresponding to a stored message that `/masking-history` can replay.
 
 ## Development
 
@@ -563,8 +176,7 @@ examples.
 npm install
 npm run check
 npm test
+npm run pack:dry
 ```
 
-CI runs the type check and test suite on pushes and pull requests.
-
-See [CHANGELOG.md](CHANGELOG.md) for the version history.
+See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`CONFIGURATION_REQUIREMENTS.md`](CONFIGURATION_REQUIREMENTS.md) for the detailed product requirements.

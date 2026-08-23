@@ -4,7 +4,15 @@
   "enabled": true,
   "rules": [
     {
-      "id": "prod_api_key",
+      "id": "internal-database-host",
+      "name": "Internal database host",
+      "enabled": false,
+      "description": "Exact literal with a stable, realistic-looking replacement",
+      "real": "db.prod.internal.example",
+      "placeholder": "db-primary.prod.corpnet.internal"
+    },
+    {
+      "id": "production-api-key",
       "name": "Production API key",
       "enabled": true,
       "description": "Production API key read without storing its value in this file",
@@ -12,17 +20,18 @@
       "preserveStructure": { "keepPrefix": true }
     },
     {
-      "id": "github_pat",
+      "id": "application-token",
+      "name": "Application token",
+      "enabled": false,
+      "description": "Custom regex matching secret_ followed by 24 ASCII letters or digits",
+      "type": "regex",
+      "pattern": "\\bsecret_[A-Za-z0-9]{24}\\b"
+    },
+    {
+      "id": "github-personal-access-token",
       "name": "GitHub personal access token",
       "preset": "github-pat",
       "enabled": true
-    },
-    {
-      "id": "private_ip_address",
-      "name": "Private IPv4 address",
-      "preset": "private-ipv4",
-      "enabled": false,
-      "preserveStructure": { "keepIPv4Octets": 2 }
     }
   ],
   "options": {

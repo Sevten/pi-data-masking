@@ -60,15 +60,15 @@
  *        masking them would change the representation of its own messages
  *        (logical contradictions, cache misses). Even if the user later
  *        sends the same string, it stays unmasked (accepted trade-off).
- *      protectedValues: values first seen in user messages or tool results.
+ *      protectedValues: values first seen in user, system, or tool-result data.
  *        They are masked in EVERY message role (including assistant
  *        history), so restored echoes never leak back to the LLM.
  *  - mask(text, { discover }) selects the behavior: user/tool/system
  *    messages pass discover: true (register new values); assistant messages
  *    pass discover: false (only already-protected values are replaced, and
  *    unmatched values are recorded as LLM-invented).
- *  - Tool results pass ignoreInvented: true — real data sources always
- *    register, regardless of what the LLM happened to say earlier.
+ *  - Both sets are immutable for the session. Later sources cannot promote
+ *    an LLM-invented value to protected or demote a protected value.
  */
 
 import { generatePlaceholder } from "./placeholder-gen.ts";
@@ -246,8 +246,6 @@ export interface MaskOptions {
    *  messages pass false: only already-protected values are replaced, and
    *  new matches are recorded as LLM-invented. */
   discover?: boolean;
-  /** Mask even values previously recorded as LLM-invented (tool results). */
-  ignoreInvented?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -266,7 +264,7 @@ export class Masker {
   private dynamicMap: DynamicPlaceholderMap;
   /** Values first seen in LLM output: never masked (first-seen is forever). */
   private readonly llmInventedValues: Set<string>;
-  /** Values first seen in user/tool messages: masked in every role. */
+  /** Values first seen in user, system, or tool-result data: masked in every role. */
   private readonly protectedValues: Set<string>;
   private usedPlaceholders: Set<string> = new Set();
   /** Case flag for unmask patterns, mirrors the mask direction ("" or "i"). */
@@ -291,8 +289,8 @@ export class Masker {
    *                      the caller (index.ts), cleared only on session_start
    * @param llmInventedValues Shared set of values first seen in LLM output;
    *                      never masked (see file header)
-   * @param protectedValues  Shared set of values first seen in user/tool
-   *                      messages; masked in every message role
+   * @param protectedValues  Shared set of values first seen outside model
+   *                      output; masked in every message role
    */
   constructor(
     rules: MaskingRule[],
@@ -580,10 +578,9 @@ export class Masker {
    * Provenance-aware masking decision (first-seen is forever):
    *  - user/tool/system messages (discover, the default): a value is masked
    *    and registered unless it was first seen in LLM output
-   *    (llmInventedValues) — except tool results, which always register
-   *    (ignoreInvented);
+   *    (llmInventedValues); provenance never changes after first sight;
    *  - assistant messages (discover: false, passed explicitly): only
-   *    already-protected values are replaced (restored echoes of user/tool
+   *    already-protected values are replaced (restored echoes of non-model
    *    secrets); anything else is assumed to be LLM-invented content and is
    *    recorded as such.
    */
@@ -593,14 +590,14 @@ export class Masker {
   ): { mask: boolean; register: boolean } {
     if (opts.discover !== false) {
       if (this.protectedValues.has(real)) return { mask: true, register: false };
-      if (opts.ignoreInvented !== true && this.llmInventedValues.has(real)) {
+      if (this.llmInventedValues.has(real)) {
         // First seen in LLM output — never masked, by design.
         return { mask: false, register: false };
       }
       return { mask: true, register: true };
     }
 
-    // Assistant message: mask only protected (user/tool-sourced) values;
+    // Assistant message: mask only protected (non-model-sourced) values;
     // record everything else as LLM-invented.
     if (this.protectedValues.has(real)) return { mask: true, register: false };
     this.llmInventedValues.add(real);
