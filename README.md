@@ -27,12 +27,12 @@ See [Limitations and rule design](#limitations-and-rule-design) before relying o
 pi install npm:@sevten/pi-data-masking
 ```
 
-Run Pi and open `/masking-config`. Press `M` to create a project or global
-configuration, select the built-in presets you need, review the options, and
-confirm the preview. No separate `/masking-init` command is required.
-
-The initializer never overwrites an existing file. Project initialization also
-warns about Git and can add the config path to `.gitignore`.
+Run Pi and open `/masking-config`, then choose `＋ Add new rule`. The Rule
+Builder's `Scope` row selects project or global storage. If that config does not
+exist, saving the first rule creates a minimal file without overwriting another
+file. After project creation, the UI asks whether to add
+`.pi/pi-data-masking/masking.config.json` to the project's `.gitignore`. No separate
+initializer or `/masking-init` command is required.
 
 For manual setup, choose where the initial configuration should apply.
 
@@ -113,13 +113,15 @@ Every rule accepts an optional `enabled` boolean. It defaults to `true`, so exis
 
 Use `/masking-config` to browse all project and global rules. Press `Space` to
 apply a per-rule state change immediately with no confirmation dialog; disabling
-shows a non-blocking warning. Press `M` to inspect sources or create a missing config. Rule-list
-details hide literal real values; environment rules show only the variable name. Each
+shows a non-blocking warning. Rule-list details hide literal real values by
+default; `R` reveals the selected exact or resolved environment value. Each
 write uses an atomic replacement and restricts the config file to user-only
 permissions where the filesystem supports POSIX modes.
 
 The home list uses a centered four-character state column: `[ ON ]`, `[OFF ]`,
-and `[WAIT]`. Its final selectable row is `＋ Add new rule`, so creation is
+and `[WAIT]`. A dim `STATE / ORDER / SCOPE / TYPE / NAME` header identifies each
+aligned column, including the otherwise ambiguous execution-priority number.
+Its final selectable row is `＋ Add new rule`, so creation is
 discoverable with `Enter` while `A` remains available as a shortcut. Reordering
 retains the same selected rule instead of leaving the cursor at the old row.
 
@@ -134,58 +136,92 @@ Configuration-center controls:
 | `F` / `/` | Cycle filters or search names, IDs, descriptions, sources, and types |
 | `B` | Immediately enable or disable all currently visible rules after one summary confirmation |
 | `Tab` | Switch between the rule list and the embedded active-rules test panel |
-| `T` | Focus the embedded active-rules test panel |
 | `H` | Show an in-app guide to literal, preset, and regex rule configuration |
 | `I` / `X` | Import rules from a config or create a non-runnable redacted export |
-| `M` | Inspect source paths or initialize a missing configuration |
+
+Single-rule toggles and `Ctrl+Up`/`Ctrl+Down` reordering save in place without
+closing and recreating the configuration screen. The title briefly reports the
+save state, conflicting input is ignored while the atomic write and runtime
+reload complete, and the selected rule, scroll position, details, and local
+test panel remain mounted. A failed write leaves the displayed/runtime state
+unchanged and reports the error.
 
 When adding an `Exact literal value`, the configuration center asks for the
 value once and then lets you choose either an automatically generated
 placeholder or an exact custom replacement. Prefer an environment-backed
-literal for secrets that should not be stored in JSON. Rule-list details never
-show the value. Entering the rule editor is an explicit inspection action, so
-the stored `real` value is shown there by default. Environment-backed rules
-continue to show only the variable name, never the resolved value.
+literal for secrets that should not be stored in JSON. Home details hide values
+by default and reveal only the selected rule with `R`. Entering the rule editor
+is an explicit inspection action, so a stored exact `real` value is shown there
+by default; environment-backed editing continues to show the variable name.
+
+When adding a `Literal from environment`, enter only the environment variable
+name (for example `PROD_API_KEY`, without `$`), then choose either an
+automatically generated placeholder or an exact custom replacement. The
+variable must be present in the environment of the process that starts Pi; a
+missing or empty value leaves the rule in the `WAIT` state.
 
 The configuration-center home screen includes a compact `Test active rules`
-panel. `Tab` switches between the rule list and test input, while `T` focuses
-the test input directly. Input is evaluated locally as it changes and shows a
+panel. `Tab` is the only shortcut for switching between the rule list and test
+input. Input is evaluated locally as it changes and shows a
 masked preview plus rule-attributed match counts. It is cleared when the screen
 closes and never enters configuration, session history, live dynamic mappings,
-or model context. Both panels visibly identify focus: the active title is
-prefixed with `▶`. The Rules title stays outside the two dividers that bound the
-actual rule list and selected-rule details. Test titles and instructions stay
-outside the input editor's own border, avoiding duplicated lines. Test areas
-always say `Type or paste sample text`; an unfocused title adds `Tab to focus`.
+or model context. Both panels visibly identify focus through title color and
+the `focused` / `Tab to focus` suffix, without a leading arrow or indentation.
+The Rules title stays outside the two dividers that bound the actual rule list.
+Test titles stay outside the input editor's own border, avoiding duplicated
+lines. The home test editor uses its own `Enter text` placeholder instead of a
+second instruction line; an unfocused title adds `Tab to focus`.
+Selected-rule details avoid repeating the list's name and state columns. They
+show the description, effective regex or literal source/value, replacement
+mode, scope, and source path. An automatically generated literal placeholder is
+labelled as the current session's effective value; a disabled or waiting rule
+instead says it will be generated when active.
+The list's type column reports execution semantics (`exact`, `env`, or
+`regex`), so preset-backed regex rules also appear as `regex`; their preset
+origin remains visible in the selected-rule details and through the preset
+filter. Literal values are hidden on the home screen by default. Press `R` to
+reveal only the selected exact value or resolved environment value, and press
+it again—or move to another row—to hide it.
+The selected-rule details sit directly below the rule list's lower divider in a fixed
+six-row block. Shorter rule types are padded with blank rows, so moving among
+exact, environment, regex, preset-backed, and add-new rows does not shift the
+test panel.
 
 Existing rules open in the same structured Rule Builder used for creation, with
 a candidate-rule test area below. `F2` switches to complete JSON when advanced
 fields are needed, and `Tab` switches between editing and testing. Preset
 references are expanded into editable regex fields before editing.
 
-Adding a rule first asks for the configuration source and broad rule type. It
+Adding a rule first asks only for the broad rule type. It
 then opens one focused Rule Builder instead of continuing through field-by-field
 prompts. The Builder contains only that type's contextual fields, local test
-input, validation, and masked preview; scope and broad type are shown as fixed
-context rather than editable fields. A compact field list shows each label and
+input, validation, and masked preview. `Rule type` uses the same execution names as the home list and can switch
+among `exact`, `env`, and `regex`; the contextual fields update immediately and values are
+retained if the user switches back. `Scope` switches between `project` and
+`global`; when editing, changing it moves the rule between config files. A
+missing target config is created minimally when the rule is saved. A compact field list shows each label and
 editable value on one line, while one fixed line below shows only the selected
 field's description. That description remains in place when focus moves to the
 test area, so the form and test positions do not jump. Previously entered values
 remain visible, active values scroll horizontally around the cursor when needed,
 and focus changes never alter the form's height. `Up`/`Down` move between fields;
-`Tab`/`Shift+Tab` switch only between the form and local test area.
+the structured field area reserves eight rows, so changing type or showing a
+custom Placeholder does not shift the test panel. `Tab`/`Shift+Tab` switch only
+between the form and local test area.
 `Left`/`Right` or `Space` changes a selector. Non-preset rule fields start
 empty; examples remain in field descriptions instead of becoming accidental
 configuration values. `F2` switches between the structured form and complete
-JSON, `Enter` validates and saves from the editing area, and `Esc` cancels. Built-in presets
+JSON; switching back to the form derives the type from the JSON. `Enter`
+validates and saves from the editing area, and `Esc` cancels. Built-in presets
 expand into editable regex fields immediately. Because validation and testing
 are already live, there is no separate Review step.
 
-When adding a built-in preset, a dedicated selection step lists only short,
-stable preset names and shows the selected preset's description below the list.
-After selection, the Rule Builder opens with that short name, description,
-pattern, flags, and structure-preservation options expanded into editable
-fields. A unique rule ID is generated automatically. The resulting rule can be
+When adding a built-in preset, a dedicated selection step shows only readable
+labels in the list. The selected preset's description and verified matching
+example appear on separate fixed lines below the list. After selection, the
+Rule Builder uses the readable label as `Name`, generates a separate unique ID,
+and expands the description (including the example), pattern, flags, and
+structure-preservation options into editable fields. The resulting rule can be
 edited like any custom regex before saving.
 
 ### Built-in presets

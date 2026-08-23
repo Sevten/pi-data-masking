@@ -59,6 +59,8 @@ export interface ConfiguredMaskingRule {
   sourceKind: "literal" | "regex" | "preset";
   presetName?: string;
   realFromEnv?: string;
+  /** Whether the configured literal replacement is generated or fixed. */
+  placeholderMode?: "auto" | "custom";
 }
 
 export interface RuleEnabledChange {
@@ -802,6 +804,11 @@ export async function loadConfigFromPaths(
         sourceKind: presetName ? "preset" : isRegexRule(rule) ? "regex" : "literal",
         presetName,
         realFromEnv,
+        placeholderMode: !isRegexRule(rule)
+          ? typeof rawRecord.placeholder === "string" && rawRecord.placeholder !== "auto"
+            ? "custom"
+            : "auto"
+          : undefined,
       });
     });
   }

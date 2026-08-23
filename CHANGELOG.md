@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased
+
+- Remove the redundant `Type or paste sample text` line from configuration test
+  panels; each editor's `Enter text` placeholder now provides the prompt.
+- Remove the duplicate field-navigation instruction above the structured rule
+  editor; the persistent footer remains the single shortcut reference.
+
+- Added an aligned `STATE / ORDER / SCOPE / TYPE / NAME` header to the home
+  rule list, clarifying that the numeric column is execution order.
+- Kept preset selection rows compact by showing only readable labels; the
+  selected preset's description and example now use separate lines below the
+  list.
+- Project config creation now asks whether to add its path to `.gitignore`
+  after the first rule is saved. Preset selection rows now combine readable
+  labels, descriptions, and verified matching examples; selected presets use
+  the readable label as Name and generate a separate ID.
+- Removed the redundant `M` sources/initializer menu. Rule Builder now exposes
+  a project/global Scope selector, creates a missing minimal target config when
+  the first rule is saved, and moves edited rules across scopes atomically.
+- Reserved eight structured-field rows in Rule Builder so type and replacement
+  changes cannot shift the test panel, and placed home details directly against
+  the rule-list divider.
+- Removed the home screen's redundant `T` shortcut in favor of `Tab` alone,
+  removed leading focus arrows from home and Rule Builder area titles, and
+  left-aligned titles and instructions with field help directly below its
+  divider.
+- Made single-rule toggles and reordering save and reload in place while the
+  configuration home screen stays mounted, eliminating the full-screen rebuild
+  and preserving selection, scrolling, details, and test input.
+- Simplified selected-rule details on the configuration home screen by removing
+  repeated name, ID, and state fields; added literal values, always-visible
+  descriptions, environment availability, and explicit current-session versus
+  custom placeholder labelling.
+- Split execution type from rule origin in the home list: exact literals,
+  environment literals, and regex rules now display as `exact`, `env`, and
+  `regex`, while preset origin remains in details and filters. Exact and
+  resolved environment values are hidden by default and can be revealed for
+  only the selected row with `R`.
+- Aligned the Rule Builder's first-row type selector with the home list by using
+  the same `exact`, `env`, and `regex` names.
+- Moved Rule Builder navigation and active-field help outside the field
+  dividers and aligned instructional text across editing and test areas.
+- Moved home-screen rule details below the rule list divider and reserved a
+  fixed-height detail block so changing rule types no longer shifts the test
+  panel.
+- Added a first-row Rule type selector to the structured Rule Builder, allowing
+  existing and new rules to switch among exact literals, environment-backed
+  literals, and regular expressions without discarding temporarily hidden
+  field values. JSON-to-form switching now derives the matching type.
+- Fixed Rule Builder saving from text fields: pressing Enter now validates the
+  current value instead of clearing it first. Enter in the embedded test area
+  continues to insert a newline.
+- Environment-backed literals can now choose an automatically generated or
+  exact custom placeholder, with clearer validation for an empty variable name.
+
 - Unified existing-rule editing with the structured/JSON Rule Builder, made
   Enter save from editing areas, removed redundant F1 help, shortened preset
   selection, and added an explicit selectable add-rule row on the home screen.

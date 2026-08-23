@@ -155,6 +155,9 @@ test("per-rule enabled defaults on while disabled rules stay configured but inac
     );
     const disabled = config.configuredRules[2]!.rule as { placeholder?: string };
     assert.equal(disabled.placeholder, "auto", "disabled literals must not generate or reserve placeholders");
+    assert.equal(config.configuredRules[0]!.placeholderMode, undefined);
+    assert.equal(config.configuredRules[1]!.placeholderMode, "auto");
+    assert.equal(config.configuredRules[2]!.placeholderMode, "auto");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -231,6 +234,7 @@ test("realFromEnv resolves only in memory and missing/conflicting sources stay i
     );
     assert.deepEqual(config.rules.map((rule) => rule.id), ["from-env"]);
     assert.equal(config.configuredRules[0]!.realFromEnv, "PROD_API_KEY");
+    assert.equal(config.configuredRules[0]!.placeholderMode, "auto");
     assert.equal(config.configuredRules[0]!.available, true);
     assert.equal(config.configuredRules[1]!.rule.id, "missing");
     assert.equal(config.configuredRules[1]!.available, false);
@@ -349,6 +353,17 @@ test("structural rule mutations validate targets and preserve unrelated config f
     const saved = await readRawConfigFile(path);
     assert.deepEqual(saved.custom, { preserved: true });
     assert.deepEqual(saved.rules.map((rule) => rule.id), ["a-renamed", "c"]);
+
+    const targetPath = join(dir, "global.config.json");
+    writeFileSync(targetPath, JSON.stringify({ targetCustom: true, rules: [{ id: "z", real: "target-secret" }] }));
+    await saveConfigRuleMutations([
+      { kind: "delete", path, sourceIndex: 0, id: "a-renamed" },
+      { kind: "append", path: targetPath, rule: { id: "a-renamed", realFromEnv: "EDIT_TEST_SECRET" } },
+    ]);
+    assert.deepEqual((await readRawConfigFile(path)).rules.map((rule) => rule.id), ["c"]);
+    const movedTarget = await readRawConfigFile(targetPath);
+    assert.equal(movedTarget.targetCustom, true);
+    assert.deepEqual(movedTarget.rules.map((rule) => rule.id), ["z", "a-renamed"]);
     if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
     await assert.rejects(
       saveConfigRuleMutations([{ kind: "delete", path, sourceIndex: 0, id: "stale" }]),

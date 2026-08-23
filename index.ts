@@ -48,7 +48,6 @@ import type { DynamicPlaceholderMap, MaskingRule, MaskOptions } from "./masker.t
 import {
   GLOBAL_CONFIG_PATH,
   buildInitialConfig,
-  createInitialConfigFile,
   createJsonFileExclusive,
   ensureProjectConfigGitignored,
   generateUniqueRuleId,
@@ -138,8 +137,9 @@ function configuredRuleStableKey(configured: ConfiguredMaskingRule): string {
   return `${configured.path}\0${configured.rule.id}`;
 }
 
-function configuredRuleKind(configured: ConfiguredMaskingRule): "regex" | "literal" | "preset" {
-  return configured.sourceKind;
+function configuredRuleKind(configured: ConfiguredMaskingRule): "regex" | "exact" | "env" {
+  if (isRegexRule(configured.rule)) return "regex";
+  return configured.realFromEnv ? "env" : "exact";
 }
 
 function configuredRuleDisplayName(configured: ConfiguredMaskingRule): string {
@@ -148,25 +148,39 @@ function configuredRuleDisplayName(configured: ConfiguredMaskingRule): string {
     || configured.rule.id;
 }
 
-function configuredRuleDetail(configured: ConfiguredMaskingRule, enabled: boolean): string[] {
+function configuredRuleDetail(configured: ConfiguredMaskingRule, revealValue: boolean): string[] {
   const rule = configured.rule;
   const lines = [
-    `Name: ${configuredRuleDisplayName(configured)}`,
-    `Rule ID: ${rule.id}`,
-    `State: ${enabled ? "enabled" : "disabled"} · Scope: ${configured.scope}`,
-    `Source: ${configured.path}`,
+    `Description: ${rule.description?.trim() || "—"}`,
   ];
-  if (!configured.available) lines.push("Runtime: inactive · environment variable is missing or empty");
   if (configured.sourceKind === "preset") {
     lines.push(`Preset: ${configured.presetName}`);
     if (isRegexRule(rule)) lines.push(`Expanded regex: /${rule.pattern}/${rule.flags ?? ""}`);
   } else if (isRegexRule(rule)) {
     lines.push(`Regex: /${rule.pattern}/${rule.flags ?? ""}`);
   } else {
-    if (configured.realFromEnv) lines.push(`Value source: env ${configured.realFromEnv}`);
-    lines.push(`Placeholder: ${rule.placeholder ?? "(auto when enabled)"}`);
+    if (configured.realFromEnv) {
+      lines.push(`Environment: ${configured.realFromEnv} · ${configured.available ? "available" : "missing or empty"}`);
+      if (configured.available) {
+        lines.push(revealValue
+          ? `Resolved value: ${JSON.stringify(rule.real)}`
+          : "Resolved value: <hidden> · R to reveal");
+      }
+    } else {
+      lines.push(revealValue
+        ? `Exact value: ${JSON.stringify(rule.real)}`
+        : "Exact value: <hidden> · R to reveal");
+    }
+    if (configured.placeholderMode === "custom") {
+      lines.push(`Placeholder: ${rule.placeholder} · custom, stable across sessions`);
+    } else if (configured.enabled && configured.available && rule.placeholder && rule.placeholder !== "auto") {
+      lines.push(`Placeholder: ${rule.placeholder} · auto, current session`);
+    } else {
+      lines.push("Placeholder: automatic · generated when the rule becomes active");
+    }
   }
-  if (rule.description) lines.push(`Description: ${rule.description}`);
+  lines.push(`Scope: ${configured.scope}`);
+  lines.push(`Source: ${configured.path}`);
   return lines;
 }
 
@@ -556,137 +570,6 @@ export default async function (pi: ExtensionAPI) {
 
   // ── Commands: /masking-config + /masking-list compatibility alias ────────
 
-  async function pickInitializationPresets(ctx: ExtensionContext): Promise<string[] | undefined> {
-    return ctx.ui.custom<string[] | undefined>((tui, theme, keybindings, done) => {
-      let selectedIndex = 0;
-      const selected = new Set<string>();
-
-      return {
-        render: (width) => {
-          const lines = [
-            theme.fg("accent", theme.bold("Choose built-in masking presets")),
-            theme.fg("muted", `${selected.size} selected · presets expand at load time and stay easy to update`),
-            "",
-          ];
-          for (let index = 0; index < MASKING_PRESETS.length; index++) {
-            const preset = MASKING_PRESETS[index]!;
-            const cursor = index === selectedIndex ? "›" : " ";
-            const check = selected.has(preset.name) ? "x" : " ";
-            const line = truncateToWidth(`${cursor} [${check}] ${preset.label} (${preset.name})`, Math.max(1, width));
-            lines.push(index === selectedIndex ? theme.fg("accent", line) : line);
-          }
-          const preset = MASKING_PRESETS[selectedIndex];
-          if (preset) {
-            lines.push("");
-            lines.push(truncateToWidth(theme.fg("muted", preset.description), Math.max(1, width)));
-          }
-          lines.push("");
-          lines.push(theme.fg("dim", "↑↓ browse · Space toggle · A select/clear all · Enter/Ctrl+S continue · Esc cancel"));
-          return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
-        },
-        invalidate: () => {},
-        handleInput: (data) => {
-          if (keybindings.matches(data, "tui.select.up")) {
-            selectedIndex = Math.max(0, selectedIndex - 1);
-            tui.requestRender();
-          } else if (keybindings.matches(data, "tui.select.down")) {
-            selectedIndex = Math.min(MASKING_PRESETS.length - 1, selectedIndex + 1);
-            tui.requestRender();
-          } else if (matchesKey(data, Key.space)) {
-            const name = MASKING_PRESETS[selectedIndex]?.name;
-            if (name) selected.has(name) ? selected.delete(name) : selected.add(name);
-            tui.requestRender();
-          } else if (matchesKey(data, "a")) {
-            if (selected.size === MASKING_PRESETS.length) selected.clear();
-            else MASKING_PRESETS.forEach((preset) => selected.add(preset.name));
-            tui.requestRender();
-          } else if (keybindings.matches(data, "tui.select.confirm") || matchesKey(data, Key.ctrl("s"))) {
-            done(MASKING_PRESETS.filter((preset) => selected.has(preset.name)).map((preset) => preset.name));
-          } else if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
-            done(undefined);
-          }
-        },
-      };
-    }, {
-      overlay: true,
-      overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
-    });
-  }
-
-  async function initializeConfig(ctx: ExtensionContext, scope: "project" | "global"): Promise<boolean> {
-    const path = scope === "project" ? getProjectConfigPath(ctx.cwd) : GLOBAL_CONFIG_PATH;
-    if (existsSync(path)) {
-      ctx.ui.notify(`${scope} config already exists; it was not overwritten: ${path}`, "warning");
-      return false;
-    }
-    if (scope === "project") {
-      const proceed = await ctx.ui.confirm(
-        "Create project masking config?",
-        `This file may be tracked by Git. Do not put literal secrets in it; prefer realFromEnv.\n\nTarget: ${path}`,
-      );
-      if (!proceed) return false;
-    }
-
-    const presetNames = await pickInitializationPresets(ctx);
-    if (!presetNames) return false;
-    const statusChoice = await ctx.ui.select("Status bar", ["Show masking status (recommended)", "Hide masking status", "Cancel"]);
-    if (!statusChoice || statusChoice === "Cancel") return false;
-    const historyChoice = await ctx.ui.select("Masking history", ["Persist session history (recommended)", "Do not persist history", "Cancel"]);
-    if (!historyChoice || historyChoice === "Cancel") return false;
-
-    const initial = buildInitialConfig(presetNames, {
-      showStatusBar: statusChoice.startsWith("Show"),
-      persistHistory: historyChoice.startsWith("Persist"),
-    });
-    const preview = [
-      `Target: ${path}`,
-      `Presets (${presetNames.length}): ${presetNames.join(", ") || "none (minimal empty config)"}`,
-      `Status bar: ${initial.options.showStatusBar ? "on" : "off"}`,
-      `Persist history: ${initial.options.persistHistory ? "on" : "off"}`,
-      "The file will be created with user-only permissions and will not overwrite an existing config.",
-    ].join("\n");
-    if (!await ctx.ui.confirm(`Create ${scope} masking config?`, preview)) return false;
-
-    try {
-      await createInitialConfigFile(path, initial);
-      if (scope === "project") {
-        const addIgnore = await ctx.ui.confirm(
-          "Exclude masking config from Git?",
-          "Add .pi/pi-data-masking/masking.config.json to this project's .gitignore?",
-        );
-        if (addIgnore) await ensureProjectConfigGitignored(ctx.cwd);
-      }
-      await reloadConfigNow(ctx);
-      ctx.ui.notify(`Created ${scope} masking config with ${presetNames.length} preset(s): ${path}`, "info");
-      return true;
-    } catch (err) {
-      ctx.ui.notify(`Failed to create masking config: ${(err as Error).message}`, "error");
-      return false;
-    }
-  }
-
-  async function openConfigSources(ctx: ExtensionContext): Promise<boolean> {
-    const projectPath = getProjectConfigPath(ctx.cwd);
-    const projectExists = existsSync(projectPath);
-    const globalExists = existsSync(GLOBAL_CONFIG_PATH);
-    const projectChoice = `${projectExists ? "View" : "Create"} project config  ·  ${projectExists ? "exists" : "missing"}`;
-    const globalChoice = `${globalExists ? "View" : "Create"} global config  ·  ${globalExists ? "exists" : "missing"}`;
-    const choice = await ctx.ui.select("Masking configuration sources", [projectChoice, globalChoice, "Back"]);
-    if (!choice || choice === "Back") return false;
-    if (choice === projectChoice) {
-      if (projectExists) {
-        ctx.ui.notify(`Project config: ${projectPath}`, "info");
-        return false;
-      }
-      return initializeConfig(ctx, "project");
-    }
-    if (globalExists) {
-      ctx.ui.notify(`Global config: ${GLOBAL_CONFIG_PATH}`, "info");
-      return false;
-    }
-    return initializeConfig(ctx, "global");
-  }
-
   async function chooseExistingSource(
     ctx: ExtensionContext,
     title: string,
@@ -696,7 +579,7 @@ export default async function (pi: ExtensionAPI) {
     if (existsSync(projectPath)) choices.push({ label: `project  ·  ${projectPath}`, scope: "project", path: projectPath });
     if (existsSync(GLOBAL_CONFIG_PATH)) choices.push({ label: `global   ·  ${GLOBAL_CONFIG_PATH}`, scope: "global", path: GLOBAL_CONFIG_PATH });
     if (choices.length === 0) {
-      ctx.ui.notify("Create a project or global config first with M", "warning");
+      ctx.ui.notify("Add a rule first to create a project or global config", "warning");
       return undefined;
     }
     const selected = await ctx.ui.select(title, [...choices.map(({ label }) => label), "Cancel"]);
@@ -882,8 +765,8 @@ export default async function (pi: ExtensionAPI) {
             theme.fg("accent", theme.bold(title)),
             "",
             ruleFocused
-              ? theme.fg("accent", theme.bold("▶ RULE JSON · focused"))
-              : theme.fg("muted", "  RULE JSON · Tab to focus"),
+              ? theme.fg("accent", theme.bold("RULE JSON · focused"))
+              : theme.fg("muted", "RULE JSON · Tab to focus"),
           ];
           ruleEditor.focused = focus === "rule";
           testEditor.focused = focus === "test";
@@ -892,9 +775,8 @@ export default async function (pi: ExtensionAPI) {
           lines.push(...ruleEditor.render(width));
           lines.push("");
           lines.push(focus === "test"
-            ? theme.fg("accent", theme.bold("▶ TEST THIS DRAFT RULE · focused"))
-            : theme.fg("muted", "  TEST THIS DRAFT RULE · Tab to focus"));
-          lines.push(theme.fg("dim", "Type or paste sample text"));
+            ? theme.fg("accent", theme.bold("TEST THIS DRAFT RULE · focused"))
+            : theme.fg("muted", "TEST THIS DRAFT RULE · Tab to focus"));
           lines.push(...testEditor.render(width));
           const draftForPreview = (() => {
             const text = ruleEditor.getExpandedText();
@@ -949,24 +831,21 @@ export default async function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     editing?: { configured: ConfiguredMaskingRule; original: RawConfigRule; initial: RawConfigRule },
   ): Promise<void> {
-    const sources: Array<{ scope: ConfigScope; path: string; label: string }> = [];
     const projectPath = getProjectConfigPath(ctx.cwd);
-    if (editing) {
-      sources.push({ scope: editing.configured.scope, path: editing.configured.path, label: `${editing.configured.scope} · ${editing.configured.path}` });
-    } else {
-      if (existsSync(projectPath)) sources.push({ scope: "project", path: projectPath, label: `project · ${projectPath}` });
-      if (existsSync(GLOBAL_CONFIG_PATH)) sources.push({ scope: "global", path: GLOBAL_CONFIG_PATH, label: `global · ${GLOBAL_CONFIG_PATH}` });
-    }
-    if (sources.length === 0) {
-      ctx.ui.notify("Create a project or global config first with M", "warning");
-      return;
-    }
+    const sources: Array<{ scope: ConfigScope; path: string; label: string }> = [
+      { scope: "project", path: projectPath, label: `project · ${projectPath}` },
+      { scope: "global", path: GLOBAL_CONFIG_PATH, label: `global · ${GLOBAL_CONFIG_PATH}` },
+    ];
 
     const existingIds = new Map<string, string[]>();
     try {
       for (const source of sources) {
-        const raw = await readRawConfigFile(source.path);
-        existingIds.set(source.path, raw.rules.flatMap((rule) => typeof rule.id === "string" ? [rule.id] : []));
+        if (existsSync(source.path)) {
+          const raw = await readRawConfigFile(source.path);
+          existingIds.set(source.path, raw.rules.flatMap((rule) => typeof rule.id === "string" ? [rule.id] : []));
+        } else {
+          existingIds.set(source.path, []);
+        }
       }
     } catch (err) {
       ctx.ui.notify(`Failed to open Rule Builder: ${(err as Error).message}`, "error");
@@ -974,27 +853,24 @@ export default async function (pi: ExtensionAPI) {
     }
 
     type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
-    type BuilderField = "name" | "description" | "pattern" | "flags" | "env" | "real" | "replacement" | "placeholder" | "json" | "test";
+    type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "env" | "real" | "replacement" | "placeholder" | "json" | "test";
     const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
-    let selectedSource: (typeof sources)[number] | undefined;
+    let selectedSource: (typeof sources)[number] = sources[0]!;
     let selectedType: BuilderType | undefined;
     if (editing) {
-      selectedSource = sources[0];
+      selectedSource = sources.find((source) => source.path === editing.configured.path) ?? sources[0];
       selectedType = typeof editing.initial.pattern === "string" || editing.initial.type === "regex"
         ? "Custom regex"
         : typeof editing.initial.realFromEnv === "string"
           ? "Literal from environment"
           : "Exact literal value";
     } else {
-      const sourceLabel = await ctx.ui.select("Add rule to which config?", [...sources.map((source) => source.label), "Cancel"]);
-      if (!sourceLabel || sourceLabel === "Cancel") return;
-      selectedSource = sources.find((source) => source.label === sourceLabel);
-      if (!selectedSource) return;
+      selectedSource = sources.find((source) => existsSync(source.path)) ?? sources[0];
       const selectedTypeOption = await ctx.ui.select("Rule type", [...builderTypes, "Cancel"]);
       if (!selectedTypeOption || selectedTypeOption === "Cancel") return;
       selectedType = selectedTypeOption as BuilderType;
     }
-    if (!selectedSource || !selectedType) return;
+    if (!selectedType) return;
     let selectedPreset: (typeof MASKING_PRESETS)[number] | undefined;
     if (selectedType === "Built-in preset template") {
       selectedPreset = await ctx.ui.custom<(typeof MASKING_PRESETS)[number] | undefined>((tui, theme, keybindings, done) => {
@@ -1005,10 +881,12 @@ export default async function (pi: ExtensionAPI) {
             const lines = [theme.fg("accent", theme.bold("Choose a built-in preset")), ""];
             for (let index = 0; index < MASKING_PRESETS.length; index++) {
               const preset = MASKING_PRESETS[index]!;
-              const row = `${index === selectedIndex ? "▶" : " "} ${preset.name}`;
+              const row = `${index === selectedIndex ? "▶" : " "} ${preset.label}`;
               lines.push(index === selectedIndex ? theme.fg("accent", row) : theme.fg("muted", row));
             }
-            lines.push("", theme.fg("dim", truncateToWidth(selected.description, Math.max(1, width))));
+            lines.push("");
+            lines.push(theme.fg("dim", `Description: ${selected.description}`));
+            lines.push(theme.fg("dim", `Example: ${selected.example}`));
             lines.push("", theme.fg("dim", "↑↓ select · Enter continue · Esc cancel"));
             return lines.map((line) => truncateToWidth(line, Math.max(1, width)));
           },
@@ -1066,15 +944,16 @@ export default async function (pi: ExtensionAPI) {
       };
       let saveMessage = "";
       let warningSignature = "";
+      let builderType: BuilderType = selectedType;
       let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
       let focusIndex = 0;
-      let lastFormField: BuilderField = "name";
+      let lastFormField: BuilderField = "type";
       let mode: "form" | "json" = "form";
       let explicitId: string | undefined = editing && typeof editing.initial.id === "string" ? editing.initial.id : undefined;
       let advancedFields: RawConfigRule = editing ? { ...editing.initial } : {};
       const editors = {
-        name: makeEditor(selectedPreset?.name ?? (typeof editing?.initial.name === "string" ? editing.initial.name : "")),
-        description: makeEditor(selectedPreset?.description ?? (typeof editing?.initial.description === "string" ? editing.initial.description : "")),
+        name: makeEditor(selectedPreset?.label ?? (typeof editing?.initial.name === "string" ? editing.initial.name : "")),
+        description: makeEditor(selectedPreset ? `${selectedPreset.description} · Example: ${selectedPreset.example}` : (typeof editing?.initial.description === "string" ? editing.initial.description : "")),
         pattern: makeEditor(selectedPreset?.pattern ?? (typeof editing?.initial.pattern === "string" ? editing.initial.pattern : "")),
         flags: makeEditor(selectedPreset?.flags ?? (typeof editing?.initial.flags === "string" ? editing.initial.flags : "")),
         env: makeEditor(typeof editing?.initial.realFromEnv === "string" ? editing.initial.realFromEnv : ""),
@@ -1085,7 +964,28 @@ export default async function (pi: ExtensionAPI) {
       };
 
       const currentSource = () => selectedSource;
-      const currentType = () => selectedType;
+      const currentType = () => builderType;
+      const editableTypes: readonly BuilderType[] = ["Exact literal value", "Literal from environment", "Custom regex"];
+      const typeLabel = (type = currentType()) => type === "Exact literal value"
+        ? "exact"
+        : type === "Literal from environment"
+          ? "env"
+          : "regex";
+      const changeType = (delta: -1 | 1) => {
+        const normalizedType: BuilderType = currentType() === "Built-in preset template" ? "Custom regex" : currentType();
+        const currentIndex = editableTypes.indexOf(normalizedType);
+        builderType = editableTypes[(currentIndex + delta + editableTypes.length) % editableTypes.length]!;
+        saveMessage = "";
+        warningSignature = "";
+        focusFormField("type");
+      };
+      const changeSource = (delta: -1 | 1) => {
+        const currentIndex = Math.max(0, sources.findIndex((source) => source.path === currentSource().path));
+        selectedSource = sources[(currentIndex + delta + sources.length) % sources.length]!;
+        saveMessage = "";
+        warningSignature = "";
+        focusFormField("scope");
+      };
       const generatedId = () => explicitId ?? generateUniqueRuleId(
         editors.name.getExpandedText().trim() || "rule",
         existingIds.get(currentSource().path) ?? [],
@@ -1093,9 +993,12 @@ export default async function (pi: ExtensionAPI) {
 
       function formFields(): BuilderField[] {
         const common: BuilderField[] = [];
-        common.push("name", "description");
+        common.push("type", "scope", "name", "description");
         if (currentType() === "Built-in preset template" || currentType() === "Custom regex") common.push("pattern", "flags");
-        else if (currentType() === "Literal from environment") common.push("env");
+        else if (currentType() === "Literal from environment") {
+          common.push("env", "replacement");
+          if (replacementIndex === 1) common.push("placeholder");
+        }
         else {
           common.push("real", "replacement");
           if (replacementIndex === 1) common.push("placeholder");
@@ -1139,10 +1042,6 @@ export default async function (pi: ExtensionAPI) {
         tui.requestRender();
       }
 
-      for (const [field, editor] of Object.entries(editors)) {
-        editor.onSubmit = field === "test" ? () => {} : () => attemptSave();
-      }
-
       function draftFromForm(): RawConfigRule {
         const name = editors.name.getExpandedText().trim();
         const description = editors.description.getExpandedText().trim();
@@ -1174,12 +1073,15 @@ export default async function (pi: ExtensionAPI) {
           return regexRule;
         }
         if (currentType() === "Literal from environment") {
-          const envRule: RawConfigRule = { ...base, realFromEnv: editors.env.getExpandedText().trim() };
+          const envRule: RawConfigRule = {
+            ...base,
+            realFromEnv: editors.env.getExpandedText().trim(),
+            placeholder: replacementIndex === 0 ? "auto" : editors.placeholder.getExpandedText(),
+          };
           delete envRule.type;
           delete envRule.pattern;
           delete envRule.flags;
           delete envRule.real;
-          delete envRule.placeholder;
           delete envRule.preset;
           return envRule;
         }
@@ -1218,15 +1120,23 @@ export default async function (pi: ExtensionAPI) {
           return false;
         }
         const rule = draft.rule;
+        const isRegex = rule.type === "regex" || typeof rule.pattern === "string";
+        const hasEnv = typeof rule.realFromEnv === "string";
+        const hasReal = typeof rule.real === "string";
+        if (isRegex && (hasEnv || hasReal)) {
+          saveMessage = "Cannot switch to form: regex JSON cannot also contain real or realFromEnv";
+          return false;
+        }
+        if (!isRegex && hasEnv === hasReal) {
+          saveMessage = "Cannot switch to form: literal JSON must contain exactly one of real or realFromEnv";
+          return false;
+        }
+        builderType = isRegex ? "Custom regex" : hasEnv ? "Literal from environment" : "Exact literal value";
         advancedFields = { ...rule };
         explicitId = typeof rule.id === "string" ? rule.id : undefined;
         editors.name.setText(typeof rule.name === "string" ? rule.name : "");
         editors.description.setText(typeof rule.description === "string" ? rule.description : "");
-        if (currentType() === "Built-in preset template" || currentType() === "Custom regex") {
-          if (rule.type !== "regex") {
-            saveMessage = `Cannot switch to form: JSON must remain a regex rule for ${currentType()}`;
-            return false;
-          }
+        if (currentType() === "Custom regex") {
           editors.pattern.setText(typeof rule.pattern === "string" ? rule.pattern : "");
           editors.flags.setText(typeof rule.flags === "string" ? rule.flags : "");
         } else if (currentType() === "Literal from environment") {
@@ -1235,6 +1145,9 @@ export default async function (pi: ExtensionAPI) {
             return false;
           }
           editors.env.setText(rule.realFromEnv);
+          const placeholder = typeof rule.placeholder === "string" ? rule.placeholder : "auto";
+          replacementIndex = placeholder === "auto" ? 0 : 1;
+          if (placeholder !== "auto") editors.placeholder.setText(placeholder);
         } else {
           if (typeof rule.real !== "string") {
             saveMessage = "Cannot switch to form: JSON must contain an exact real value";
@@ -1300,8 +1213,7 @@ export default async function (pi: ExtensionAPI) {
       function renderActiveFieldDescription(lines: string[], width: number): void {
         const detail = renderedFieldDetails.get(focusedField() === "test" ? lastFormField : focusedField());
         if (!detail) return;
-        lines.push("");
-        lines.push(theme.fg("dim", truncateToWidth(`  ${detail.description}`, Math.max(1, width))));
+        lines.push(theme.fg("dim", truncateToWidth(detail.description, Math.max(1, width))));
       }
 
       function renderSelector(lines: string[], field: BuilderField, label: string, value: string, width: number, description: string): void {
@@ -1328,6 +1240,17 @@ export default async function (pi: ExtensionAPI) {
           tui.requestRender();
           return;
         }
+        if (mode === "form" && currentType() === "Literal from environment" && !editors.env.getExpandedText().trim()) {
+          saveMessage = "Cannot save: enter an environment variable name, for example PROD_API_KEY";
+          focusFormField("env");
+          return;
+        }
+        if (mode === "form" && (currentType() === "Literal from environment" || currentType() === "Exact literal value")
+          && replacementIndex === 1 && !editors.placeholder.getExpandedText()) {
+          saveMessage = "Cannot save: enter a custom placeholder or choose Generate automatically";
+          focusFormField("placeholder");
+          return;
+        }
         let warnings: string[];
         try {
           warnings = validateRawConfigRule(draft.rule);
@@ -1337,7 +1260,10 @@ export default async function (pi: ExtensionAPI) {
           return;
         }
         const id = typeof draft.rule.id === "string" ? draft.rule.id : "";
-        if ((existingIds.get(currentSource().path) ?? []).includes(id) && (!editing || id !== editing.configured.rule.id)) {
+        const isOriginalEntry = editing
+          && currentSource().path === editing.configured.path
+          && id === editing.configured.rule.id;
+        if ((existingIds.get(currentSource().path) ?? []).includes(id) && !isOriginalEntry) {
           saveMessage = `Cannot save: rule ID [${id}] already exists in ${currentSource().scope}`;
           tui.requestRender();
           return;
@@ -1361,16 +1287,18 @@ export default async function (pi: ExtensionAPI) {
           const editorTitle = mode === "form" ? "RULE FIELDS" : "RULE JSON";
           const lines: string[] = [
             theme.fg("accent", theme.bold(`${editing ? "Edit" : "New"} masking rule · Rule Builder`)),
-            theme.fg("muted", `${currentSource().scope} · ${currentType()}${selectedPreset ? ` · ${selectedPreset.name}` : ""} · ${mode === "form" ? "Structured fields" : "Advanced JSON"}`),
+            theme.fg("muted", `${currentSource().scope} · ${typeLabel()}${currentType() === "Built-in preset template" && selectedPreset ? ` · ${selectedPreset.label}` : ""} · ${mode === "form" ? "Structured fields" : "Advanced JSON"}`),
             theme.fg("dim", currentSource().path),
             "",
             editorFocused
-              ? theme.fg("accent", theme.bold(`▶ ${editorTitle} · focused`))
-              : theme.fg("muted", `  ${editorTitle} · Tab to focus`),
+              ? theme.fg("accent", theme.bold(`${editorTitle} · focused`))
+              : theme.fg("muted", `${editorTitle} · Tab to focus`),
           ];
           if (mode === "form") {
             lines.push(editorDivider);
-            lines.push(theme.fg("dim", "Use ↑/↓ to select a field and edit its value directly; help stays below"));
+            const fieldRowsStart = lines.length;
+            renderSelector(lines, "type", "Rule type", typeLabel(), width, "←/→ or Space switches between exact, environment, and regular-expression rules");
+            renderSelector(lines, "scope", "Scope", currentSource().scope, width, "←/→ or Space moves the rule between project and global configuration");
             renderSingleLineField(lines, "name", "Name", editors.name, width, "Required display name");
             renderFieldRow(lines, undefined, "Generated ID", generatedId(), width, "Read-only · generated from name");
             renderSingleLineField(lines, "description", "Description", editors.description, width, "Optional longer explanation");
@@ -1378,23 +1306,26 @@ export default async function (pi: ExtensionAPI) {
               renderSingleLineField(lines, "pattern", "Pattern", editors.pattern, width, "JavaScript regex without /.../ · e.g. \\btoken_[A-Za-z0-9]{24}\\b");
               renderSingleLineField(lines, "flags", "Flags", editors.flags, width, "Optional: i case-insensitive · m multiline anchors · s dot matches newline · g automatic");
             } else if (currentType() === "Literal from environment") {
-              renderSingleLineField(lines, "env", "Environment", editors.env, width, "Environment variable name");
+              renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
+              renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
+              if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             } else {
               renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Stored in plaintext in the config");
               renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
               if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             }
-            renderActiveFieldDescription(lines, width);
+            const fixedFieldRowCount = 8;
+            while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
             lines.push(editorDivider);
+            renderActiveFieldDescription(lines, width);
           } else {
             lines.push(theme.fg("dim", "Edit the complete rule object as multiline JSON"));
             renderMultilineEditor(lines, "json", editors.json, width);
           }
           lines.push("");
           lines.push(focusedField() === "test"
-            ? theme.fg("accent", theme.bold("▶ TEST THIS RULE · focused"))
-            : theme.fg("muted", "  TEST THIS RULE · Tab to focus"));
-          lines.push(theme.fg("dim", "Type or paste sample text"));
+            ? theme.fg("accent", theme.bold("TEST THIS RULE · focused"))
+            : theme.fg("muted", "TEST THIS RULE · Tab to focus"));
           renderMultilineEditor(lines, "test", editors.test, width);
           const preview = previewCandidateRule(editors.test.getExpandedText(), draft.text);
           const status = preview.count > 0 ? `${preview.count} value(s) masked` : preview.attribution;
@@ -1430,8 +1361,18 @@ export default async function (pi: ExtensionAPI) {
           }
 
           const field = focusedField();
-          if (matchesKey(data, Key.enter) && field === "replacement") {
-            attemptSave();
+          if (matchesKey(data, Key.enter)) {
+            if (field === "test") {
+              // Editor.submitValue() clears its contents before onSubmit. The
+              // embedded test area is multiline, so Enter must be handled as a
+              // newline instead of submitting (and clearing) the editor.
+              editors.test.handleInput("\n");
+            } else {
+              // Save before forwarding Enter to Editor: Editor clears its
+              // contents before invoking onSubmit, which would make the form
+              // draft observe an empty current field.
+              attemptSave();
+            }
             return;
           }
           if (mode === "form" && field !== "test" && (matchesKey(data, Key.up) || matchesKey(data, Key.down))) {
@@ -1442,7 +1383,11 @@ export default async function (pi: ExtensionAPI) {
             : matchesKey(data, Key.right) || matchesKey(data, Key.space) ? 1
             : 0;
           if (selectorDirection !== 0) {
-            if (field === "replacement") {
+            if (field === "type") {
+              changeType(selectorDirection < 0 ? -1 : 1);
+            } else if (field === "scope") {
+              changeSource(selectorDirection < 0 ? -1 : 1);
+            } else if (field === "replacement") {
               replacementIndex = replacementIndex === 0 ? 1 : 0;
               focusIndex = Math.min(focusIndex, fields().length - 1);
             } else {
@@ -1464,11 +1409,55 @@ export default async function (pi: ExtensionAPI) {
 
     if (!built) return;
     const id = String(built.rule.id);
-    const mutation = editing
-      ? { kind: "replace" as const, path: editing.configured.path, sourceIndex: editing.configured.sourceIndex, id: editing.configured.rule.id, rule: built.rule }
-      : { kind: "append" as const, path: built.source.path, rule: built.rule };
-    if (await saveStructuralChanges(ctx, [mutation])) {
-      ctx.ui.notify(editing ? `Updated rule [${id}]` : `Added rule [${id}] to ${built.source.scope} config`, "info");
+    let createdSource = false;
+    if (!existsSync(built.source.path)) {
+      const initial = buildInitialConfig([]);
+      try {
+        await createJsonFileExclusive(built.source.path, {
+          $schema: initial.$schema,
+          version: initial.version,
+          rules: [],
+        });
+        createdSource = true;
+        ctx.ui.notify(
+          `Created minimal ${built.source.scope} config: ${built.source.path}${built.source.scope === "project" ? " · this file may be tracked by Git" : ""}`,
+          built.source.scope === "project" ? "warning" : "info",
+        );
+      } catch (err) {
+        if (!existsSync(built.source.path)) {
+          ctx.ui.notify(`Failed to create ${built.source.scope} config: ${(err as Error).message}`, "error");
+          return;
+        }
+      }
+    }
+    const mutations = editing
+      ? built.source.path === editing.configured.path
+        ? [{ kind: "replace" as const, path: editing.configured.path, sourceIndex: editing.configured.sourceIndex, id: editing.configured.rule.id, rule: built.rule }]
+        : [
+            { kind: "delete" as const, path: editing.configured.path, sourceIndex: editing.configured.sourceIndex, id: editing.configured.rule.id },
+            { kind: "append" as const, path: built.source.path, rule: built.rule },
+          ]
+      : [{ kind: "append" as const, path: built.source.path, rule: built.rule }];
+    if (await saveStructuralChanges(ctx, mutations)) {
+      const action = editing && built.source.path !== editing.configured.path ? "Moved and updated" : editing ? "Updated" : "Added";
+      ctx.ui.notify(`${action} rule [${id}] in ${built.source.scope} config`, "info");
+      if (createdSource && built.source.scope === "project") {
+        const addIgnore = await ctx.ui.confirm(
+          "Exclude project masking config from Git?",
+          `Add .pi/pi-data-masking/masking.config.json to ${ctx.cwd}/.gitignore?\n\nChoose Yes if this config may contain exact literal values.`,
+        );
+        if (addIgnore) {
+          try {
+            const added = await ensureProjectConfigGitignored(ctx.cwd);
+            ctx.ui.notify(
+              added ? "Added project masking config to .gitignore" : "Project masking config is already ignored",
+              "info",
+            );
+          } catch (err) {
+            ctx.ui.notify(`Failed to update .gitignore: ${(err as Error).message}`, "error");
+          }
+        }
+      }
     }
   }
 
@@ -1546,7 +1535,8 @@ export default async function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     configured: ConfiguredMaskingRule,
     direction: -1 | 1,
-  ): Promise<void> {
+    notifySuccess = true,
+  ): Promise<boolean> {
     const sameSource = config.configuredRules
       .filter((candidate) => candidate.path === configured.path)
       .sort((a, b) => a.sourceIndex - b.sourceIndex);
@@ -1554,19 +1544,25 @@ export default async function (pi: ExtensionAPI) {
     const target = sameSource[index + direction];
     if (!target) {
       ctx.ui.notify(`Rule is already at the ${direction < 0 ? "top" : "bottom"} of its ${configured.scope} scope`, "info");
-      return;
+      return false;
     }
-    if (await saveStructuralChanges(ctx, [{
+    const saved = await saveStructuralChanges(ctx, [{
       kind: "move",
       path: configured.path,
       sourceIndex: configured.sourceIndex,
       id: configured.rule.id,
       targetIndex: target.sourceIndex,
       targetId: target.rule.id,
-    }])) ctx.ui.notify(`Moved rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}] ${direction < 0 ? "up" : "down"}`, "info");
+    }]);
+    if (saved && notifySuccess) ctx.ui.notify(`Moved rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}] ${direction < 0 ? "up" : "down"}`, "info");
+    return saved;
   }
 
-  async function toggleConfigRule(ctx: ExtensionContext, configured: ConfiguredMaskingRule): Promise<void> {
+  async function toggleConfigRule(
+    ctx: ExtensionContext,
+    configured: ConfiguredMaskingRule,
+    notifySuccess = true,
+  ): Promise<boolean> {
     const enabled = !configured.enabled;
     try {
       await saveRuleEnabledChanges([{
@@ -1579,12 +1575,16 @@ export default async function (pi: ExtensionAPI) {
       const state = enabled && !configured.available
         ? `enabled in config but waiting for environment variable ${configured.realFromEnv}`
         : enabled ? "enabled immediately" : "disabled immediately";
-      ctx.ui.notify(
-        `Rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}] ${state}. ${enabled ? "Changes affect future requests only" : "Matching values may be exposed in future requests"}; earlier context cannot be retracted. Consider a new session for a clean boundary.`,
-        enabled ? "info" : "warning",
-      );
+      if (notifySuccess) {
+        ctx.ui.notify(
+          `Rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}] ${state}. ${enabled ? "Changes affect future requests only" : "Matching values may be exposed in future requests"}; earlier context cannot be retracted. Consider a new session for a clean boundary.`,
+          enabled ? "info" : "warning",
+        );
+      }
+      return true;
     } catch (err) {
       ctx.ui.notify(`Failed to toggle rule: ${(err as Error).message}`, "error");
+      return false;
     }
   }
 
@@ -1660,21 +1660,23 @@ export default async function (pi: ExtensionAPI) {
     let filterIndex = 0;
     let searchQuery = "";
     let selectedRuleKey: string | undefined;
+    let revealedRuleKey: string | undefined;
     let homeTestText = "";
     let homeFocus: "rules" | "test" = "rules";
     for (;;) {
     const configuredRules = config.configuredRules;
     type ScreenAction =
-      | { kind: "toggle"; rule: ConfiguredMaskingRule }
       | { kind: "batch"; changes: RuleEnabledChange[] }
       | { kind: "edit"; rule: ConfiguredMaskingRule }
       | { kind: "delete"; rule: ConfiguredMaskingRule }
-      | { kind: "move"; rule: ConfiguredMaskingRule; direction: -1 | 1 }
-      | { kind: "add" | "sources" | "import" | "export" | "help" };
+      | { kind: "add" | "import" | "export" | "help" };
     const result = await ctx.ui.custom<ScreenAction | undefined>((tui, theme, keybindings, done) => {
+      let screenRules = configuredRules;
       let selectedIndex = 0;
       let scrollOffset = 0;
       let searchMode = false;
+      let mutationInProgress = false;
+      let mutationMessage = "";
       const testEditorTheme: EditorTheme = {
         borderColor: (text) => theme.fg("accent", text),
         selectList: {
@@ -1696,7 +1698,7 @@ export default async function (pi: ExtensionAPI) {
       function visibleRules(): ConfiguredMaskingRule[] {
         const filter = filters[filterIndex]!;
         const query = searchQuery.toLowerCase();
-        return configuredRules.filter((configured) => {
+        return screenRules.filter((configured) => {
           const matchesFilter = filter === "all"
             || (filter === "enabled" && configured.enabled)
             || (filter === "disabled" && !configured.enabled)
@@ -1735,34 +1737,82 @@ export default async function (pi: ExtensionAPI) {
         scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, visibleCount - listHeight)));
       }
 
+      function retainSelectedRule(stableKey: string): void {
+        selectedRuleKey = stableKey;
+        const retainedIndex = visibleRules().findIndex(
+          (configured) => configuredRuleStableKey(configured) === stableKey,
+        );
+        if (retainedIndex >= 0) selectedIndex = retainedIndex;
+        else selectedIndex = Math.max(0, Math.min(selectedIndex, visibleRules().length));
+      }
+
+      async function toggleRuleInPlace(selected: ConfiguredMaskingRule): Promise<void> {
+        const stableKey = configuredRuleStableKey(selected);
+        const enabling = !selected.enabled;
+        mutationInProgress = true;
+        mutationMessage = "Saving…";
+        tui.requestRender();
+        const saved = await toggleConfigRule(ctx, selected, false);
+        if (saved) {
+          screenRules = config.configuredRules;
+          retainSelectedRule(stableKey);
+          mutationMessage = enabling
+            ? "Enabled · affects future requests"
+            : "Disabled · future matches may be exposed";
+        } else {
+          mutationMessage = "Save failed · no changes applied";
+        }
+        mutationInProgress = false;
+        refresh();
+      }
+
+      async function moveRuleInPlace(selected: ConfiguredMaskingRule, direction: -1 | 1): Promise<void> {
+        const stableKey = configuredRuleStableKey(selected);
+        mutationInProgress = true;
+        mutationMessage = "Saving order…";
+        tui.requestRender();
+        const saved = await moveConfigRule(ctx, selected, direction, false);
+        if (saved) {
+          screenRules = config.configuredRules;
+          retainSelectedRule(stableKey);
+          mutationMessage = "Order saved";
+        } else {
+          mutationMessage = "Order unchanged";
+        }
+        mutationInProgress = false;
+        refresh();
+      }
+
       return {
         render: (width) => {
           const visibleRulesNow = visibleRules();
-          const active = configuredRules.filter((configured) => configured.enabled && configured.available).length;
+          const active = screenRules.filter((configured) => configured.enabled && configured.available).length;
           const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
           const lines: string[] = [
-            theme.fg("accent", theme.bold("Masking configuration")),
-            theme.fg("muted", `${active} active / ${configuredRules.length} configured · filter: ${filters[filterIndex]}${searchQuery ? ` · search: ${searchQuery}` : ""}`),
+            theme.fg("accent", theme.bold(`Masking configuration${mutationMessage ? ` · ${mutationMessage}` : ""}`)),
+            theme.fg("muted", `${active} active / ${screenRules.length} configured · filter: ${filters[filterIndex]}${searchQuery ? ` · search: ${searchQuery}` : ""}`),
             "",
             homeFocus === "rules"
-              ? theme.fg("accent", theme.bold("▶ RULES · focused"))
-              : theme.fg("muted", "  RULES · Tab to focus"),
+              ? theme.fg("accent", theme.bold("RULES · focused"))
+              : theme.fg("muted", "RULES · Tab to focus"),
             rulesDivider,
           ];
 
-          if (configuredRules.length === 0) {
+          if (screenRules.length === 0) {
             lines.push(theme.fg("warning", "No rules are configured."));
             lines.push(theme.fg("muted", "Create or edit one of these files:"));
             lines.push(theme.fg("dim", `  project  ${getProjectConfigPath(ctx.cwd)}`));
             lines.push(theme.fg("dim", `  global   ${GLOBAL_CONFIG_PATH}`));
             lines.push("");
-            lines.push(theme.fg("accent", "Press M to create a project or global config."));
+            lines.push(theme.fg("accent", "Choose Add new rule; its Scope creates the project or global config when saved."));
             lines.push("", theme.fg("accent", "▶ ＋ Add new rule"));
           } else if (visibleRulesNow.length === 0) {
             lines.push(theme.fg("warning", "No rules match the current filter/search."));
             lines.push("", theme.fg("accent", "▶ ＋ Add new rule"));
           } else {
-            const reservedRows = 23;
+            const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
+            lines.push(theme.fg("dim", truncateToWidth(header, Math.max(1, width))));
+            const reservedRows = 24;
             const rowCount = visibleRulesNow.length + 1;
             const listHeight = Math.max(3, Math.min(rowCount, tui.terminal.rows - reservedRows));
             keepSelectedVisible(listHeight, rowCount);
@@ -1779,25 +1829,36 @@ export default async function (pi: ExtensionAPI) {
               const stateLabel = !enabled ? "OFF" : configured.available ? "ON" : "WAIT";
               const statePadding = Math.max(0, 4 - stateLabel.length);
               const state = `${" ".repeat(Math.floor(statePadding / 2))}${stateLabel}${" ".repeat(Math.ceil(statePadding / 2))}`;
-              const priority = configuredRules.indexOf(configured) + 1;
+              const priority = screenRules.indexOf(configured) + 1;
               const displayName = configuredRuleDisplayName(configured);
-              const text = `${cursor} [${state}] ${String(priority).padStart(2)}  ${configured.scope.padEnd(7)}  ${configuredRuleKind(configured).padEnd(7)}  ${displayName}`;
+              const text = `${cursor} [${state}] ${String(priority).padStart(5)}  ${configured.scope.padEnd(7)}  ${configuredRuleKind(configured).padEnd(7)}  ${displayName}`;
               const clipped = truncateToWidth(text, Math.max(1, width));
               lines.push(absoluteIndex === selectedIndex
                 ? theme.fg("accent", clipped)
                 : enabled ? clipped : theme.fg("dim", clipped));
             }
 
-            const selected = visibleRulesNow[selectedIndex];
-            if (selected) {
-              lines.push("");
-              for (const detail of configuredRuleDetail(selected, selected.enabled)) {
-                lines.push(truncateToWidth(theme.fg("muted", detail), Math.max(1, width)));
-              }
-            }
           }
 
           lines.push(rulesDivider);
+          if (screenRules.length > 0 && visibleRulesNow.length > 0) {
+            // Keep details outside the list dividers and reserve a fixed block
+            // so exact/env/regex/preset rows never move the test panel.
+            const detailRowCount = 6;
+            const selected = visibleRulesNow[selectedIndex];
+            const details = selected
+              ? configuredRuleDetail(
+                  selected,
+                  revealedRuleKey === configuredRuleStableKey(selected),
+                )
+              : [];
+            for (let index = 0; index < detailRowCount; index++) {
+              const detail = details[index];
+              lines.push(detail
+                ? truncateToWidth(theme.fg("muted", detail), Math.max(1, width))
+                : "");
+            }
+          }
           lines.push("");
           if (searchMode) {
             lines.push(theme.fg("accent", `Search: ${searchQuery}▌`));
@@ -1808,11 +1869,8 @@ export default async function (pi: ExtensionAPI) {
               testEditor.focused = homeFocus === "test";
               testEditor.borderColor = (text) => theme.fg(homeFocus === "test" ? "accent" : "dim", text);
               lines.push(homeFocus === "test"
-                ? theme.fg("accent", theme.bold(`▶ [T] TEST ACTIVE RULES · focused${config.enabled ? "" : " · masking is off; preview only"}`))
-                : theme.fg("muted", `  [T] TEST ACTIVE RULES · Tab to focus${config.enabled ? "" : " · masking is off; preview only"}`));
-              if (!homeTestText) {
-                lines.push(theme.fg("dim", "Type or paste sample text"));
-              }
+                ? theme.fg("accent", theme.bold(`TEST ACTIVE RULES · focused${config.enabled ? "" : " · masking is off; preview only"}`))
+                : theme.fg("muted", `TEST ACTIVE RULES · Tab to focus${config.enabled ? "" : " · masking is off; preview only"}`));
               lines.push(...testEditor.render(width));
               const preview = previewActiveRules(testEditor.getExpandedText());
               const status = preview.count > 0 ? `${preview.count} value(s) masked` : preview.attribution;
@@ -1822,17 +1880,18 @@ export default async function (pi: ExtensionAPI) {
               }
               if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
             } else {
-              lines.push(theme.fg("muted", "  [T] TEST ACTIVE RULES · Tab to focus"));
-              lines.push(theme.fg("dim", "Type or paste sample text"));
+              lines.push(theme.fg("muted", "TEST ACTIVE RULES · Tab to focus"));
             }
             lines.push("");
             lines.push(theme.fg("dim", "↑↓ browse · Space immediate toggle · Enter edit/add · A add · D / Delete remove · Ctrl+↑↓ reorder"));
-            lines.push(theme.fg("dim", "Tab switch area · T focus test · F filter · / search · B batch · H help · I import · X export · M sources · Esc close"));
+            lines.push(theme.fg("dim", "Tab switch area · R reveal value · F filter · / search · B batch · H help · I import · X export · Esc close"));
           }
           return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
         },
         invalidate: () => {},
         handleInput: (data) => {
+          if (mutationInProgress) return;
+          mutationMessage = "";
           if (searchMode) {
             if (matchesKey(data, Key.enter)) {
               searchMode = false;
@@ -1866,7 +1925,7 @@ export default async function (pi: ExtensionAPI) {
             }
             return;
           }
-          if (matchesKey(data, Key.tab) || matchesKey(data, "t")) {
+          if (matchesKey(data, Key.tab)) {
             homeFocus = "test";
             refresh();
             return;
@@ -1875,28 +1934,27 @@ export default async function (pi: ExtensionAPI) {
           const visible = visibleRules();
           const selected = visible[selectedIndex];
           if (matchesKey(data, Key.ctrl(Key.up)) && selected) {
-            selectedRuleKey = configuredRuleStableKey(selected);
-            done({ kind: "move", rule: selected, direction: -1 });
+            void moveRuleInPlace(selected, -1);
             return;
           }
           if (matchesKey(data, Key.ctrl(Key.down)) && selected) {
-            selectedRuleKey = configuredRuleStableKey(selected);
-            done({ kind: "move", rule: selected, direction: 1 });
+            void moveRuleInPlace(selected, 1);
             return;
           }
           if (keybindings.matches(data, "tui.select.up")) {
             selectedIndex = Math.max(0, selectedIndex - 1);
+            revealedRuleKey = undefined;
             refresh();
             return;
           }
           if (keybindings.matches(data, "tui.select.down")) {
             selectedIndex = Math.min(visible.length, selectedIndex + 1);
+            revealedRuleKey = undefined;
             refresh();
             return;
           }
           if (matchesKey(data, Key.space) && selected) {
-            selectedRuleKey = configuredRuleStableKey(selected);
-            done({ kind: "toggle", rule: selected });
+            void toggleRuleInPlace(selected);
             return;
           }
           if (keybindings.matches(data, "tui.select.confirm")) {
@@ -1910,7 +1968,12 @@ export default async function (pi: ExtensionAPI) {
             return;
           }
           if (matchesKey(data, "a")) return void done({ kind: "add" });
-          if (matchesKey(data, "m")) return void done({ kind: "sources" });
+          if (matchesKey(data, "r") && selected && configuredRuleKind(selected) !== "regex") {
+            const key = configuredRuleStableKey(selected);
+            revealedRuleKey = revealedRuleKey === key ? undefined : key;
+            refresh();
+            return;
+          }
           if (matchesKey(data, "i")) return void done({ kind: "import" });
           if (matchesKey(data, "x")) return void done({ kind: "export" });
           if (matchesKey(data, "h")) return void done({ kind: "help" });
@@ -1948,13 +2011,10 @@ export default async function (pi: ExtensionAPI) {
     });
 
     if (!result) return;
-    if (result.kind === "toggle") await toggleConfigRule(ctx, result.rule);
-    else if (result.kind === "batch") await applyBatchRuleState(ctx, result.changes);
+    if (result.kind === "batch") await applyBatchRuleState(ctx, result.changes);
     else if (result.kind === "edit") await editConfigRule(ctx, result.rule);
     else if (result.kind === "delete") await deleteConfigRule(ctx, result.rule);
-    else if (result.kind === "move") await moveConfigRule(ctx, result.rule, result.direction);
     else if (result.kind === "add") await addConfigRule(ctx);
-    else if (result.kind === "sources") await openConfigSources(ctx);
     else if (result.kind === "help") await showRuleConfigurationHelp(ctx);
     else if (result.kind === "import") await importConfigRules(ctx);
     else await exportConfigRules(ctx);
