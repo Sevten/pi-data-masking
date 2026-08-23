@@ -1,7 +1,19 @@
 # Changelog
 
-- Replaced per-field two-line blocks with a compact field list and one stable,
-  full-width active-field editor that separates values from contextual help.
+- Unified existing-rule editing with the structured/JSON Rule Builder, made
+  Enter save from editing areas, removed redundant F1 help, shortened preset
+  selection, and added an explicit selectable add-rule row on the home screen.
+- Centered the four-character rule-state column and retained the same selected
+  rule after reordering.
+
+- Reduced active-field help to one persistent description line and retained it
+  while testing so switching areas no longer shifts the test panel vertically.
+
+- Kept active values editable directly beside their field labels while moving
+  contextual descriptions into a stable help-only area below the field list.
+
+- Replaced per-field two-line blocks with a compact field list and a stable
+  detail area that separates values from contextual help.
 
 - Removed duplicate outer dividers from bordered editors and moved the Rules
   dividers to bound only the actual list and selected-rule details.

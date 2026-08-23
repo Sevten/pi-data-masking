@@ -802,7 +802,7 @@ export default async function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     title: string,
     prefill: string,
-    options: { literalValue?: string; hiddenMarker?: string; regexHelp?: boolean; initialTestText?: string } = {},
+    options: { literalValue?: string; hiddenMarker?: string; initialTestText?: string } = {},
   ): Promise<string | undefined> {
     return ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
       const editorTheme: EditorTheme = {
@@ -820,7 +820,6 @@ export default async function (pi: ExtensionAPI) {
       ruleEditor.setText(prefill);
       testEditor.setText(options.initialTestText ?? "");
       let focus: "rule" | "test" = "rule";
-      let helpExpanded = false;
       let literalHidden = options.literalValue !== undefined
         && options.hiddenMarker !== undefined
         && prefill.includes(options.hiddenMarker);
@@ -884,20 +883,8 @@ export default async function (pi: ExtensionAPI) {
             "",
             ruleFocused
               ? theme.fg("accent", theme.bold("▶ RULE JSON · focused"))
-              : theme.fg("muted", "  RULE JSON"),
+              : theme.fg("muted", "  RULE JSON · Tab to focus"),
           ];
-          if (helpExpanded) {
-            lines.push(theme.fg("muted", "Common fields: id (stable unique key), name, description, enabled."));
-            if (options.regexHelp) {
-              lines.push(theme.fg("muted", "Regex fields: type=regex, pattern, optional flags/preserveStructure/lowEntropy; placeholder is not supported."));
-              lines.push(theme.fg("muted", "Pattern is JavaScript source without /.../; example: \\btoken_[A-Za-z0-9]{24}\\b. Flags may include i, m, s; g is automatic."));
-              lines.push(theme.fg("muted", "No capture group masks the whole match; capture groups mask only captured portions."));
-            } else {
-              lines.push(theme.fg("muted", "Literal fields: exactly one of real or realFromEnv; optional placeholder, preserveStructure, lowEntropy."));
-              lines.push(theme.fg("muted", "placeholder may be auto or an exact replacement; environment-backed values are never resolved in this editor."));
-            }
-            lines.push("");
-          }
           ruleEditor.focused = focus === "rule";
           testEditor.focused = focus === "test";
           ruleEditor.borderColor = (text) => theme.fg(focus === "rule" ? "accent" : "dim", text);
@@ -905,9 +892,9 @@ export default async function (pi: ExtensionAPI) {
           lines.push(...ruleEditor.render(width));
           lines.push("");
           lines.push(focus === "test"
-            ? theme.fg("accent", theme.bold("▶ TEST THIS DRAFT RULE · focused · local only"))
-            : theme.fg("muted", "  TEST THIS DRAFT RULE · local only"));
-          lines.push(theme.fg("dim", focus === "test" ? "Type or paste sample text · Tab returns to rule JSON" : "Tab focuses this test area"));
+            ? theme.fg("accent", theme.bold("▶ TEST THIS DRAFT RULE · focused"))
+            : theme.fg("muted", "  TEST THIS DRAFT RULE · Tab to focus"));
+          lines.push(theme.fg("dim", "Type or paste sample text"));
           lines.push(...testEditor.render(width));
           const draftForPreview = (() => {
             const text = ruleEditor.getExpandedText();
@@ -929,7 +916,7 @@ export default async function (pi: ExtensionAPI) {
           if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
           for (const warning of preview.warnings.slice(0, 2)) lines.push(theme.fg("warning", `Warning: ${warning}`));
           lines.push("");
-          const hints = ["Tab switch area", "F1 field help", "Enter save from Rule JSON", "Esc cancel"];
+          const hints = ["Tab switch area", "Enter save from Rule JSON", "Esc cancel"];
           if (literalValue !== undefined) hints.push(`Ctrl+R ${literalHidden ? "reveal" : "hide"} exact value`);
           lines.push(theme.fg("dim", hints.join(" · ")));
           if (toggleError) lines.push(theme.fg("warning", toggleError));
@@ -945,9 +932,6 @@ export default async function (pi: ExtensionAPI) {
           } else if (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab"))) {
             focus = focus === "rule" ? "test" : "rule";
             tui.requestRender();
-          } else if (matchesKey(data, Key.f1)) {
-            helpExpanded = !helpExpanded;
-            tui.requestRender();
           } else if (matchesKey(data, Key.ctrl("r")) && literalValue !== undefined) {
             toggleLiteral();
           } else {
@@ -961,11 +945,18 @@ export default async function (pi: ExtensionAPI) {
     });
   }
 
-  async function addConfigRule(ctx: ExtensionContext): Promise<void> {
+  async function addConfigRule(
+    ctx: ExtensionContext,
+    editing?: { configured: ConfiguredMaskingRule; original: RawConfigRule; initial: RawConfigRule },
+  ): Promise<void> {
     const sources: Array<{ scope: ConfigScope; path: string; label: string }> = [];
     const projectPath = getProjectConfigPath(ctx.cwd);
-    if (existsSync(projectPath)) sources.push({ scope: "project", path: projectPath, label: `project · ${projectPath}` });
-    if (existsSync(GLOBAL_CONFIG_PATH)) sources.push({ scope: "global", path: GLOBAL_CONFIG_PATH, label: `global · ${GLOBAL_CONFIG_PATH}` });
+    if (editing) {
+      sources.push({ scope: editing.configured.scope, path: editing.configured.path, label: `${editing.configured.scope} · ${editing.configured.path}` });
+    } else {
+      if (existsSync(projectPath)) sources.push({ scope: "project", path: projectPath, label: `project · ${projectPath}` });
+      if (existsSync(GLOBAL_CONFIG_PATH)) sources.push({ scope: "global", path: GLOBAL_CONFIG_PATH, label: `global · ${GLOBAL_CONFIG_PATH}` });
+    }
     if (sources.length === 0) {
       ctx.ui.notify("Create a project or global config first with M", "warning");
       return;
@@ -985,20 +976,61 @@ export default async function (pi: ExtensionAPI) {
     type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
     type BuilderField = "name" | "description" | "pattern" | "flags" | "env" | "real" | "replacement" | "placeholder" | "json" | "test";
     const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
-    const sourceLabel = await ctx.ui.select("Add rule to which config?", [...sources.map((source) => source.label), "Cancel"]);
-    if (!sourceLabel || sourceLabel === "Cancel") return;
-    const selectedSource = sources.find((source) => source.label === sourceLabel);
-    if (!selectedSource) return;
-    const selectedType = await ctx.ui.select("Rule type", [...builderTypes, "Cancel"]);
-    if (!selectedType || selectedType === "Cancel") return;
+    let selectedSource: (typeof sources)[number] | undefined;
+    let selectedType: BuilderType | undefined;
+    if (editing) {
+      selectedSource = sources[0];
+      selectedType = typeof editing.initial.pattern === "string" || editing.initial.type === "regex"
+        ? "Custom regex"
+        : typeof editing.initial.realFromEnv === "string"
+          ? "Literal from environment"
+          : "Exact literal value";
+    } else {
+      const sourceLabel = await ctx.ui.select("Add rule to which config?", [...sources.map((source) => source.label), "Cancel"]);
+      if (!sourceLabel || sourceLabel === "Cancel") return;
+      selectedSource = sources.find((source) => source.label === sourceLabel);
+      if (!selectedSource) return;
+      const selectedTypeOption = await ctx.ui.select("Rule type", [...builderTypes, "Cancel"]);
+      if (!selectedTypeOption || selectedTypeOption === "Cancel") return;
+      selectedType = selectedTypeOption as BuilderType;
+    }
+    if (!selectedSource || !selectedType) return;
     let selectedPreset: (typeof MASKING_PRESETS)[number] | undefined;
     if (selectedType === "Built-in preset template") {
-      const presetOptions = MASKING_PRESETS.map(
-        (preset) => `${preset.label} (${preset.name}) · ${preset.description}`,
-      );
-      const selectedPresetOption = await ctx.ui.select("Choose a built-in preset", [...presetOptions, "Cancel"]);
-      if (!selectedPresetOption || selectedPresetOption === "Cancel") return;
-      selectedPreset = MASKING_PRESETS[presetOptions.indexOf(selectedPresetOption)];
+      selectedPreset = await ctx.ui.custom<(typeof MASKING_PRESETS)[number] | undefined>((tui, theme, keybindings, done) => {
+        let selectedIndex = 0;
+        return {
+          render: (width) => {
+            const selected = MASKING_PRESETS[selectedIndex]!;
+            const lines = [theme.fg("accent", theme.bold("Choose a built-in preset")), ""];
+            for (let index = 0; index < MASKING_PRESETS.length; index++) {
+              const preset = MASKING_PRESETS[index]!;
+              const row = `${index === selectedIndex ? "▶" : " "} ${preset.name}`;
+              lines.push(index === selectedIndex ? theme.fg("accent", row) : theme.fg("muted", row));
+            }
+            lines.push("", theme.fg("dim", truncateToWidth(selected.description, Math.max(1, width))));
+            lines.push("", theme.fg("dim", "↑↓ select · Enter continue · Esc cancel"));
+            return lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+          },
+          invalidate: () => {},
+          handleInput: (data) => {
+            if (keybindings.matches(data, "tui.select.up")) {
+              selectedIndex = (selectedIndex - 1 + MASKING_PRESETS.length) % MASKING_PRESETS.length;
+              tui.requestRender();
+            } else if (keybindings.matches(data, "tui.select.down")) {
+              selectedIndex = (selectedIndex + 1) % MASKING_PRESETS.length;
+              tui.requestRender();
+            } else if (keybindings.matches(data, "tui.select.confirm")) {
+              done(MASKING_PRESETS[selectedIndex]);
+            } else if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
+              done(undefined);
+            }
+          },
+        };
+      }, {
+        overlay: true,
+        overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
+      });
       if (!selectedPreset) return;
     }
 
@@ -1034,21 +1066,20 @@ export default async function (pi: ExtensionAPI) {
       };
       let saveMessage = "";
       let warningSignature = "";
-      let replacementIndex = 0;
+      let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
       let focusIndex = 0;
       let lastFormField: BuilderField = "name";
       let mode: "form" | "json" = "form";
-      let helpExpanded = false;
-      let explicitId: string | undefined;
-      let advancedFields: RawConfigRule = {};
+      let explicitId: string | undefined = editing && typeof editing.initial.id === "string" ? editing.initial.id : undefined;
+      let advancedFields: RawConfigRule = editing ? { ...editing.initial } : {};
       const editors = {
-        name: makeEditor(selectedPreset?.label ?? ""),
-        description: makeEditor(selectedPreset?.description ?? ""),
-        pattern: makeEditor(selectedPreset?.pattern ?? ""),
-        flags: makeEditor(selectedPreset?.flags ?? ""),
-        env: makeEditor(""),
-        real: makeEditor(""),
-        placeholder: makeEditor(""),
+        name: makeEditor(selectedPreset?.name ?? (typeof editing?.initial.name === "string" ? editing.initial.name : "")),
+        description: makeEditor(selectedPreset?.description ?? (typeof editing?.initial.description === "string" ? editing.initial.description : "")),
+        pattern: makeEditor(selectedPreset?.pattern ?? (typeof editing?.initial.pattern === "string" ? editing.initial.pattern : "")),
+        flags: makeEditor(selectedPreset?.flags ?? (typeof editing?.initial.flags === "string" ? editing.initial.flags : "")),
+        env: makeEditor(typeof editing?.initial.realFromEnv === "string" ? editing.initial.realFromEnv : ""),
+        real: makeEditor(typeof editing?.initial.real === "string" ? editing.initial.real : ""),
+        placeholder: makeEditor(typeof editing?.initial.placeholder === "string" && editing.initial.placeholder !== "auto" ? editing.initial.placeholder : ""),
         json: makeEditor("", false),
         test: makeEditor("", false),
       };
@@ -1109,7 +1140,7 @@ export default async function (pi: ExtensionAPI) {
       }
 
       for (const [field, editor] of Object.entries(editors)) {
-        editor.onSubmit = field === "test" || field === "json" ? () => {} : () => moveFormField(1);
+        editor.onSubmit = field === "test" ? () => {} : () => attemptSave();
       }
 
       function draftFromForm(): RawConfigRule {
@@ -1255,26 +1286,22 @@ export default async function (pi: ExtensionAPI) {
         const marker = focused ? "▶" : " ";
         const labelWidth = 14;
         const rawValue = options.selector ? `‹ ${value} ›` : value || "—";
-        const summary = `${marker} ${padCell(label, labelWidth)}  ${rawValue}`;
+        const valueWidth = Math.max(1, width - (2 + labelWidth + 2));
+        const displayedValue = focused && options.cursorEditor
+          ? valueWithCursor(options.cursorEditor, valueWidth)
+          : truncateToWidth(rawValue, valueWidth);
+        const summary = `${marker} ${padCell(label, labelWidth)}  ${displayedValue}`;
         lines.push(theme.fg(focused ? "accent" : "muted", truncateToWidth(summary, Math.max(1, width))));
         if (field !== undefined) {
           renderedFieldDetails.set(field, { label, value, description, ...options });
         }
       }
 
-      function renderActiveFieldEditor(lines: string[], width: number): void {
-        const detail = renderedFieldDetails.get(focusedField());
+      function renderActiveFieldDescription(lines: string[], width: number): void {
+        const detail = renderedFieldDetails.get(focusedField() === "test" ? lastFormField : focusedField());
         if (!detail) return;
-        const valueIndent = "    › ";
-        const valueWidth = Math.max(1, width - visibleWidth(valueIndent));
-        const rawValue = detail.selector ? `‹ ${detail.value} ›` : detail.value || "—";
-        const displayedValue = detail.cursorEditor
-          ? valueWithCursor(detail.cursorEditor, valueWidth)
-          : truncateToWidth(rawValue, valueWidth);
         lines.push("");
-        lines.push(theme.fg("accent", theme.bold(`  EDITING ${detail.label.toUpperCase()}`)));
         lines.push(theme.fg("dim", truncateToWidth(`  ${detail.description}`, Math.max(1, width))));
-        lines.push(theme.fg("accent", truncateToWidth(`${valueIndent}${displayedValue}`, Math.max(1, width))));
       }
 
       function renderSelector(lines: string[], field: BuilderField, label: string, value: string, width: number, description: string): void {
@@ -1310,7 +1337,7 @@ export default async function (pi: ExtensionAPI) {
           return;
         }
         const id = typeof draft.rule.id === "string" ? draft.rule.id : "";
-        if ((existingIds.get(currentSource().path) ?? []).includes(id)) {
+        if ((existingIds.get(currentSource().path) ?? []).includes(id) && (!editing || id !== editing.configured.rule.id)) {
           saveMessage = `Cannot save: rule ID [${id}] already exists in ${currentSource().scope}`;
           tui.requestRender();
           return;
@@ -1318,7 +1345,7 @@ export default async function (pi: ExtensionAPI) {
         const signature = warnings.join("\n");
         if (warnings.length > 0 && warningSignature !== signature) {
           warningSignature = signature;
-          saveMessage = "Warnings are shown below · press Ctrl+S again to save anyway";
+          saveMessage = "Warnings are shown below · press Enter again to save anyway";
           tui.requestRender();
           return;
         }
@@ -1333,29 +1360,23 @@ export default async function (pi: ExtensionAPI) {
           const editorDivider = theme.fg(editorFocused ? "accent" : "dim", "─".repeat(Math.max(1, width)));
           const editorTitle = mode === "form" ? "RULE FIELDS" : "RULE JSON";
           const lines: string[] = [
-            theme.fg("accent", theme.bold("New masking rule · Rule Builder")),
+            theme.fg("accent", theme.bold(`${editing ? "Edit" : "New"} masking rule · Rule Builder`)),
             theme.fg("muted", `${currentSource().scope} · ${currentType()}${selectedPreset ? ` · ${selectedPreset.name}` : ""} · ${mode === "form" ? "Structured fields" : "Advanced JSON"}`),
             theme.fg("dim", currentSource().path),
             "",
             editorFocused
               ? theme.fg("accent", theme.bold(`▶ ${editorTitle} · focused`))
-              : theme.fg("muted", `  ${editorTitle}`),
-            theme.fg("dim", mode === "form" ? "Use ↑/↓ to select a field; edit it in the fixed full-width area below" : "Edit the complete rule object as multiline JSON"),
+              : theme.fg("muted", `  ${editorTitle} · Tab to focus`),
           ];
-          if (helpExpanded) {
-            lines.push(theme.fg("muted", "Common: name is the display label; id is generated uniquely. description and enabled are optional."));
-            lines.push(theme.fg("muted", "Regex: pattern has no /.../ delimiters; flags may include i/m/s; g is automatic; capture groups mask captured portions."));
-            lines.push(theme.fg("muted", "Literal: use real or realFromEnv, never both. Exact values are stored in plaintext; placeholder may be auto or custom."));
-            lines.push(theme.fg("muted", "F2 exposes complete JSON for preserveStructure, lowEntropy, or other advanced fields."), "");
-          }
           if (mode === "form") {
             lines.push(editorDivider);
+            lines.push(theme.fg("dim", "Use ↑/↓ to select a field and edit its value directly; help stays below"));
             renderSingleLineField(lines, "name", "Name", editors.name, width, "Required display name");
             renderFieldRow(lines, undefined, "Generated ID", generatedId(), width, "Read-only · generated from name");
             renderSingleLineField(lines, "description", "Description", editors.description, width, "Optional longer explanation");
             if (currentType() === "Built-in preset template" || currentType() === "Custom regex") {
-              renderSingleLineField(lines, "pattern", "Pattern", editors.pattern, width, "JavaScript regex source without /.../");
-              renderSingleLineField(lines, "flags", "Flags", editors.flags, width, "Optional: i, m, s (g is automatic)");
+              renderSingleLineField(lines, "pattern", "Pattern", editors.pattern, width, "JavaScript regex without /.../ · e.g. \\btoken_[A-Za-z0-9]{24}\\b");
+              renderSingleLineField(lines, "flags", "Flags", editors.flags, width, "Optional: i case-insensitive · m multiline anchors · s dot matches newline · g automatic");
             } else if (currentType() === "Literal from environment") {
               renderSingleLineField(lines, "env", "Environment", editors.env, width, "Environment variable name");
             } else {
@@ -1363,16 +1384,17 @@ export default async function (pi: ExtensionAPI) {
               renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
               if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             }
-            renderActiveFieldEditor(lines, width);
+            renderActiveFieldDescription(lines, width);
             lines.push(editorDivider);
           } else {
+            lines.push(theme.fg("dim", "Edit the complete rule object as multiline JSON"));
             renderMultilineEditor(lines, "json", editors.json, width);
           }
           lines.push("");
           lines.push(focusedField() === "test"
-            ? theme.fg("accent", theme.bold("▶ TEST THIS RULE · focused · local only"))
-            : theme.fg("muted", "  TEST THIS RULE · local only"));
-          lines.push(theme.fg("dim", focusedField() === "test" ? "Type or paste sample text · Tab returns to rule fields" : "Tab focuses this test area"));
+            ? theme.fg("accent", theme.bold("▶ TEST THIS RULE · focused"))
+            : theme.fg("muted", "  TEST THIS RULE · Tab to focus"));
+          lines.push(theme.fg("dim", "Type or paste sample text"));
           renderMultilineEditor(lines, "test", editors.test, width);
           const preview = previewCandidateRule(editors.test.getExpandedText(), draft.text);
           const status = preview.count > 0 ? `${preview.count} value(s) masked` : preview.attribution;
@@ -1381,18 +1403,13 @@ export default async function (pi: ExtensionAPI) {
           if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
           for (const warning of preview.warnings.slice(0, 3)) lines.push(theme.fg("warning", `Warning: ${warning}`));
           if (saveMessage) lines.push(theme.fg(saveMessage.startsWith("Cannot") ? "warning" : "accent", saveMessage));
-          lines.push("", theme.fg("dim", "↑↓ fields · Tab form/test · ←→ or Space change selection · F1 help · F2 form/JSON · Ctrl+S save · Esc cancel"));
+          lines.push("", theme.fg("dim", "↑↓ fields · Tab form/test · ←→ or Space change selection · F2 form/JSON · Enter save · Esc cancel"));
           return lines.map((line) => truncateToWidth(line, Math.max(1, width)));
         },
         invalidate: () => Object.values(editors).forEach((editor) => editor.invalidate()),
         handleInput: (data) => {
           if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
             done(undefined);
-            return;
-          }
-          if (matchesKey(data, Key.f1)) {
-            helpExpanded = !helpExpanded;
-            tui.requestRender();
             return;
           }
           if (matchesKey(data, Key.f2)) {
@@ -1407,16 +1424,16 @@ export default async function (pi: ExtensionAPI) {
             tui.requestRender();
             return;
           }
-          if (matchesKey(data, Key.ctrl("s"))) {
-            attemptSave();
-            return;
-          }
           if (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab"))) {
             switchInputArea();
             return;
           }
 
           const field = focusedField();
+          if (matchesKey(data, Key.enter) && field === "replacement") {
+            attemptSave();
+            return;
+          }
           if (mode === "form" && field !== "test" && (matchesKey(data, Key.up) || matchesKey(data, Key.down))) {
             moveFormField(matchesKey(data, Key.up) ? -1 : 1);
             return;
@@ -1447,8 +1464,11 @@ export default async function (pi: ExtensionAPI) {
 
     if (!built) return;
     const id = String(built.rule.id);
-    if (await saveStructuralChanges(ctx, [{ kind: "append", path: built.source.path, rule: built.rule }])) {
-      ctx.ui.notify(`Added rule [${id}] to ${built.source.scope} config`, "info");
+    const mutation = editing
+      ? { kind: "replace" as const, path: editing.configured.path, sourceIndex: editing.configured.sourceIndex, id: editing.configured.rule.id, rule: built.rule }
+      : { kind: "append" as const, path: built.source.path, rule: built.rule };
+    if (await saveStructuralChanges(ctx, [mutation])) {
+      ctx.ui.notify(editing ? `Updated rule [${id}]` : `Added rule [${id}] to ${built.source.scope} config`, "info");
     }
   }
 
@@ -1459,76 +1479,8 @@ export default async function (pi: ExtensionAPI) {
       if (!original || typeof original !== "object" || original.id !== configured.rule.id) {
         throw new Error("source position changed; reopen /masking-config");
       }
-      const hiddenMarker = "<keep-existing-literal-value>";
-      const displayed: RawConfigRule = configured.sourceKind === "preset"
-        ? { ...configured.rule }
-        : { ...original };
-      let literalValue = typeof original.real === "string" ? original.real : undefined;
-      let editorDraft = JSON.stringify(displayed, null, 2);
-      for (;;) {
-        const editedText = await editRuleJson(
-          ctx,
-          `Edit ${configured.scope} rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}]${configured.sourceKind === "preset" ? " · preset expanded to editable regex" : ""}`,
-          editorDraft,
-          {
-            ...(literalValue !== undefined ? { literalValue, hiddenMarker } : {}),
-            regexHelp: configured.sourceKind === "preset" || configured.sourceKind === "regex",
-          },
-        );
-        if (editedText === undefined) return;
-        editorDraft = editedText;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(editedText) as unknown;
-        } catch (err) {
-          ctx.ui.notify(`Invalid JSON: ${(err as Error).message}; reopening your draft`, "error");
-          continue;
-        }
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          ctx.ui.notify("Edited rule must be a JSON object; reopening your draft", "error");
-          continue;
-        }
-        const edited = parsed as RawConfigRule;
-        if (JSON.stringify(edited) === JSON.stringify(original)) {
-          ctx.ui.notify("Rule was not changed", "info");
-          return;
-        }
-        let riskWarnings: string[];
-        try {
-          riskWarnings = validateRawConfigRule(edited);
-        } catch (err) {
-          ctx.ui.notify(`Invalid rule: ${(err as Error).message}; reopening your draft`, "error");
-          const redisplayed = { ...edited };
-          if (typeof redisplayed.real === "string") {
-            literalValue = redisplayed.real;
-          } else {
-            literalValue = undefined;
-          }
-          editorDraft = JSON.stringify(redisplayed, null, 2);
-          continue;
-        }
-        if (!await ctx.ui.confirm(
-          "Save edited masking rule?",
-          [`Name: ${String(edited.name ?? configuredRuleDisplayName(configured))}`, `Rule ID: ${configured.rule.id}`, `Scope: ${configured.scope}`, "Literal values are not included in this summary.", ...riskWarnings.map((warning) => `Warning: ${warning}`)].join("\n"),
-        )) return;
-        if (await saveStructuralChanges(ctx, [{
-          kind: "replace",
-          path: configured.path,
-          sourceIndex: configured.sourceIndex,
-          id: configured.rule.id,
-          rule: edited,
-        }])) {
-          ctx.ui.notify(`Updated rule [${String(edited.id)}]`, "info");
-          return;
-        }
-        const redisplayed = { ...edited };
-        if (typeof redisplayed.real === "string") {
-          literalValue = redisplayed.real;
-        } else {
-          literalValue = undefined;
-        }
-        editorDraft = JSON.stringify(redisplayed, null, 2);
-      }
+      const initial = configured.sourceKind === "preset" ? { ...configured.rule } : { ...original };
+      await addConfigRule(ctx, { configured, original, initial });
     } catch (err) {
       ctx.ui.notify(`Failed to edit rule: ${(err as Error).message}`, "error");
     }
@@ -1557,7 +1509,7 @@ export default async function (pi: ExtensionAPI) {
           "Use an environment-variable name; its value is resolved in memory and is not stored in JSON.",
           "",
           theme.fg("accent", "Exact literal value"),
-          "Match one exact string. Choose an automatic or custom replacement. In the editor, Ctrl+R reveals/hides it.",
+          "Match one exact string. Choose an automatic or custom replacement. Explicit editing shows the stored value.",
           "",
           theme.fg("accent", "Built-in preset"),
           "Choose a documented template. The complete regex is written to the config so it can be customized.",
@@ -1773,7 +1725,7 @@ export default async function (pi: ExtensionAPI) {
 
       function refresh(): void {
         const visible = visibleRules();
-        selectedIndex = Math.max(0, Math.min(selectedIndex, Math.max(0, visible.length - 1)));
+        selectedIndex = Math.max(0, Math.min(selectedIndex, visible.length));
         tui.requestRender();
       }
 
@@ -1794,7 +1746,7 @@ export default async function (pi: ExtensionAPI) {
             "",
             homeFocus === "rules"
               ? theme.fg("accent", theme.bold("▶ RULES · focused"))
-              : theme.fg("muted", "  RULES"),
+              : theme.fg("muted", "  RULES · Tab to focus"),
             rulesDivider,
           ];
 
@@ -1805,19 +1757,28 @@ export default async function (pi: ExtensionAPI) {
             lines.push(theme.fg("dim", `  global   ${GLOBAL_CONFIG_PATH}`));
             lines.push("");
             lines.push(theme.fg("accent", "Press M to create a project or global config."));
+            lines.push("", theme.fg("accent", "▶ ＋ Add new rule"));
           } else if (visibleRulesNow.length === 0) {
             lines.push(theme.fg("warning", "No rules match the current filter/search."));
+            lines.push("", theme.fg("accent", "▶ ＋ Add new rule"));
           } else {
             const reservedRows = 23;
-            const listHeight = Math.max(3, Math.min(visibleRulesNow.length, tui.terminal.rows - reservedRows));
-            keepSelectedVisible(listHeight, visibleRulesNow.length);
-            const visible = visibleRulesNow.slice(scrollOffset, scrollOffset + listHeight);
-            for (let visibleIndex = 0; visibleIndex < visible.length; visibleIndex++) {
-              const configured = visible[visibleIndex]!;
-              const absoluteIndex = scrollOffset + visibleIndex;
+            const rowCount = visibleRulesNow.length + 1;
+            const listHeight = Math.max(3, Math.min(rowCount, tui.terminal.rows - reservedRows));
+            keepSelectedVisible(listHeight, rowCount);
+            const endIndex = Math.min(rowCount, scrollOffset + listHeight);
+            for (let absoluteIndex = scrollOffset; absoluteIndex < endIndex; absoluteIndex++) {
+              if (absoluteIndex === visibleRulesNow.length) {
+                const addRow = `${absoluteIndex === selectedIndex ? "▶" : " "} ＋ Add new rule`;
+                lines.push(absoluteIndex === selectedIndex ? theme.fg("accent", addRow) : theme.fg("muted", addRow));
+                continue;
+              }
+              const configured = visibleRulesNow[absoluteIndex]!;
               const enabled = configured.enabled;
               const cursor = absoluteIndex === selectedIndex ? "›" : " ";
-              const state = !enabled ? "OFF" : configured.available ? "ON " : "WAIT";
+              const stateLabel = !enabled ? "OFF" : configured.available ? "ON" : "WAIT";
+              const statePadding = Math.max(0, 4 - stateLabel.length);
+              const state = `${" ".repeat(Math.floor(statePadding / 2))}${stateLabel}${" ".repeat(Math.ceil(statePadding / 2))}`;
               const priority = configuredRules.indexOf(configured) + 1;
               const displayName = configuredRuleDisplayName(configured);
               const text = `${cursor} [${state}] ${String(priority).padStart(2)}  ${configured.scope.padEnd(7)}  ${configuredRuleKind(configured).padEnd(7)}  ${displayName}`;
@@ -1848,11 +1809,9 @@ export default async function (pi: ExtensionAPI) {
               testEditor.borderColor = (text) => theme.fg(homeFocus === "test" ? "accent" : "dim", text);
               lines.push(homeFocus === "test"
                 ? theme.fg("accent", theme.bold(`▶ [T] TEST ACTIVE RULES · focused${config.enabled ? "" : " · masking is off; preview only"}`))
-                : theme.fg("muted", `  [T] TEST ACTIVE RULES${config.enabled ? "" : " · masking is off; preview only"}`));
+                : theme.fg("muted", `  [T] TEST ACTIVE RULES · Tab to focus${config.enabled ? "" : " · masking is off; preview only"}`));
               if (!homeTestText) {
-                lines.push(theme.fg("dim", homeFocus === "test"
-                  ? "Type or paste sample text here · Tab returns to rules"
-                  : "Press Tab or T to focus and paste sample text"));
+                lines.push(theme.fg("dim", "Type or paste sample text"));
               }
               lines.push(...testEditor.render(width));
               const preview = previewActiveRules(testEditor.getExpandedText());
@@ -1863,11 +1822,11 @@ export default async function (pi: ExtensionAPI) {
               }
               if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
             } else {
-              lines.push(theme.fg("muted", "  [T] TEST ACTIVE RULES"));
-              lines.push(theme.fg("dim", "Press Tab or T to focus and paste sample text"));
+              lines.push(theme.fg("muted", "  [T] TEST ACTIVE RULES · Tab to focus"));
+              lines.push(theme.fg("dim", "Type or paste sample text"));
             }
             lines.push("");
-            lines.push(theme.fg("dim", "↑↓ browse · Space immediate toggle · Enter edit · A add · D / Delete remove · Ctrl+↑↓ reorder"));
+            lines.push(theme.fg("dim", "↑↓ browse · Space immediate toggle · Enter edit/add · A add · D / Delete remove · Ctrl+↑↓ reorder"));
             lines.push(theme.fg("dim", "Tab switch area · T focus test · F filter · / search · B batch · H help · I import · X export · M sources · Esc close"));
           }
           return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
@@ -1916,20 +1875,22 @@ export default async function (pi: ExtensionAPI) {
           const visible = visibleRules();
           const selected = visible[selectedIndex];
           if (matchesKey(data, Key.ctrl(Key.up)) && selected) {
+            selectedRuleKey = configuredRuleStableKey(selected);
             done({ kind: "move", rule: selected, direction: -1 });
             return;
           }
           if (matchesKey(data, Key.ctrl(Key.down)) && selected) {
+            selectedRuleKey = configuredRuleStableKey(selected);
             done({ kind: "move", rule: selected, direction: 1 });
             return;
           }
-          if (keybindings.matches(data, "tui.select.up") && visible.length > 0) {
+          if (keybindings.matches(data, "tui.select.up")) {
             selectedIndex = Math.max(0, selectedIndex - 1);
             refresh();
             return;
           }
-          if (keybindings.matches(data, "tui.select.down") && visible.length > 0) {
-            selectedIndex = Math.min(visible.length - 1, selectedIndex + 1);
+          if (keybindings.matches(data, "tui.select.down")) {
+            selectedIndex = Math.min(visible.length, selectedIndex + 1);
             refresh();
             return;
           }
@@ -1938,8 +1899,8 @@ export default async function (pi: ExtensionAPI) {
             done({ kind: "toggle", rule: selected });
             return;
           }
-          if (keybindings.matches(data, "tui.select.confirm") && selected) {
-            done({ kind: "edit", rule: selected });
+          if (keybindings.matches(data, "tui.select.confirm")) {
+            done(selected ? { kind: "edit", rule: selected } : { kind: "add" });
             return;
           }
           if ((matchesKey(data, "d") || matchesKey(data, Key.delete)) && selected) {

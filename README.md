@@ -118,12 +118,18 @@ details hide literal real values; environment rules show only the variable name.
 write uses an atomic replacement and restricts the config file to user-only
 permissions where the filesystem supports POSIX modes.
 
+The home list uses a centered four-character state column: `[ ON ]`, `[OFF ]`,
+and `[WAIT]`. Its final selectable row is `＋ Add new rule`, so creation is
+discoverable with `Enter` while `A` remains available as a shortcut. Reordering
+retains the same selected rule instead of leaving the cursor at the old row.
+
 Configuration-center controls:
 
 | Key | Action |
 |---|---|
 | `Space` | Immediately enable/disable the selected rule without a confirmation dialog |
-| `Enter` / `A` / `D` or `Delete` | Edit, add, or delete a rule |
+| `Enter` | Edit the selected rule, or add one from the `＋ Add new rule` row |
+| `A` / `D` or `Delete` | Add or delete a rule |
 | `Ctrl+↑` / `Ctrl+↓` | Move a rule within its project/global scope |
 | `F` / `/` | Cycle filters or search names, IDs, descriptions, sources, and types |
 | `B` | Immediately enable or disable all currently visible rules after one summary confirmation |
@@ -138,9 +144,8 @@ value once and then lets you choose either an automatically generated
 placeholder or an exact custom replacement. Prefer an environment-backed
 literal for secrets that should not be stored in JSON. Rule-list details never
 show the value. Entering the rule editor is an explicit inspection action, so
-the stored `real` value is shown there by default; `Ctrl+R` hides or restores it
-without leaving the editor. Environment-backed rules continue to show only the
-variable name, never the resolved value.
+the stored `real` value is shown there by default. Environment-backed rules
+continue to show only the variable name, never the resolved value.
 
 The configuration-center home screen includes a compact `Test active rules`
 panel. `Tab` switches between the rule list and test input, while `T` focuses
@@ -150,34 +155,35 @@ closes and never enters configuration, session history, live dynamic mappings,
 or model context. Both panels visibly identify focus: the active title is
 prefixed with `▶`. The Rules title stays outside the two dividers that bound the
 actual rule list and selected-rule details. Test titles and instructions stay
-outside the input editor's own border, avoiding duplicated lines. An empty test
-area says `Press Tab or T to focus and paste sample text` directly beside it.
+outside the input editor's own border, avoiding duplicated lines. Test areas
+always say `Type or paste sample text`; an unfocused title adds `Tab to focus`.
 
-The rule editor uses the same visual hierarchy with a JSON area above a
-candidate-rule test area. Titles and instructions precede each editor border;
-`Tab` switches focus, and `F1` expands contextual field and regex help without
-discarding the draft.
+Existing rules open in the same structured Rule Builder used for creation, with
+a candidate-rule test area below. `F2` switches to complete JSON when advanced
+fields are needed, and `Tab` switches between editing and testing. Preset
+references are expanded into editable regex fields before editing.
 
 Adding a rule first asks for the configuration source and broad rule type. It
 then opens one focused Rule Builder instead of continuing through field-by-field
 prompts. The Builder contains only that type's contextual fields, local test
 input, validation, and masked preview; scope and broad type are shown as fixed
 context rather than editable fields. A compact field list shows each label and
-current value, while a fixed detail area below it shows the selected field's
-description and a full-width editable value. Previously entered values remain
-visible, long active values have substantially more room, and focus changes
-never alter the form's height. `Up`/`Down` move between fields; `Tab`/`Shift+Tab`
-switch only between the form and local test area.
+editable value on one line, while one fixed line below shows only the selected
+field's description. That description remains in place when focus moves to the
+test area, so the form and test positions do not jump. Previously entered values
+remain visible, active values scroll horizontally around the cursor when needed,
+and focus changes never alter the form's height. `Up`/`Down` move between fields;
+`Tab`/`Shift+Tab` switch only between the form and local test area.
 `Left`/`Right` or `Space` changes a selector. Non-preset rule fields start
-empty; examples remain in descriptions and help instead of becoming accidental
-configuration values. `F1` toggles help, `F2` switches between the structured
-form and complete JSON, `Ctrl+S` validates and saves, and `Esc` cancels. Built-in presets
+empty; examples remain in field descriptions instead of becoming accidental
+configuration values. `F2` switches between the structured form and complete
+JSON, `Enter` validates and saves from the editing area, and `Esc` cancels. Built-in presets
 expand into editable regex fields immediately. Because validation and testing
 are already live, there is no separate Review step.
 
-When adding a built-in preset, a dedicated selection step lists every preset
-with its human-readable label, stable preset name, and the formats it masks.
-After selection, the Rule Builder opens with the preset's name, description,
+When adding a built-in preset, a dedicated selection step lists only short,
+stable preset names and shows the selected preset's description below the list.
+After selection, the Rule Builder opens with that short name, description,
 pattern, flags, and structure-preservation options expanded into editable
 fields. A unique rule ID is generated automatically. The resulting rule can be
 edited like any custom regex before saving.
@@ -336,6 +342,16 @@ In `/masking-config`, choose `A` → `Custom regex` and provide:
 3. **Regex flags (optional)** — JavaScript flags such as `i`, `m`, or `s`;
    you need not add `g`, because global matching is handled internally.
 
+The commonly useful flags are:
+
+- `i` — case-insensitive matching. `token` also matches `TOKEN` and `Token`.
+- `m` — multiline anchors. With `^secret=.*$`, `^` and `$` apply to every line
+  instead of only the start and end of the complete input.
+- `s` — dot-all mode. `BEGIN(.*?)END` can cross newline characters because `.`
+  also matches a newline.
+- `g` — global matching. It finds every occurrence instead of stopping after
+  the first; pi-data-masking adds it automatically, so it need not be entered.
+
 Regex matches receive deterministic generated placeholders. A regex rule
 cannot use one fixed `placeholder`, since the same pattern may discover many
 different real values. If the pattern contains capture groups, only the
@@ -464,8 +480,8 @@ Other boundaries:
 | `enabled` | boolean | no | Per-rule switch; defaults to `true` |
 | `description` | string | no | Optional longer explanation shown in rule details |
 | `type` | `"regex"` | yes | Select regex matching |
-| `pattern` | string | yes | JavaScript regex source without delimiters |
-| `flags` | string | no | Override global case sensitivity; global matching is added internally |
+| `pattern` | string | yes | JavaScript regex source without delimiters, e.g. `\\btoken_[A-Za-z0-9]{24}\\b` in JSON |
+| `flags` | string | no | JavaScript flags such as `i`, `m`, or `s`; `g` is added internally |
 | `preserveStructure` | object | no | `keepPrefix` and/or `keepIPv4Octets` |
 | `lowEntropy` | boolean | no | Suppress the warning for an intentionally short match shape |
 
