@@ -90,6 +90,10 @@ export interface PreserveStructure {
 
 interface BaseMaskingRule {
   id: string;
+  /** Short human-readable label shown in configuration UIs. */
+  name?: string;
+  /** Per-rule switch. Omitted means enabled for backward compatibility. */
+  enabled?: boolean;
   description?: string;
   /** Preserve structural properties of the value in its placeholder. */
   preserveStructure?: PreserveStructure;
@@ -305,6 +309,7 @@ export class Masker {
     this.caseFlag = caseSensitive ? "" : "i";
 
     for (const rule of rules) {
+      if (rule.enabled === false) continue;
       if (isRegexRule(rule)) {
         const compiled = this.compileRegexRule(rule, caseSensitive);
         if (compiled) this.compiledRules.push(compiled);
@@ -348,9 +353,11 @@ export class Masker {
     const placeholderOwners = new Map<string, { ruleId: string; real: string }>();
     const realValues = new Set<string>();
     for (const rule of rules) {
+      if (rule.enabled === false) continue;
       if (!isRegexRule(rule) && rule.real) realValues.add(rule.real);
     }
     for (const rule of rules) {
+      if (rule.enabled === false) continue;
       if (isRegexRule(rule)) continue;
       if (!rule.real || !rule.placeholder || rule.placeholder === "auto") continue;
       if (rule.placeholder === rule.real) {

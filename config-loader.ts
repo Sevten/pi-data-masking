@@ -7,13 +7,15 @@
  * known until runtime, so masker.ts generates their placeholders lazily.
  */
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { watch, existsSync, statSync, type FSWatcher } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { generatePlaceholder } from "./placeholder-gen.ts";
-import { isRegexRule, MAX_COLLISION_ATTEMPTS, type MaskingRule } from "./masker.ts";
+import { isRegexRule, MAX_COLLISION_ATTEMPTS, type MaskingRule, type PreserveStructure } from "./masker.ts";
+import { expandMaskingPreset, getMaskingPreset } from "./presets.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -33,8 +35,68 @@ export interface MaskingOptions {
 
 export interface MaskingConfig {
   enabled: boolean;
+  /** Active rules only; kept as the runtime-facing compatibility field. */
   rules: MaskingRule[];
+  /** Every valid configured rule, including disabled rules and its source. */
+  configuredRules: ConfiguredMaskingRule[];
   options: MaskingOptions;
+}
+
+export type ConfigScope = "project" | "global";
+
+export interface ConfiguredMaskingRule {
+  /** Expanded runtime rule. Environment values are held only in memory. */
+  rule: MaskingRule;
+  scope: ConfigScope;
+  path: string;
+  /** Position in the source file's rules array. */
+  sourceIndex: number;
+  /** Normalized per-rule state; omitted enabled fields become true. */
+  enabled: boolean;
+  /** False when the rule is valid but its environment value is unavailable. */
+  available: boolean;
+  /** Original configuration shape before preset/env expansion. */
+  sourceKind: "literal" | "regex" | "preset";
+  presetName?: string;
+  realFromEnv?: string;
+}
+
+export interface RuleEnabledChange {
+  path: string;
+  sourceIndex: number;
+  id: string;
+  enabled: boolean;
+}
+
+export type RawConfigRule = Record<string, unknown>;
+
+export type ConfigRuleMutation =
+  | { kind: "append"; path: string; rule: RawConfigRule }
+  | { kind: "replace"; path: string; sourceIndex: number; id: string; rule: RawConfigRule }
+  | { kind: "delete"; path: string; sourceIndex: number; id: string }
+  | { kind: "move"; path: string; sourceIndex: number; id: string; targetIndex: number; targetId: string };
+
+export interface RawConfigFile {
+  [key: string]: unknown;
+  rules: RawConfigRule[];
+}
+
+export interface InitialConfigOptions {
+  showStatusBar: boolean;
+  persistHistory: boolean;
+}
+
+export interface InitialConfig {
+  $schema: string;
+  version: 1;
+  enabled: true;
+  rules: Array<{ id: string; name: string; preset: string; enabled: true }>;
+  options: {
+    caseSensitive: true;
+    showStatusBar: boolean;
+    systemPromptGuidance: false;
+    persistHistory: boolean;
+  };
 }
 
 export interface LoadResult {
@@ -74,9 +136,117 @@ export const PERSISTENT_TOGGLE_PATH = join(
   "toggle-state.json"
 );
 
+export const CONFIG_SCHEMA_URL =
+  "https://raw.githubusercontent.com/sevten/pi-data-masking/main/masking.config.schema.json";
+
 /** Project-level config path: <cwd>/.pi/pi-data-masking/masking.config.json */
 export function getProjectConfigPath(cwd: string): string {
   return join(cwd, CONFIG_DIR_NAME, "pi-data-masking", "masking.config.json");
+}
+
+/** Generate a readable ID from a display name and avoid collisions in one file. */
+export function generateUniqueRuleId(name: string, existingIds: Iterable<string>): string {
+  const used = new Set(existingIds);
+  const readable = name
+    .normalize("NFKC")
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  const stem = readable || `rule-${randomUUID().slice(0, 8)}`;
+  if (!used.has(stem)) return stem;
+  let suffix = 2;
+  while (used.has(`${stem}-${suffix}`)) suffix++;
+  return `${stem}-${suffix}`;
+}
+
+/** Build the minimal config written by the /masking-config initializer. */
+export function buildInitialConfig(
+  presetNames: readonly string[],
+  options: InitialConfigOptions = { showStatusBar: true, persistHistory: true },
+): InitialConfig {
+  const uniqueNames = [...new Set(presetNames)];
+  for (const name of uniqueNames) {
+    if (!getMaskingPreset(name)) throw new Error(`Unknown masking preset ${JSON.stringify(name)}`);
+  }
+  return {
+    $schema: CONFIG_SCHEMA_URL,
+    version: 1,
+    enabled: true,
+    rules: uniqueNames.map((presetName) => {
+      const preset = getMaskingPreset(presetName)!;
+      return { id: presetName, name: preset.label, preset: presetName, enabled: true };
+    }),
+    options: {
+      caseSensitive: true,
+      showStatusBar: options.showStatusBar,
+      systemPromptGuidance: false,
+      persistHistory: options.persistHistory,
+    },
+  };
+}
+
+/**
+ * Atomically publish a new config with user-only permissions. A hard-link is
+ * used as the final publish operation so an existing target can never be
+ * overwritten, including if another process creates it during the wizard.
+ */
+export async function createInitialConfigFile(path: string, config: InitialConfig): Promise<void> {
+  const validation = validateConfig(config.rules);
+  if (validation.rules.length !== config.rules.length || validation.warnings.length > 0) {
+    throw new Error(`Generated config failed validation: ${validation.warnings.join("; ")}`);
+  }
+
+  await mkdir(dirname(path), { recursive: true });
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await chmod(tempPath, 0o600);
+    await link(tempPath, path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`Config already exists at ${path}; it was not overwritten`);
+    }
+    throw err;
+  } finally {
+    try {
+      await unlink(tempPath);
+    } catch {
+      // The temp may not have been created or may already be gone.
+    }
+  }
+}
+
+/** Add the project config path to .gitignore without duplicating the entry. */
+export async function ensureProjectConfigGitignored(cwd: string): Promise<boolean> {
+  const ignorePath = join(cwd, ".gitignore");
+  const entry = `${CONFIG_DIR_NAME}/pi-data-masking/masking.config.json`;
+  let current = "";
+  let mode = 0o644;
+  try {
+    current = await readFile(ignorePath, "utf8");
+    mode = (await stat(ignorePath)).mode & 0o777;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (current.split(/\r?\n/).some((line) => line.trim() === entry)) return false;
+
+  const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+  const content = `${current}${separator}${entry}\n`;
+  const tempPath = `${ignorePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tempPath, content, { encoding: "utf8", mode });
+    await chmod(tempPath, mode);
+    await rename(tempPath, ignorePath);
+  } catch (err) {
+    try {
+      await unlink(tempPath);
+    } catch {
+      // Ignore cleanup failures.
+    }
+    throw err;
+  }
+  return true;
 }
 
 // ─── Defaults ─────────────────────────────────────────────────────────────
@@ -85,6 +255,7 @@ function defaultConfig(): MaskingConfig {
   return {
     enabled: true,
     rules: [],
+    configuredRules: [],
     options: {
       caseSensitive: true,
       showStatusBar: true,
@@ -160,18 +331,14 @@ function mergeConfigs(
   const enabled =
     project?.enabled ?? global?.enabled ?? base.enabled;
 
-  const rules = [
-    ...(Array.isArray(project?.rules) ? project.rules : []),
-    ...(Array.isArray(global?.rules) ? global.rules : []),
-  ];
-
   const options: MaskingOptions = {
     ...base.options,
     ...(global?.options ?? {}),
     ...(project?.options ?? {}),
   };
 
-  return { enabled, rules, options };
+  // Rules are validated and collected with source metadata below.
+  return { enabled, rules: [], configuredRules: [], options };
 }
 
 // ─── Validation ────────────────────────────────────────────────────────────
@@ -181,13 +348,17 @@ function mergeConfigs(
  * warning is produced for each, so a typo in one rule never disables the
  * whole extension silently.
  */
-export function validateConfig(rawRules: unknown): { rules: MaskingRule[]; warnings: string[] } {
+export function validateConfig(
+  rawRules: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): { rules: MaskingRule[]; warnings: string[] } {
   const warnings: string[] = [];
   if (!Array.isArray(rawRules)) {
     return { rules: [], warnings: ["config.rules is not an array; all rules were ignored"] };
   }
 
   const rules: MaskingRule[] = [];
+  const seenIds = new Set<string>();
   for (const raw of rawRules) {
     if (raw === null || typeof raw !== "object") {
       warnings.push("A rule entry is not an object and was skipped");
@@ -199,8 +370,77 @@ export function validateConfig(rawRules: unknown): { rules: MaskingRule[]; warni
       warnings.push("A rule entry is missing a non-empty 'id' and was skipped");
       continue;
     }
+    if (seenIds.has(id)) {
+      warnings.push(`Rule [${id}] duplicates an earlier ID in the same config and was skipped`);
+      continue;
+    }
+    seenIds.add(id);
+    if (rule.enabled !== undefined && typeof rule.enabled !== "boolean") {
+      warnings.push(`Rule [${id}] has invalid 'enabled' (must be a boolean) and was skipped`);
+      continue;
+    }
+    if (rule.name !== undefined && (typeof rule.name !== "string" || rule.name.trim().length === 0)) {
+      warnings.push(`Rule [${id}] has invalid 'name' (must be a non-empty string) and was skipped`);
+      continue;
+    }
+
+    let preserveStructure: PreserveStructure | undefined;
+    if (rule.preserveStructure !== undefined) {
+      if (!rule.preserveStructure || typeof rule.preserveStructure !== "object" || Array.isArray(rule.preserveStructure)) {
+        warnings.push(`Rule [${id}] has invalid 'preserveStructure' (must be an object) and was skipped`);
+        continue;
+      }
+      const preserve = rule.preserveStructure as Record<string, unknown>;
+      if (
+        preserve.keepPrefix !== undefined &&
+        typeof preserve.keepPrefix !== "boolean" &&
+        !(typeof preserve.keepPrefix === "number" && Number.isInteger(preserve.keepPrefix) && preserve.keepPrefix >= 0)
+      ) {
+        warnings.push(`Rule [${id}] has invalid 'preserveStructure.keepPrefix' and was skipped`);
+        continue;
+      }
+      if (
+        preserve.keepIPv4Octets !== undefined &&
+        !(typeof preserve.keepIPv4Octets === "number" && Number.isInteger(preserve.keepIPv4Octets) && preserve.keepIPv4Octets >= 0 && preserve.keepIPv4Octets <= 3)
+      ) {
+        warnings.push(`Rule [${id}] has invalid 'preserveStructure.keepIPv4Octets' (expected 0-3) and was skipped`);
+        continue;
+      }
+      preserveStructure = rule.preserveStructure as PreserveStructure;
+    }
+
+    if (rule.preset !== undefined) {
+      if (typeof rule.preset !== "string" || rule.preset.length === 0) {
+        warnings.push(`Rule [${id}] has invalid 'preset' (must be a non-empty string) and was skipped`);
+        continue;
+      }
+      const incompatible = ["type", "real", "realFromEnv", "pattern", "flags", "placeholder"]
+        .filter((field) => rule[field] !== undefined);
+      if (incompatible.length > 0) {
+        warnings.push(`Rule [${id}] preset reference also sets ${incompatible.join(", ")} and was skipped`);
+        continue;
+      }
+      const preset = getMaskingPreset(rule.preset);
+      if (!preset) {
+        warnings.push(`Rule [${id}] references unknown preset ${JSON.stringify(rule.preset)} and was skipped`);
+        continue;
+      }
+      rules.push(expandMaskingPreset(preset, {
+        id,
+        name: typeof rule.name === "string" ? rule.name : undefined,
+        enabled: rule.enabled as boolean | undefined,
+        description: typeof rule.description === "string" ? rule.description : undefined,
+        lowEntropy: rule.lowEntropy === true,
+        preserveStructure,
+      }));
+      continue;
+    }
 
     if (rule.type === "regex") {
+      if (rule.real !== undefined || rule.realFromEnv !== undefined || rule.placeholder !== undefined) {
+        warnings.push(`Rule [${id}] is regex but also sets a literal-only field and was skipped`);
+        continue;
+      }
       const pattern = typeof rule.pattern === "string" ? rule.pattern : "";
       if (!pattern) {
         warnings.push(`Rule [${id}] is type "regex" but has no pattern; skipped`);
@@ -223,14 +463,29 @@ export function validateConfig(rawRules: unknown): { rules: MaskingRule[]; warni
           );
         }
       }
-      rules.push(raw as MaskingRule);
+      rules.push({ ...(raw as MaskingRule), preserveStructure } as MaskingRule);
       continue;
     }
 
     if (rule.type === undefined || rule.type === "literal") {
-      const real = typeof rule.real === "string" ? rule.real : "";
-      if (!real) {
-        warnings.push(`Rule [${id}] is literal but has no 'real' value; skipped`);
+      if (rule.pattern !== undefined || rule.flags !== undefined) {
+        warnings.push(`Rule [${id}] is literal but also sets a regex-only field and was skipped`);
+        continue;
+      }
+      const hasReal = typeof rule.real === "string" && rule.real.length > 0;
+      const hasEnvName = typeof rule.realFromEnv === "string" && rule.realFromEnv.length > 0;
+      if (rule.real !== undefined && rule.realFromEnv !== undefined) {
+        warnings.push(`Rule [${id}] sets both 'real' and 'realFromEnv' and was skipped`);
+        continue;
+      }
+      if (!hasReal && !hasEnvName) {
+        warnings.push(`Rule [${id}] is literal but has no 'real' value or valid 'realFromEnv'; skipped`);
+        continue;
+      }
+      const envName = hasEnvName ? rule.realFromEnv as string : undefined;
+      const real = hasReal ? rule.real as string : envName ? env[envName] ?? "" : "";
+      if (envName && real.length === 0) {
+        warnings.push(`Rule [${id}] environment variable ${JSON.stringify(envName)} is missing or empty; rule is inactive`);
         continue;
       }
       if (rule.lowEntropy !== true && real.length < 8) {
@@ -246,7 +501,18 @@ export function validateConfig(rawRules: unknown): { rules: MaskingRule[]; warni
           continue;
         }
       }
-      rules.push(raw as MaskingRule);
+      const resolved: MaskingRule = {
+        id,
+        name: typeof rule.name === "string" ? rule.name : undefined,
+        type: rule.type as "literal" | undefined,
+        enabled: rule.enabled as boolean | undefined,
+        description: typeof rule.description === "string" ? rule.description : undefined,
+        lowEntropy: rule.lowEntropy === true,
+        preserveStructure,
+        real,
+        placeholder: rule.placeholder as string | undefined,
+      };
+      rules.push(resolved);
       continue;
     }
 
@@ -470,7 +736,8 @@ export async function loadConfig(
 export async function loadConfigFromPaths(
   globalPath: string,
   projectPath: string,
-  sessionKey: Buffer
+  sessionKey: Buffer,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<LoadResult> {
   const [globalResult, projectResult] = await Promise.all([
     tryReadJson(globalPath),
@@ -489,12 +756,278 @@ export async function loadConfigFromPaths(
   }
 
   const config = mergeConfigs(globalResult.data, projectResult.data);
-  const validated = validateConfig(config.rules);
-  warnings.push(...validated.warnings);
-  config.rules = validated.rules;
+  const configuredRules: ConfiguredMaskingRule[] = [];
 
+  function collect(
+    data: Partial<MaskingConfig> | null,
+    scope: ConfigScope,
+    path: string,
+  ): void {
+    if (!Array.isArray(data?.rules)) return;
+    const seenIds = new Set<string>();
+    data.rules.forEach((raw, sourceIndex) => {
+      const rawRecord = raw as unknown as Record<string, unknown>;
+      const rawId = typeof rawRecord?.id === "string" ? rawRecord.id : undefined;
+      if (rawId && seenIds.has(rawId)) {
+        warnings.push(`${scope} Rule [${rawId}] duplicates an earlier ID in the same config and was skipped`);
+        return;
+      }
+      if (rawId) seenIds.add(rawId);
+
+      const validated = validateConfig([raw], env);
+      warnings.push(...validated.warnings.map((warning) => `${scope} ${warning}`));
+      const presetName = typeof rawRecord.preset === "string" ? rawRecord.preset : undefined;
+      const realFromEnv = typeof rawRecord.realFromEnv === "string" ? rawRecord.realFromEnv : undefined;
+      let rule = validated.rules[0];
+      let available = true;
+      // A structurally valid env-backed rule remains visible/configurable even
+      // when its current process value is unavailable. Probe with an internal
+      // non-secret value to distinguish this case from other validation errors.
+      if (!rule && realFromEnv && !(env[realFromEnv]?.length)) {
+        const probed = validateConfig([raw], { [realFromEnv]: "masking-environment-probe-value" });
+        rule = probed.rules[0];
+        if (rule && !isRegexRule(rule)) {
+          rule = { ...rule, real: "", placeholder: rawRecord.placeholder as string | undefined };
+          available = false;
+        }
+      }
+      if (!rule) return;
+      configuredRules.push({
+        rule,
+        scope,
+        path,
+        sourceIndex,
+        enabled: rule.enabled !== false,
+        available,
+        sourceKind: presetName ? "preset" : isRegexRule(rule) ? "regex" : "literal",
+        presetName,
+        realFromEnv,
+      });
+    });
+  }
+
+  // Preserve the established priority: project rules before global rules.
+  collect(projectResult.data, "project", projectPath);
+  collect(globalResult.data, "global", globalPath);
+
+  config.configuredRules = configuredRules;
+  config.rules = configuredRules
+    .filter((configured) => configured.enabled && configured.available)
+    .map((configured) => configured.rule);
+
+  // Disabled rules must not reserve or generate placeholders.
   fillPlaceholders(config.rules, sessionKey, warnings);
   return { config, warnings };
+}
+
+/**
+ * Atomically persist one or more per-rule enabled changes. All targets are
+ * parsed and checked before any file is written. A temp file with mode 0600
+ * is then renamed over each source config.
+ */
+export async function saveRuleEnabledChanges(changes: RuleEnabledChange[]): Promise<void> {
+  if (changes.length === 0) return;
+
+  const byPath = new Map<string, RuleEnabledChange[]>();
+  for (const change of changes) {
+    const group = byPath.get(change.path) ?? [];
+    group.push(change);
+    byPath.set(change.path, group);
+  }
+
+  const pending: Array<{ path: string; tempPath: string; content: string }> = [];
+  for (const [path, pathChanges] of byPath) {
+    const raw = await readFile(path, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error(`Cannot update ${path}: config root is not an object`);
+    }
+    const data = parsed as { rules?: unknown };
+    if (!Array.isArray(data.rules)) {
+      throw new Error(`Cannot update ${path}: config.rules is not an array`);
+    }
+
+    for (const change of pathChanges) {
+      const candidate = data.rules[change.sourceIndex];
+      if (!candidate || typeof candidate !== "object") {
+        throw new Error(`Cannot update rule [${change.id}] in ${path}: source position changed`);
+      }
+      const candidateId = (candidate as { id?: unknown }).id;
+      if (candidateId !== change.id) {
+        throw new Error(`Cannot update rule [${change.id}] in ${path}: source position now contains ${JSON.stringify(candidateId)}`);
+      }
+      (candidate as { enabled?: boolean }).enabled = change.enabled;
+    }
+
+    const tempPath = `${path}.${process.pid}.${Date.now()}.${pending.length}.tmp`;
+    pending.push({ path, tempPath, content: `${JSON.stringify(data, null, 2)}\n` });
+  }
+
+  try {
+    for (const item of pending) {
+      await mkdir(dirname(item.path), { recursive: true });
+      await writeFile(item.tempPath, item.content, { encoding: "utf8", mode: 0o600 });
+      // Some mounted/cross-platform filesystems ignore the create mode.
+      await chmod(item.tempPath, 0o600);
+    }
+    for (const item of pending) {
+      await rename(item.tempPath, item.path);
+      // Re-assert after rename for filesystems that preserve destination mode.
+      await chmod(item.path, 0o600);
+    }
+  } catch (err) {
+    await Promise.all(pending.map(async (item) => {
+      try {
+        await unlink(item.tempPath);
+      } catch {
+        // Ignore missing/already-renamed temps and cleanup failures.
+      }
+    }));
+    throw err;
+  }
+}
+
+export function validateRawConfigRule(rule: RawConfigRule): string[] {
+  const envName = typeof rule.realFromEnv === "string" ? rule.realFromEnv : undefined;
+  const env = envName ? { [envName]: process.env[envName] || "masking-environment-probe-value" } : process.env;
+  const validated = validateConfig([rule], env);
+  if (validated.rules.length !== 1) {
+    throw new Error(validated.warnings.join("; ") || "Rule is invalid");
+  }
+  const warnings = [...validated.warnings];
+  if (typeof rule.real === "string" && rule.placeholder === rule.real) {
+    warnings.push(`Rule [${String(rule.id)}] has placeholder equal to its real value; the rule has no effect`);
+  }
+  return warnings;
+}
+
+/** Read one config as JSON while retaining unknown top-level fields. */
+export async function readRawConfigFile(path: string): Promise<RawConfigFile> {
+  const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Cannot edit ${path}: config root is not an object`);
+  }
+  const data = parsed as Record<string, unknown>;
+  if (!Array.isArray(data.rules)) {
+    throw new Error(`Cannot edit ${path}: config.rules is not an array`);
+  }
+  return data as RawConfigFile;
+}
+
+/** Return a copy safe to display/export; direct literal values are redacted. */
+export function redactRawConfigFile(data: RawConfigFile): RawConfigFile {
+  return {
+    ...data,
+    _redactedExport: "Direct literal values were replaced and this export is not a runnable configuration.",
+    rules: data.rules.map((rule) => {
+      if (!rule || typeof rule !== "object" || Array.isArray(rule)) return rule;
+      if (typeof rule.real !== "string") return { ...rule };
+      return { ...rule, real: "<redacted-literal-value>" };
+    }),
+  };
+}
+
+/** Create a JSON export without overwriting an existing path. */
+export async function createJsonFileExclusive(path: string, data: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await chmod(tempPath, 0o600);
+    await link(tempPath, path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`File already exists at ${path}; it was not overwritten`);
+    }
+    throw err;
+  } finally {
+    try {
+      await unlink(tempPath);
+    } catch {
+      // Ignore missing temp files.
+    }
+  }
+}
+
+/**
+ * Apply structural rule edits against the latest files. Existing entries are
+ * verified by array position and ID so stale TUI actions never hit a different
+ * rule. Unknown top-level fields and unrelated invalid legacy entries survive.
+ */
+export async function saveConfigRuleMutations(
+  mutations: readonly ConfigRuleMutation[],
+): Promise<{ warnings: string[] }> {
+  if (mutations.length === 0) return { warnings: [] };
+  const byPath = new Map<string, ConfigRuleMutation[]>();
+  for (const mutation of mutations) {
+    const group = byPath.get(mutation.path) ?? [];
+    group.push(mutation);
+    byPath.set(mutation.path, group);
+  }
+
+  const pending: Array<{ path: string; tempPath: string; content: string }> = [];
+  const warnings: string[] = [];
+  for (const [path, pathMutations] of byPath) {
+    const data = await readRawConfigFile(path);
+    for (const mutation of pathMutations) {
+      if (mutation.kind === "append") {
+        warnings.push(...validateRawConfigRule(mutation.rule));
+        const id = mutation.rule.id;
+        if (data.rules.some((candidate) => candidate?.id === id)) {
+          throw new Error(`Cannot add rule [${String(id)}] to ${path}: ID already exists`);
+        }
+        data.rules.push({ ...mutation.rule });
+        continue;
+      }
+
+      const candidate = data.rules[mutation.sourceIndex];
+      if (!candidate || typeof candidate !== "object" || candidate.id !== mutation.id) {
+        throw new Error(`Cannot ${mutation.kind} rule [${mutation.id}] in ${path}: source position changed`);
+      }
+      if (mutation.kind === "replace") {
+        warnings.push(...validateRawConfigRule(mutation.rule));
+        const nextId = mutation.rule.id;
+        if (data.rules.some((other, index) => index !== mutation.sourceIndex && other?.id === nextId)) {
+          throw new Error(`Cannot rename rule to [${String(nextId)}] in ${path}: ID already exists`);
+        }
+        data.rules[mutation.sourceIndex] = { ...mutation.rule };
+      } else if (mutation.kind === "delete") {
+        data.rules.splice(mutation.sourceIndex, 1);
+      } else {
+        const target = data.rules[mutation.targetIndex];
+        if (!target || typeof target !== "object" || target.id !== mutation.targetId) {
+          throw new Error(`Cannot move rule [${mutation.id}] in ${path}: target position changed`);
+        }
+        const [moved] = data.rules.splice(mutation.sourceIndex, 1);
+        if (!moved) throw new Error(`Cannot move rule [${mutation.id}] in ${path}`);
+        data.rules.splice(mutation.targetIndex, 0, moved);
+      }
+    }
+
+    const tempPath = `${path}.${process.pid}.${Date.now()}.${pending.length}.tmp`;
+    pending.push({ path, tempPath, content: `${JSON.stringify(data, null, 2)}\n` });
+  }
+
+  try {
+    for (const item of pending) {
+      await writeFile(item.tempPath, item.content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      await chmod(item.tempPath, 0o600);
+    }
+    for (const item of pending) {
+      await rename(item.tempPath, item.path);
+      await chmod(item.path, 0o600);
+    }
+  } catch (err) {
+    await Promise.all(pending.map(async ({ tempPath }) => {
+      try {
+        await unlink(tempPath);
+      } catch {
+        // Ignore missing/already-renamed temps and cleanup failures.
+      }
+    }));
+    throw err;
+  }
+  return { warnings };
 }
 
 // ─── File watching (hot reload) ────────────────────────────────────────────

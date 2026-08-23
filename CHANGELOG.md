@@ -1,8 +1,67 @@
 # Changelog
 
+- Replaced per-field two-line blocks with a compact field list and one stable,
+  full-width active-field editor that separates values from contextual help.
+
+- Removed duplicate outer dividers from bordered editors and moved the Rules
+  dividers to bound only the actual list and selected-rule details.
+
+- Removed accidental-looking defaults from non-preset rule fields, moved
+  built-in preset selection to a descriptive step before editing, and unified
+  content boundaries across Rules, rule-editing, and test areas.
+
+- Stabilized the Rule Builder as fixed-height field rows that keep entered
+  values and descriptions visible; `Up`/`Down` now navigate fields while `Tab`
+  is reserved for switching between the form and local test area.
+
+- Refined the new-rule flow to select source and broad type before opening a
+  focused type-specific Builder, and added matching dividers around the Rules
+  panel on the configuration home screen.
+
+- Specified a single-page Rule Builder with live testing, structured/JSON modes,
+  and direct save, plus symmetric focus markers and in-panel onboarding on the
+  configuration home screen.
+
+- Documented the unified configuration workspace: embedded live local testing
+  on the home and rule-editor screens, `H` home help plus contextual `F1` editor
+  help, candidate-rule previews, and visible-by-default direct literals inside
+  explicit edits.
+
+- Refined configuration-center rule creation: automatic literal replacements
+  are no longer presented as universally recommended, built-in presets supply
+  their own display names, and `D` is available as a portable delete shortcut.
+- Made preset templates transparent and editable in the configuration center,
+  retained the selected row after immediate toggles, and let users choose
+  whether an exact literal is hidden or revealed while editing.
+- Added in-editor `Ctrl+R` literal reveal/hide, retained a neighboring row after
+  deletion, added `H` configuration help, and surfaced regex syntax guidance
+  during creation and editing.
+
 All notable changes to this project are documented in this file.
 
 The entries before 0.4.0 were reconstructed from the Git history and existing tags because the project did not previously publish GitHub Releases.
+
+## [Unreleased]
+
+### Added
+
+- Per-rule `enabled` switches, defaulting to enabled for backward compatibility.
+- `/masking-config` for browsing, filtering, searching, testing, adding, editing, deleting, and reordering project/global rules without showing literal real values.
+- Scope-aware, atomic rule-state writes with user-only file permissions on filesystems that support POSIX modes.
+- A guided project/global initializer inside `/masking-config`, including preset selection, option preview, no-overwrite creation, and an optional project `.gitignore` entry.
+- Ten built-in regex presets referenced by stable names and expanded at load time.
+- Environment-backed literal rules through mutually exclusive `realFromEnv` values.
+- `masking.config.schema.json` for editor completion and validation.
+- Batch enable/disable, validated rule import, and non-overwriting redacted exports in the configuration center.
+- Optional human-readable rule `name` values; the TUI now asks for a name, generates a readable collision-free `id`, and displays the name prominently while preserving legacy fallbacks.
+- A shorter exact-literal creation flow with an explicit choice between automatic placeholders and exact custom replacements.
+
+### Changed
+
+- The status bar and reload notifications now distinguish active rules from all configured rules.
+- `/masking-list` is now a compatibility alias for `/masking-config`.
+- The packaged example is now a minimal configuration using presets and `realFromEnv`; advanced regex guidance remains in README.
+- Pressing `Space` now atomically applies a rule switch immediately with no blocking confirmation; disabling emits a non-blocking risk warning, so `Ctrl+S` is no longer needed.
 
 ## [0.4.2] - 2026-08-22
 

@@ -1,108 +1,34 @@
 {
-  "_comment": "Template config for pi-data-masking. Copy it to ~/.pi/agent/pi-data-masking/masking.config.json (applies to all projects) or <project>/.pi/pi-data-masking/masking.config.json (this project only), then replace the example values below with your real ones. Full syntax, merge behavior, and priority rules are documented in README.md.",
-  "_usage": "Rules are applied top to bottom; on overlaps, earlier rules win. A 'literal' rule replaces the exact 'real' value (omit 'placeholder' or set \"auto\" to auto-generate; set it explicitly for a controlled fake). A 'regex' rule matches a class of values via 'pattern' — with capture groups, only the captured part is replaced. Prefer literal rules when you know the exact value; regex is for value classes you can't enumerate. Verify any snippet with: /masking-test <text>.",
-  "_options": "options.caseSensitive: case sensitivity for literal matching (regex rules with their own 'flags' override it). options.showStatusBar: whether to show the status indicator. options.systemPromptGuidance (default false): appends a paragraph to the system prompt telling the LLM masked values are opaque placeholders. options.persistHistory (default true): saves masked-text differences and the session key as Pi session metadata so /masking-history survives restart; original text is not duplicated.",
-  "_provenance": "First-seen is forever: a value first appearing in LLM output is never masked for the whole session; only user messages and tool results register values for masking. See README.md for the rationale and trade-offs.",
-  "_lowEntropy": "Low-entropy values (4-digit codes, short passwords, common words) are better left unmasked: masking them causes semantic contradictions (\"834919 is a weak password\") and coincidental restores. The config loader warns for literal values < 8 chars and regex patterns that can only match <= 6 chars; set \"lowEntropy\": true on a rule to silence the warning if you still want to mask it.",
-  "_preserveStructure": "Optional per-rule \"preserveStructure\": { \"keepPrefix\": true|number, \"keepIPv4Octets\": n } keeps structural properties (first segment / leading IP octets) in the placeholder so claims like \"starts with sk-\" stay true in the LLM's view. Kept parts are category markers, not the secret entropy.",
+  "$schema": "https://raw.githubusercontent.com/sevten/pi-data-masking/main/masking.config.schema.json",
+  "version": 1,
   "enabled": true,
   "rules": [
     {
-      "id": "company_root_domain",
-      "description": "Company root domain (manual placeholder).",
-      "real": "company-internal.com",
-      "placeholder": "northstar-systems.com"
-    },
-    {
-      "id": "employee_email_local_part",
-      "type": "regex",
-      "description": "Company email local part, matched with a lookahead so @company-internal.com is not consumed — coexists with company_root_domain above regardless of rule order.",
-      "pattern": "[A-Za-z0-9._%+-]+(?=@company-internal\\.com)"
-    },
-    {
-      "id": "db_conn_credentials",
-      "type": "regex",
-      "description": "Username:password in DB/MQ connection strings (incl. mongodb+srv://). [^\\s]+ (not .+) greedily backtracks to the last @ within one token, correctly handling passwords containing @ without crossing whitespace.",
-      "pattern": "(?:postgresql|mysql|mariadb|redis|mongodb(?:\\+srv)?|amqp|amqps):\\/\\/([^\\s]+)@"
-    },
-    {
-      "id": "url_userinfo_credentials",
-      "type": "regex",
-      "description": "Credentials embedded in any http(s) URL (user:password@host) — beyond the DB/MQ schemes covered above.",
-      "pattern": "\\bhttps?://[^\\s/:]+:[^\\s/@]+@[^\\s/]+\\b"
-    },
-    {
       "id": "prod_api_key",
-      "description": "Production API key (auto-generated placeholder; preserveStructure keeps the sk- prefix so claims like 'the key starting with sk-' stay true in the LLM's view)",
-      "real": "sk-prod-abc123456789",
-      "placeholder": "auto",
+      "name": "Production API key",
+      "enabled": true,
+      "description": "Production API key read without storing its value in this file",
+      "realFromEnv": "PROD_API_KEY",
       "preserveStructure": { "keepPrefix": true }
     },
     {
-      "id": "us_mobile_number",
-      "type": "regex",
-      "description": "US phone number",
-      "pattern": "\\b(?:\\+?1[-. ]?)?\\(?[2-9]\\d{2}\\)?[-. ]?\\d{3}[-. ]?\\d{4}\\b"
+      "id": "github_pat",
+      "name": "GitHub personal access token",
+      "preset": "github-pat",
+      "enabled": true
     },
     {
       "id": "private_ip_address",
-      "type": "regex",
-      "description": "RFC 1918 private IPv4 addresses only: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16. Excludes loopback (127.x), broadcast (255.255.255.255), link-local (169.254.x), and public IPs to preserve their semantic meaning for the AI model.",
-      "pattern": "\\b(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3})\\b"
-    },
-    {
-      "id": "generic_bearer_token",
-      "type": "regex",
-      "description": "Bearer token value only; 'Authorization: Bearer ' prefix is kept",
-      "pattern": "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)",
-      "flags": "i"
-    },
-    {
-      "id": "github_pat",
-      "type": "regex",
-      "description": "GitHub personal access tokens: ghp_ (classic) and github_pat_ (fine-grained). Delete if you don't use GitHub.",
-      "pattern": "\\bghp_[A-Za-z0-9]{36}\\b|\\bgithub_pat_[A-Za-z0-9_]{22,}\\b"
-    },
-    {
-      "id": "npm_token",
-      "type": "regex",
-      "description": "npm access tokens (npm_). Delete if you don't publish npm packages.",
-      "pattern": "\\bnpm_[A-Za-z0-9]{36}\\b"
-    },
-    {
-      "id": "huggingface_token",
-      "type": "regex",
-      "description": "Hugging Face access tokens (hf_). Delete if you don't use Hugging Face.",
-      "pattern": "\\bhf_[A-Za-z0-9]{34,}\\b"
-    },
-    {
-      "id": "aws_access_key_id",
-      "type": "regex",
-      "description": "AWS access key IDs (AKIA...). The matching secret is usually nearby as a secret-access-key pair — add a literal rule for that exact value.",
-      "pattern": "\\bAKIA[0-9A-Z]{16}\\b"
-    },
-    {
-      "id": "slack_token",
-      "type": "regex",
-      "description": "Slack tokens: xoxb- (bot), xoxp- (user), xoxa- (app), xoxr- (legacy). Delete if you don't use Slack.",
-      "pattern": "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b"
-    },
-    {
-      "id": "jwt_token",
-      "type": "regex",
-      "description": "JSON Web Tokens (eyJ...header.payload.signature). Delete if your project doesn't use JWTs.",
-      "pattern": "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b"
-    },
-    {
-      "id": "pem_private_key_block",
-      "type": "regex",
-      "description": "PEM private key blocks: only the base64 body is replaced; the BEGIN/END lines stay so the LLM still recognizes the block. [\\s\\S] matches across newlines.",
-      "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----([\\s\\S]*?)-----END [A-Z ]*PRIVATE KEY-----"
+      "name": "Private IPv4 address",
+      "preset": "private-ipv4",
+      "enabled": false,
+      "preserveStructure": { "keepIPv4Octets": 2 }
     }
   ],
   "options": {
     "caseSensitive": true,
-    "showStatusBar": true
-  },
-  "_antiPattern": "Do NOT ship key-name-driven rules. Earlier template versions did, with consistent damage: 'keyword_value_pairs' (bare key/token, case-insensitive) corrupted KEY = Buffer.from(...), // Key: 32 hex chars, reg_key = HKDF-SHA256(, and key: \"server.rsa.key\"; the scoped replacement 'env_secret_values' (uppercase env-style keywords, case-sensitive, word-boundary) still corrupted API_KEY = os.environ[...], SECRET: HKDF-SHA256(...), and PASSWORD: change-me, while missing DJANGO_SECRET_KEY=... Key names are content the model must reason about — mask by VALUE STRUCTURE (ghp_, AKIA, eyJ, -----BEGIN...PRIVATE KEY-----) or by exact literal for values you know.\n"
+    "showStatusBar": true,
+    "systemPromptGuidance": false,
+    "persistHistory": true
+  }
 }

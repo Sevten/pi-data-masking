@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/sevten/pi-data-masking/main/masking.config.schema.json",
+  "title": "pi-data-masking configuration",
+  "description": "Configuration for project or global pi-data-masking rules. Rules run from top to bottom.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema URI used by editors for completion and validation."
+    },
+    "version": {
+      "const": 1,
+      "description": "Configuration format version. Legacy files may omit it."
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Top-level masking switch before any persistent /masking-toggle override."
+    },
+    "rules": {
+      "type": "array",
+      "default": [],
+      "description": "Ordered rules. Earlier entries have higher priority.",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/literalRule" },
+          { "$ref": "#/$defs/regexRule" },
+          { "$ref": "#/$defs/presetRule" }
+        ]
+      }
+    },
+    "options": { "$ref": "#/$defs/options" }
+  },
+  "$defs": {
+    "preserveStructure": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Retain non-secret shape in generated placeholders.",
+      "properties": {
+        "keepPrefix": {
+          "oneOf": [
+            { "type": "boolean" },
+            { "type": "integer", "minimum": 0 }
+          ],
+          "description": "Keep the first structural segment, optionally capped to this many characters."
+        },
+        "keepIPv4Octets": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Keep this many leading IPv4 octets; at least one octet is randomized."
+        }
+      }
+    },
+    "literalRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Replace one exact value, supplied directly or through an environment variable.",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Unique ID within this file." },
+        "name": { "type": "string", "minLength": 1, "description": "Short human-readable rule name shown in the configuration center." },
+        "type": { "const": "literal", "description": "Optional for literal rules." },
+        "enabled": { "type": "boolean", "default": true },
+        "description": { "type": "string" },
+        "real": { "type": "string", "minLength": 1, "description": "Exact sensitive value. Prefer realFromEnv for secrets." },
+        "realFromEnv": { "type": "string", "minLength": 1, "description": "Environment variable containing the exact sensitive value." },
+        "placeholder": { "type": "string", "minLength": 1, "default": "auto" },
+        "preserveStructure": { "$ref": "#/$defs/preserveStructure" },
+        "lowEntropy": { "type": "boolean", "default": false }
+      },
+      "required": ["id"],
+      "oneOf": [
+        { "required": ["real"], "not": { "required": ["realFromEnv"] } },
+        { "required": ["realFromEnv"], "not": { "required": ["real"] } }
+      ],
+      "examples": [
+        { "id": "prod_api_key", "realFromEnv": "PROD_API_KEY", "preserveStructure": { "keepPrefix": true } }
+      ]
+    },
+    "regexRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Discover values matching a JavaScript regular expression. Fixed placeholders are not supported.",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Unique ID within this file." },
+        "name": { "type": "string", "minLength": 1, "description": "Short human-readable rule name shown in the configuration center." },
+        "type": { "const": "regex" },
+        "enabled": { "type": "boolean", "default": true },
+        "description": { "type": "string" },
+        "pattern": { "type": "string", "minLength": 1, "description": "JavaScript regex source without delimiters." },
+        "flags": { "type": "string", "pattern": "^[dgimsuvy]*$", "description": "Optional JavaScript regex flags; global scanning and capture indices are added internally." },
+        "preserveStructure": { "$ref": "#/$defs/preserveStructure" },
+        "lowEntropy": { "type": "boolean", "default": false }
+      },
+      "required": ["id", "type", "pattern"],
+      "examples": [
+        { "id": "custom_token", "type": "regex", "pattern": "\\btoken_[A-Za-z0-9]{24}\\b" }
+      ]
+    },
+    "presetRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Reference a tested built-in regex preset by name.",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Unique ID within this file." },
+        "name": { "type": "string", "minLength": 1, "description": "Short human-readable rule name shown in the configuration center." },
+        "preset": {
+          "enum": [
+            "github-pat",
+            "npm-token",
+            "huggingface-token",
+            "aws-access-key-id",
+            "slack-token",
+            "jwt",
+            "pem-private-key",
+            "bearer-token",
+            "database-userinfo",
+            "private-ipv4"
+          ]
+        },
+        "enabled": { "type": "boolean", "default": true },
+        "description": { "type": "string", "description": "Optional override for the built-in description." },
+        "preserveStructure": { "$ref": "#/$defs/preserveStructure" },
+        "lowEntropy": { "type": "boolean", "default": false }
+      },
+      "required": ["id", "preset"],
+      "examples": [
+        { "id": "github_pat", "preset": "github-pat", "enabled": true }
+      ]
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "caseSensitive": { "type": "boolean", "default": true },
+        "showStatusBar": { "type": "boolean", "default": true },
+        "systemPromptGuidance": { "type": "boolean", "default": false },
+        "persistHistory": { "type": "boolean", "default": true }
+      }
+    }
+  },
+  "examples": [
+    {
+      "$schema": "https://raw.githubusercontent.com/sevten/pi-data-masking/main/masking.config.schema.json",
+      "version": 1,
+      "enabled": true,
+      "rules": [
+        { "id": "github_pat", "preset": "github-pat", "enabled": true },
+        { "id": "prod_api_key", "realFromEnv": "PROD_API_KEY" }
+      ]
+    }
+  ]
+}

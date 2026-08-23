@@ -6,14 +6,25 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  CONFIG_SCHEMA_URL,
+  buildInitialConfig,
+  createInitialConfigFile,
+  createJsonFileExclusive,
+  ensureProjectConfigGitignored,
+  generateUniqueRuleId,
   loadConfigFromPaths,
   loadPersistentToggle,
+  readRawConfigFile,
+  redactRawConfigFile,
+  saveConfigRuleMutations,
   savePersistentToggle,
+  saveRuleEnabledChanges,
   validateConfig,
+  validateRawConfigRule,
   watchConfigPaths,
 } from "../config-loader.ts";
 import { Masker, isRegexRule } from "../masker.ts";
@@ -63,6 +74,316 @@ test("project rules come first; options merge; project enabled wins", async () =
     assert.equal(config.options.showStatusBar, true);
     assert.equal(config.options.systemPromptGuidance, true);
     assert.deepEqual(warnings, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("rule IDs are unique per file but may repeat across project and global scopes", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    const projectPath = join(dir, "project.json");
+    writeFileSync(globalPath, JSON.stringify({ rules: [
+      { id: "shared-name", real: "global-secret-value" },
+      { id: "shared-name", preset: "jwt" },
+    ] }));
+    writeFileSync(projectPath, JSON.stringify({ rules: [
+      { id: "shared-name", preset: "github-pat" },
+    ] }));
+
+    const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
+    assert.deepEqual(
+      config.configuredRules.map(({ rule, scope }) => ({ id: rule.id, scope })),
+      [
+        { id: "shared-name", scope: "project" },
+        { id: "shared-name", scope: "global" },
+      ],
+    );
+    assert.ok(warnings.some((warning) => warning.includes("global") && warning.includes("duplicates an earlier ID")));
+    assert.equal(warnings.some((warning) => warning.includes("project") && warning.includes("duplicates")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("rule names are optional while generated IDs are readable and collision-free", () => {
+  assert.equal(generateUniqueRuleId("Production API Key", []), "production-api-key");
+  assert.equal(
+    generateUniqueRuleId("Production API Key", ["production-api-key", "production-api-key-2"]),
+    "production-api-key-3",
+  );
+  assert.equal(generateUniqueRuleId("私有 IP 地址", []), "私有-ip-地址");
+
+  const legacy = validateConfig([{ id: "legacy", real: "legacy-secret" }]);
+  assert.equal(legacy.rules[0]!.name, undefined);
+  const named = validateConfig([{ id: "named", name: "Readable name", preset: "jwt" }]);
+  assert.equal(named.rules[0]!.name, "Readable name");
+  assert.ok(validateConfig([{ id: "bad-name", name: " ", preset: "jwt" }]).warnings.some(
+    (warning) => warning.includes("invalid 'name'"),
+  ));
+});
+
+test("per-rule enabled defaults on while disabled rules stay configured but inactive", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    const projectPath = join(dir, "project.json");
+    writeFileSync(globalPath, JSON.stringify({ rules: [
+      { id: "global-off", enabled: false, real: "global-secret", placeholder: "auto" },
+    ] }));
+    writeFileSync(projectPath, JSON.stringify({ rules: [
+      { id: "project-on", enabled: true, type: "regex", pattern: "token-[a-z]{8}" },
+      { id: "project-default", real: "project-secret", placeholder: "auto" },
+    ] }));
+
+    const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
+    assert.deepEqual(warnings, []);
+    assert.deepEqual(config.rules.map((rule) => rule.id), ["project-on", "project-default"]);
+    assert.deepEqual(
+      config.configuredRules.map(({ rule, scope, sourceIndex, enabled }) => ({
+        id: rule.id,
+        scope,
+        sourceIndex,
+        enabled,
+      })),
+      [
+        { id: "project-on", scope: "project", sourceIndex: 0, enabled: true },
+        { id: "project-default", scope: "project", sourceIndex: 1, enabled: true },
+        { id: "global-off", scope: "global", sourceIndex: 0, enabled: false },
+      ],
+    );
+    const disabled = config.configuredRules[2]!.rule as { placeholder?: string };
+    assert.equal(disabled.placeholder, "auto", "disabled literals must not generate or reserve placeholders");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("invalid per-rule enabled is warned and never activated", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    const projectPath = join(dir, "project.json");
+    writeFileSync(globalPath, JSON.stringify({ rules: [
+      { id: "bad-state", enabled: "yes", real: "global-secret" },
+    ] }));
+    writeFileSync(projectPath, JSON.stringify({ rules: [] }));
+
+    const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
+    assert.deepEqual(config.rules, []);
+    assert.deepEqual(config.configuredRules, []);
+    assert.ok(warnings.some((warning) => warning.includes("invalid 'enabled'")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("preset references expand in place while unknown presets stay inactive", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    const projectPath = join(dir, "project.json");
+    writeFileSync(globalPath, JSON.stringify({ rules: [] }));
+    writeFileSync(projectPath, JSON.stringify({ rules: [
+      { id: "github", preset: "github-pat" },
+      { id: "private", preset: "private-ipv4", preserveStructure: { keepIPv4Octets: 1 } },
+      { id: "future", preset: "does-not-exist" },
+    ] }));
+
+    const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
+    assert.deepEqual(config.rules.map((rule) => rule.id), ["github", "private"]);
+    assert.deepEqual(config.configuredRules.map(({ sourceKind, presetName }) => ({ sourceKind, presetName })), [
+      { sourceKind: "preset", presetName: "github-pat" },
+      { sourceKind: "preset", presetName: "private-ipv4" },
+    ]);
+    assert.equal((config.rules[1]!.preserveStructure?.keepIPv4Octets), 1);
+    assert.ok(warnings.some((warning) => warning.includes("unknown preset")));
+
+    const masker = new Masker(config.rules, true, KEY);
+    assert.equal(masker.mask("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").count, 1);
+    const ipResult = masker.mask("valid=10.1.2.3 invalid=10.999.2.3");
+    assert.equal(ipResult.count, 1);
+    assert.ok(ipResult.text.includes("10.999.2.3"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("realFromEnv resolves only in memory and missing/conflicting sources stay inactive", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    const projectPath = join(dir, "project.json");
+    writeFileSync(globalPath, JSON.stringify({ rules: [] }));
+    writeFileSync(projectPath, JSON.stringify({ rules: [
+      { id: "from-env", realFromEnv: "PROD_API_KEY", placeholder: "auto" },
+      { id: "missing", realFromEnv: "MISSING_API_KEY" },
+      { id: "conflict", real: "literal-secret", realFromEnv: "PROD_API_KEY" },
+    ] }));
+
+    const secret = "sk-prod-super-secret";
+    const { config, warnings } = await loadConfigFromPaths(
+      globalPath,
+      projectPath,
+      KEY,
+      { PROD_API_KEY: secret, MISSING_API_KEY: "" },
+    );
+    assert.deepEqual(config.rules.map((rule) => rule.id), ["from-env"]);
+    assert.equal(config.configuredRules[0]!.realFromEnv, "PROD_API_KEY");
+    assert.equal(config.configuredRules[0]!.available, true);
+    assert.equal(config.configuredRules[1]!.rule.id, "missing");
+    assert.equal(config.configuredRules[1]!.available, false);
+    assert.equal((config.configuredRules[1]!.rule as { real: string }).real, "");
+    assert.equal((config.rules[0] as { real: string }).real, secret);
+    assert.ok(warnings.some((warning) => warning.includes("MISSING_API_KEY") && warning.includes("missing or empty")));
+    assert.ok(warnings.some((warning) => warning.includes("both 'real' and 'realFromEnv'")));
+    assert.ok(warnings.every((warning) => !warning.includes(secret)));
+    assert.equal(readFileSync(projectPath, "utf8").includes(secret), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("initializer builds a minimal preset config, refuses overwrite, and can update .gitignore", async () => {
+  const dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "masking-init-"));
+  try {
+    const path = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+    const initial = buildInitialConfig(["github-pat", "private-ipv4", "github-pat"], {
+      showStatusBar: false,
+      persistHistory: true,
+    });
+    assert.equal(initial.$schema, CONFIG_SCHEMA_URL);
+    assert.deepEqual(initial.rules.map((rule) => rule.preset), ["github-pat", "private-ipv4"]);
+    assert.deepEqual(initial.rules.map((rule) => rule.name), ["GitHub personal access token", "Private IPv4 address"]);
+    assert.equal(initial.options.showStatusBar, false);
+
+    await createInitialConfigFile(path, initial);
+    const before = readFileSync(path, "utf8");
+    assert.deepEqual(JSON.parse(before), initial);
+    if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
+    await assert.rejects(createInitialConfigFile(path, buildInitialConfig([])), /already exists/);
+    assert.equal(readFileSync(path, "utf8"), before);
+
+    assert.equal(await ensureProjectConfigGitignored(dir), true);
+    assert.equal(await ensureProjectConfigGitignored(dir), false);
+    assert.equal(
+      readFileSync(join(dir, ".gitignore"), "utf8"),
+      ".pi/pi-data-masking/masking.config.json\n",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("saveRuleEnabledChanges updates exact source entries atomically with mode 0600", async () => {
+  // node:os tmpdir may point at a permissionless Windows mount under WSL.
+  const dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "masking-cfg-"));
+  try {
+    const path = join(dir, "masking.config.json");
+    writeFileSync(path, JSON.stringify({
+      customTopLevelField: "preserved",
+      rules: [
+        { id: "first", real: "first-secret" },
+        { id: "second", enabled: false, type: "regex", pattern: "token-[a-z]+" },
+      ],
+    }), { mode: 0o644 });
+
+    await saveRuleEnabledChanges([
+      { path, sourceIndex: 0, id: "first", enabled: false },
+      { path, sourceIndex: 1, id: "second", enabled: true },
+    ]);
+
+    const saved = JSON.parse(readFileSync(path, "utf8")) as {
+      customTopLevelField: string;
+      rules: Array<{ id: string; enabled?: boolean }>;
+    };
+    assert.equal(saved.customTopLevelField, "preserved");
+    assert.deepEqual(saved.rules.map(({ id, enabled }) => ({ id, enabled })), [
+      { id: "first", enabled: false },
+      { id: "second", enabled: true },
+    ]);
+    if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
+
+    const beforeMismatch = readFileSync(path, "utf8");
+    await assert.rejects(
+      saveRuleEnabledChanges([{ path, sourceIndex: 0, id: "wrong-id", enabled: true }]),
+      /source position now contains/,
+    );
+    assert.equal(readFileSync(path, "utf8"), beforeMismatch);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("structural rule mutations validate targets and preserve unrelated config fields", async () => {
+  const dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "masking-edit-"));
+  try {
+    const path = join(dir, "masking.config.json");
+    writeFileSync(path, JSON.stringify({
+      custom: { preserved: true },
+      rules: [
+        { id: "a", real: "first-secret" },
+        { id: "b", type: "regex", pattern: "token-[a-z]{8}" },
+      ],
+    }));
+
+    await saveConfigRuleMutations([{ kind: "append", path, rule: { id: "c", preset: "github-pat" } }]);
+    await saveConfigRuleMutations([{
+      kind: "replace",
+      path,
+      sourceIndex: 0,
+      id: "a",
+      rule: { id: "a-renamed", realFromEnv: "EDIT_TEST_SECRET" },
+    }]);
+    await saveConfigRuleMutations([{
+      kind: "move",
+      path,
+      sourceIndex: 2,
+      id: "c",
+      targetIndex: 1,
+      targetId: "b",
+    }]);
+    await saveConfigRuleMutations([{ kind: "delete", path, sourceIndex: 2, id: "b" }]);
+
+    const saved = await readRawConfigFile(path);
+    assert.deepEqual(saved.custom, { preserved: true });
+    assert.deepEqual(saved.rules.map((rule) => rule.id), ["a-renamed", "c"]);
+    if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
+    await assert.rejects(
+      saveConfigRuleMutations([{ kind: "delete", path, sourceIndex: 0, id: "stale" }]),
+      /source position changed/,
+    );
+    await assert.rejects(
+      saveConfigRuleMutations([{ kind: "append", path, rule: { id: "c", preset: "jwt" } }]),
+      /ID already exists/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("redacted exports hide literals and are created without overwrite", async () => {
+  const dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "masking-export-"));
+  try {
+    const source = join(dir, "source.json");
+    const destination = join(dir, "export.json");
+    const secret = "literal-value-that-must-not-leak";
+    writeFileSync(source, JSON.stringify({ rules: [
+      { id: "literal", real: secret },
+      { id: "env", realFromEnv: "PROD_API_KEY" },
+    ] }));
+    const redacted = redactRawConfigFile(await readRawConfigFile(source));
+    assert.equal(JSON.stringify(redacted).includes(secret), false);
+    assert.equal(redacted.rules[0]!.real, "<redacted-literal-value>");
+    assert.equal(redacted.rules[1]!.realFromEnv, "PROD_API_KEY");
+    assert.ok(redacted._redactedExport);
+
+    await createJsonFileExclusive(destination, redacted);
+    const before = readFileSync(destination, "utf8");
+    assert.equal(before.includes(secret), false);
+    await assert.rejects(createJsonFileExclusive(destination, {}), /already exists/);
+    assert.equal(readFileSync(destination, "utf8"), before);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -178,6 +499,20 @@ test("low-entropy values produce warnings; lowEntropy:true silences them", () =>
 
   const silenced = validateConfig([{ id: "s", real: "abc", placeholder: "auto", lowEntropy: true }]);
   assert.deepEqual(silenced.warnings, []);
+});
+
+test("exact literal mutations support custom placeholders and warn about no-op replacements", () => {
+  assert.deepEqual(validateRawConfigRule({
+    id: "custom-placeholder",
+    name: "Custom placeholder",
+    real: "internal.example",
+    placeholder: "public.example",
+  }), []);
+  assert.ok(validateRawConfigRule({
+    id: "no-op",
+    real: "same-secret-value",
+    placeholder: "same-secret-value",
+  }).some((warning) => warning.includes("rule has no effect")));
 });
 
 test("regex patterns that can only match short values warn; real shapes don't", () => {

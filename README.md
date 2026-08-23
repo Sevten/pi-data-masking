@@ -27,7 +27,14 @@ See [Limitations and rule design](#limitations-and-rule-design) before relying o
 pi install npm:@sevten/pi-data-masking
 ```
 
-Then choose where the initial configuration should apply.
+Run Pi and open `/masking-config`. Press `M` to create a project or global
+configuration, select the built-in presets you need, review the options, and
+confirm the preview. No separate `/masking-init` command is required.
+
+The initializer never overwrites an existing file. Project initialization also
+warns about Git and can add the config path to `.gitignore`.
+
+For manual setup, choose where the initial configuration should apply.
 
 For a global configuration shared by all projects:
 
@@ -45,7 +52,9 @@ cp ~/.pi/agent/npm/node_modules/@sevten/pi-data-masking/masking.config.example.j
   .pi/pi-data-masking/masking.config.json
 ```
 
-Edit the chosen file and replace the example values with the real values you want to protect. Configuration changes are applied automatically without restarting Pi.
+Edit the chosen file and set `PROD_API_KEY` in Pi's environment, or replace the
+example rules with your own. Configuration changes are applied automatically
+without restarting Pi.
 
 Both scopes may be used together: keep shared rules in the global file and add only project-specific rules or option overrides to the project file. Do not copy the complete global configuration into the project file, because both rule lists are merged.
 
@@ -53,6 +62,8 @@ Both scopes may be used together: keep shared rules in the global file and add o
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/sevten/pi-data-masking/main/masking.config.schema.json",
+  "version": 1,
   "enabled": true,
   "options": {
     "caseSensitive": true,
@@ -63,15 +74,17 @@ Both scopes may be used together: keep shared rules in the global file and add o
   "rules": [
     {
       "id": "prod_api_key",
-      "description": "Production API key",
-      "real": "sk-prod-abc123456789",
+      "name": "Production API key",
+      "enabled": true,
+      "description": "Credential used by the production deployment pipeline",
+      "realFromEnv": "PROD_API_KEY",
       "preserveStructure": { "keepPrefix": true }
     },
     {
       "id": "github_pat",
-      "type": "regex",
-      "description": "GitHub personal access token",
-      "pattern": "\\bghp_[A-Za-z0-9]{36}\\b"
+      "name": "GitHub personal access token",
+      "preset": "github-pat",
+      "enabled": false
     }
   ]
 }
@@ -81,8 +94,127 @@ Rule types:
 
 - A **literal rule** omits `type` or uses `"literal"`. Every fixed-string occurrence of `real` is replaced, including substring occurrences.
 - A **regex rule** uses `"type": "regex"`. Each value matched by `pattern` receives a stable placeholder when first encountered.
+- A **preset rule** uses `"preset"` and expands to a tested built-in regex at load time. Its position still determines priority.
 
-The packaged `masking.config.example.json` contains a larger starter set for domains, connection credentials, bearer tokens, platform tokens, private keys, IP addresses, and phone numbers. Delete rules you do not need.
+The packaged `masking.config.example.json` is deliberately small. Use presets
+for common value shapes and custom regex only when a preset does not fit.
+
+Every rule accepts an optional `enabled` boolean. It defaults to `true`, so existing configurations keep their current behavior. Set it to `false` to retain a rule and its priority position without running it:
+
+```json
+{
+  "id": "github_pat",
+  "name": "GitHub personal access token",
+  "type": "regex",
+  "enabled": false,
+  "pattern": "\\bghp_[A-Za-z0-9]{36}\\b"
+}
+```
+
+Use `/masking-config` to browse all project and global rules. Press `Space` to
+apply a per-rule state change immediately with no confirmation dialog; disabling
+shows a non-blocking warning. Press `M` to inspect sources or create a missing config. Rule-list
+details hide literal real values; environment rules show only the variable name. Each
+write uses an atomic replacement and restricts the config file to user-only
+permissions where the filesystem supports POSIX modes.
+
+Configuration-center controls:
+
+| Key | Action |
+|---|---|
+| `Space` | Immediately enable/disable the selected rule without a confirmation dialog |
+| `Enter` / `A` / `D` or `Delete` | Edit, add, or delete a rule |
+| `Ctrl+↑` / `Ctrl+↓` | Move a rule within its project/global scope |
+| `F` / `/` | Cycle filters or search names, IDs, descriptions, sources, and types |
+| `B` | Immediately enable or disable all currently visible rules after one summary confirmation |
+| `Tab` | Switch between the rule list and the embedded active-rules test panel |
+| `T` | Focus the embedded active-rules test panel |
+| `H` | Show an in-app guide to literal, preset, and regex rule configuration |
+| `I` / `X` | Import rules from a config or create a non-runnable redacted export |
+| `M` | Inspect source paths or initialize a missing configuration |
+
+When adding an `Exact literal value`, the configuration center asks for the
+value once and then lets you choose either an automatically generated
+placeholder or an exact custom replacement. Prefer an environment-backed
+literal for secrets that should not be stored in JSON. Rule-list details never
+show the value. Entering the rule editor is an explicit inspection action, so
+the stored `real` value is shown there by default; `Ctrl+R` hides or restores it
+without leaving the editor. Environment-backed rules continue to show only the
+variable name, never the resolved value.
+
+The configuration-center home screen includes a compact `Test active rules`
+panel. `Tab` switches between the rule list and test input, while `T` focuses
+the test input directly. Input is evaluated locally as it changes and shows a
+masked preview plus rule-attributed match counts. It is cleared when the screen
+closes and never enters configuration, session history, live dynamic mappings,
+or model context. Both panels visibly identify focus: the active title is
+prefixed with `▶`. The Rules title stays outside the two dividers that bound the
+actual rule list and selected-rule details. Test titles and instructions stay
+outside the input editor's own border, avoiding duplicated lines. An empty test
+area says `Press Tab or T to focus and paste sample text` directly beside it.
+
+The rule editor uses the same visual hierarchy with a JSON area above a
+candidate-rule test area. Titles and instructions precede each editor border;
+`Tab` switches focus, and `F1` expands contextual field and regex help without
+discarding the draft.
+
+Adding a rule first asks for the configuration source and broad rule type. It
+then opens one focused Rule Builder instead of continuing through field-by-field
+prompts. The Builder contains only that type's contextual fields, local test
+input, validation, and masked preview; scope and broad type are shown as fixed
+context rather than editable fields. A compact field list shows each label and
+current value, while a fixed detail area below it shows the selected field's
+description and a full-width editable value. Previously entered values remain
+visible, long active values have substantially more room, and focus changes
+never alter the form's height. `Up`/`Down` move between fields; `Tab`/`Shift+Tab`
+switch only between the form and local test area.
+`Left`/`Right` or `Space` changes a selector. Non-preset rule fields start
+empty; examples remain in descriptions and help instead of becoming accidental
+configuration values. `F1` toggles help, `F2` switches between the structured
+form and complete JSON, `Ctrl+S` validates and saves, and `Esc` cancels. Built-in presets
+expand into editable regex fields immediately. Because validation and testing
+are already live, there is no separate Review step.
+
+When adding a built-in preset, a dedicated selection step lists every preset
+with its human-readable label, stable preset name, and the formats it masks.
+After selection, the Rule Builder opens with the preset's name, description,
+pattern, flags, and structure-preservation options expanded into editable
+fields. A unique rule ID is generated automatically. The resulting rule can be
+edited like any custom regex before saving.
+
+### Built-in presets
+
+Available names are `github-pat`, `npm-token`, `huggingface-token`,
+`aws-access-key-id`, `slack-token`, `jwt`, `pem-private-key`, `bearer-token`,
+`database-userinfo`, and `private-ipv4`.
+
+```json
+{ "id": "github_pat", "name": "GitHub personal access token", "preset": "github-pat", "enabled": true }
+```
+
+Preset references may override `name`, `description`, `enabled`, `lowEntropy`, and
+`preserveStructure`, but not the built-in pattern or flags. Unknown presets are
+reported and remain inactive. Existing config files may continue using these
+compact references. When one is opened in the configuration-center editor, it
+is expanded into a complete custom regex draft; saving the draft converts that
+rule from a preset reference into an independently editable regex.
+
+### Environment-backed literal values
+
+Use `realFromEnv` instead of `real` when a fixed secret should not be stored in
+JSON:
+
+```json
+{
+  "id": "prod_api_key",
+  "realFromEnv": "PROD_API_KEY",
+  "preserveStructure": { "keepPrefix": true }
+}
+```
+
+`real` and `realFromEnv` are mutually exclusive. A missing or empty environment
+variable leaves the rule inactive and produces a warning containing only the
+variable name. The value is resolved again on session start and config reload.
 
 ### Configuration paths and merging
 
@@ -98,6 +230,15 @@ When both files exist:
 - project `enabled` wins when explicitly set;
 - a saved `/masking-toggle` state overrides both files.
 
+`id` is a stable machine identifier used for editing, stale-write protection,
+warnings, and diagnostics. It must be unique within one config file. The same ID
+may appear once in the project config and once in the global config; those are
+independent rules identified by scope and path. `name` is the short label shown
+prominently in `/masking-config`, while `description` is optional longer help
+text. New rules created in the TUI ask for `name` and derive a readable unique
+ID automatically. Existing rules remain compatible and display
+`name ?? description ?? id`.
+
 `/masking-toggle` stores its state in `~/.pi/agent/pi-data-masking/toggle-state.json`. Delete that file and restart Pi to return control to the config-file `enabled` value.
 
 Invalid rules are skipped and reported instead of preventing the extension from loading.
@@ -106,7 +247,8 @@ Invalid rules are skipped and reported instead of preventing the extension from 
 
 | Command | Description |
 |---|---|
-| `/masking-list` | Open a full-screen list of configured rules. Literal rules show placeholders; regex rules show patterns; real values are hidden |
+| `/masking-config` | Browse, search, test, add, edit, delete, reorder, import/export, and immediately toggle project/global rules |
+| `/masking-list` | Compatibility alias for `/masking-config` |
 | `/masking-history` | Open the full-screen local/model/comparison history viewer |
 | `/masking-toggle` | Enable or disable masking persistently for future sessions and projects |
 | `/masking-test <text>` | Preview rule transformation locally for 20 seconds without changing live session mappings |
@@ -183,6 +325,36 @@ Literal rules may set an explicit `placeholder`. Regex rules cannot because one 
 ## Regex guidelines
 
 Use regex only for value classes you cannot enumerate. Prefer narrow patterns based on value structure, such as `ghp_`, `AKIA`, JWT, or PEM formats. Avoid broad “key name followed by anything” patterns; they tend to mask source code while missing real secrets.
+
+In `/masking-config`, choose `A` → `Custom regex` and provide:
+
+1. **Rule name** — the human-readable label shown in the configuration center;
+   a unique ID is generated from it.
+2. **JavaScript regex source** — the pattern only, without surrounding `/.../`.
+   Because it is stored in JSON, backslashes appear doubled in the resulting
+   file, for example `\btoken_[A-Za-z0-9]{24}\b`.
+3. **Regex flags (optional)** — JavaScript flags such as `i`, `m`, or `s`;
+   you need not add `g`, because global matching is handled internally.
+
+Regex matches receive deterministic generated placeholders. A regex rule
+cannot use one fixed `placeholder`, since the same pattern may discover many
+different real values. If the pattern contains capture groups, only the
+captured portions are masked; without capture groups, the entire match is
+masked.
+
+For example, `\bnpm_[A-Za-z0-9]{36}\b` is composed of:
+
+- `\b` — a zero-width word boundary: a position between a word character
+  (`A-Z`, `a-z`, `0-9`, or `_`) and a non-word character, or the start/end of
+  text. It prevents this pattern from starting or ending inside a larger word.
+- `npm_` — those four literal characters.
+- `[A-Za-z0-9]` — one ASCII uppercase letter, lowercase letter, or digit.
+- `{36}` — repeat the preceding character class exactly 36 times.
+- the final `\b` — require the token to end at another word boundary.
+
+Thus it matches an `npm_` prefix followed by exactly 36 ASCII alphanumeric
+characters. In the JSON file each backslash is escaped, so the same pattern is
+displayed as `"\\bnpm_[A-Za-z0-9]{36}\\b"`.
 
 ### Replace only part of a match
 
@@ -262,18 +434,23 @@ Other boundaries:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `$schema` | string | — | Schema URL for editor completion and inline validation |
+| `version` | `1` | — | Optional config format version; legacy files may omit it |
 | `enabled` | boolean | `true` | Config-file masking state; overridden by saved `/masking-toggle` state |
-| `rules` | array | `[]` | Ordered literal and regex rules |
+| `rules` | array | `[]` | Ordered literal, regex, and preset rules |
 | `options` | object | defaults below | Runtime behavior |
 
 ### Literal rule
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | Unique identifier |
-| `description` | string | no | Label shown in `/masking-list` |
+| `id` | string | yes | Stable identifier, unique within this config file |
+| `name` | string | no | Short display name; TUI-created rules require it and generate `id` automatically |
+| `enabled` | boolean | no | Per-rule switch; defaults to `true` |
+| `description` | string | no | Optional longer explanation shown in rule details |
 | `type` | `"literal"` | no | May be omitted |
-| `real` | string | yes | Fixed string to replace |
+| `real` | string | one source required | Fixed string to replace |
+| `realFromEnv` | string | one source required | Name of an environment variable containing the fixed value; mutually exclusive with `real` |
 | `placeholder` | string | no | Explicit replacement; omit or use `"auto"` to generate one |
 | `preserveStructure` | object | no | `keepPrefix` and/or `keepIPv4Octets` |
 | `lowEntropy` | boolean | no | Suppress the warning for an intentionally short value |
@@ -282,8 +459,10 @@ Other boundaries:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | Unique identifier |
-| `description` | string | no | Label shown in `/masking-list` |
+| `id` | string | yes | Stable identifier, unique within this config file |
+| `name` | string | no | Short display name; TUI-created rules require it and generate `id` automatically |
+| `enabled` | boolean | no | Per-rule switch; defaults to `true` |
+| `description` | string | no | Optional longer explanation shown in rule details |
 | `type` | `"regex"` | yes | Select regex matching |
 | `pattern` | string | yes | JavaScript regex source without delimiters |
 | `flags` | string | no | Override global case sensitivity; global matching is added internally |
@@ -291,6 +470,22 @@ Other boundaries:
 | `lowEntropy` | boolean | no | Suppress the warning for an intentionally short match shape |
 
 Regex rules do not support `real` or a fixed `placeholder`.
+
+### Preset rule
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Unique identifier within the source file |
+| `name` | string | no | Short display name; TUI-created rules require it |
+| `preset` | preset name | yes | Built-in preset to expand at load time |
+| `enabled` | boolean | no | Per-rule switch; defaults to `true` |
+| `description` | string | no | Override the built-in longer explanation |
+| `preserveStructure` | object | no | Override the preset's structure-preservation defaults |
+| `lowEntropy` | boolean | no | Acknowledge an intentionally low-entropy rule |
+
+The bundled [`masking.config.schema.json`](masking.config.schema.json) describes
+all three mutually exclusive rule shapes and supplies editor descriptions and
+examples.
 
 ### Options
 

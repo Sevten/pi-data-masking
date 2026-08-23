@@ -12,6 +12,7 @@
   "files": [
     "*.ts",
     "masking.config.example.json",
+    "masking.config.schema.json",
     "README.md",
     "LICENSE"
   ],
@@ -33,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
+    "ajv": "^8.20.0",
     "typescript": "^6.0.3"
   },
   "pi": {

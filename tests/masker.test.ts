@@ -27,6 +27,22 @@ test("literal rule: mask and unmask roundtrip", () => {
   assert.equal(unmasked.text, text);
 });
 
+test("disabled rules are ignored even when Masker is constructed directly", () => {
+  const dynamicMap = new Map();
+  const m = new Masker(
+    [
+      { id: "literal-off", enabled: false, real: "company-internal.com", placeholder: "example.test" },
+      { id: "regex-off", enabled: false, type: "regex", pattern: "token-[a-z]+" },
+    ],
+    true,
+    KEY,
+    dynamicMap,
+  );
+  const text = "company-internal.com token-secret";
+  assert.equal(m.mask(text).text, text);
+  assert.equal(dynamicMap.size, 0);
+});
+
 test("literal rule with auto placeholder: roundtrip", () => {
   const real = "sk-prod-abc123456789";
   const m = new Masker(
