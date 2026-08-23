@@ -16,6 +16,7 @@ import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { generatePlaceholder } from "./placeholder-gen.ts";
 import { isRegexRule, MAX_COLLISION_ATTEMPTS, type MaskingRule, type PreserveStructure } from "./masker.ts";
 import { expandMaskingPreset, getMaskingPreset } from "./presets.ts";
+import { analyzeRegexSafety } from "./regex-safety.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -454,6 +455,12 @@ export function validateConfig(
       } catch (err) {
         warnings.push(`Rule [${id}] has an invalid regex and was skipped: ${(err as Error).message}`);
         continue;
+      }
+      for (const issue of analyzeRegexSafety(pattern)) {
+        warnings.push(
+          `Rule [${id}] regex risk: ${issue.message}. ` +
+            `Use a narrower character class, a required separator, or a fixed upper bound`
+        );
       }
       if (rule.lowEntropy !== true) {
         const est = estimateMatchLength(pattern);

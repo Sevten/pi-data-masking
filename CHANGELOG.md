@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add advisory excessive-backtracking diagnostics for nested unbounded
+  quantifiers, overlapping repeated alternatives, and adjacent overlapping
+  repetitions while preserving native JavaScript regex compatibility.
 - Remove the redundant `Type or paste sample text` line from configuration test
   panels; each editor's `Enter text` placeholder now provides the prompt.
 - Remove the duplicate field-navigation instruction above the structured rule

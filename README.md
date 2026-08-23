@@ -435,6 +435,15 @@ Use lookahead when adjacent rules must not claim each other's text:
 
 Rules run in list order and earlier matches claim overlapping regions. Put specific rules before broad rules. Regex `flags` override global `caseSensitive`; the extension adds global matching internally.
 
+The loader and Rule Builder also diagnose common JavaScript regex shapes that
+may take excessive time on a failing input: nested unbounded quantifiers such
+as `(a+)+`, overlapping alternatives such as `(foo|foobar)+`, and adjacent
+overlapping repetitions such as `.*.*`. These diagnostics are advisory because
+runtime cost depends on the input. The rule remains valid, and the Builder
+allows an explicit second `Enter` to save after reviewing the warning. Prefer
+a required separator, a narrower character class, or a fixed upper bound when
+possible. Built-in presets are covered by regression tests for these warnings.
+
 Test representative positive and negative examples with `/masking-test` before relying on a rule. This command uses an isolated `Masker`, so it previews rule behavior without importing or mutating live provenance and dynamic mappings.
 
 ## History persistence
