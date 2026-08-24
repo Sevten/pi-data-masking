@@ -1,81 +1,24 @@
 # pi-data-masking
 
-**Protect sensitive values from the LLM provider without degrading agent reasoning, tool calls, or prompt-cache reuse.**
+**Mask sensitive values before they reach the LLM provider, then restore them locally for display and tool execution.**
 
-Real values stay in the local Pi conversation. The model receives stable, realistic-looking placeholders; tools receive the real values again immediately before execution.
+pi-data-masking is a Pi extension that replaces configured secrets with stable, realistic-looking placeholders before a request reaches the model. The real values remain in Pi's local conversation and are restored only when a tool needs them.
+
+> This protects the LLM-provider boundary. Pi's local session files and tools that use a secret still receive the real value.
 
 ```text
 user/tool data → mask → LLM → restore tool arguments → tool uses real data
                               tool result → mask → next LLM request
 ```
 
-## Design principles
+Use it for secrets the model only needs to pass to tools, such as API keys, access tokens, private hostnames, and connection credentials—not values whose exact contents it must parse, transform, or validate.
 
-Masking is useful only if the agent can continue working normally. The extension is therefore designed around three requirements: preserve reasoning quality, keep tool execution transparent, and keep the model-facing conversation stable for prefix caching.
+Key features:
 
-### Plausible values, not redaction markers
-
-An obvious marker such as `[REDACTED]` tells the model that data is missing. That can change its reasoning, make it ask for the value again, or make it refuse a tool call.
-
-Automatic placeholders instead preserve character classes and separators: letters remain letters, digits remain digits, and URL/token structure remains usable. Rules can preserve safe prefixes or IP octets, and literal rules may specify a deliberately realistic replacement.
-
-```text
-sk-prod-abc123456789  → sk-nqpz-mwx847312654  (with keepPrefix)
-172.16.254.1          → 233.84.19.207
-db.prod.internal      → db-primary.prod.corpnet.internal
-```
-
-The placeholder keeps the value operationally believable, not semantically equivalent. This is why rules should target high-entropy secrets rather than values whose meaning depends on their exact characters.
-
-### Stable model context
-
-The same real value maps to the same placeholder throughout a conversation. Reopening a persisted Pi conversation restores its session key and confirmed model-facing snapshots, keeping earlier prefixes stable and preserving the opportunity for provider prompt-cache hits. A new conversation uses a new key.
-
-### Transparent tool execution
-
-The model plans tool calls using placeholders. Immediately before a tool runs, matching placeholders in its arguments are restored to their real values. Tool results remain real in the local conversation; protected values are masked again before the next model request.
-
-The model must pass placeholders verbatim. Arithmetic, slicing, concatenation, or hashing performed on placeholder characters cannot be reversed.
-
-### Inspectable model view
-
-`/masking-history` makes the otherwise invisible boundary auditable. It highlights replacements and switches among the local original, the exact model-facing representation, and a comparison view. Wide terminals show the comparison side by side; narrow terminals stack both versions.
-
-## Project-specific trade-off: immutable first-seen
-
-This extension deliberately makes provenance immutable to protect reasoning consistency and cache prefixes. The first matching occurrence fixes one state for the entire conversation:
-
-- First seen in user, system, or tool-result data: `protected`. It is masked consistently, including later assistant echoes.
-- First seen in model output: `model-known`. Later occurrences from the user or tools remain unmasked.
-
-If the model saw a value first, protecting it later would rewrite text the model had already seen. pi-data-masking therefore preserves the established model view and accepts that a later secret with the same string will not be protected. This loss of coverage is a conscious project policy, not an unavoidable property of every masking implementation.
-
-First-seen does not create the identical-string ambiguity described below; it provides a deterministic choice once that ambiguity occurs. With high-entropy secrets, the model independently generating the exact same value is extremely unlikely.
-
-## Inherent limitations of masking
-
-> Do not mask a value whose exact characters or meaning the model must analyze. A realistic placeholder is an operational substitute, not a semantic equivalent, and the model can confidently reason from it incorrectly.
-
-These limitations follow from replacing a value and apply to masking systems generally:
-
-- **Hidden characters cannot be analyzed.** Password-strength judgments, numeric comparisons, parsing, encoding, and logic based on actual characters can be confidently wrong because the model sees the replacement.
-- **Derived values cannot be restored.** Arithmetic, slicing, concatenation, hashing, checksums, and signatures operate on placeholder characters rather than the real value.
-- **One string cannot carry two semantic identities.** A global matcher cannot know whether `123456` is a password, an ordinary example, or test data when the text is identical.
-
-The last limitation is especially dangerous for low-entropy and common values. If `123456` is protected first and the model later independently writes an ordinary `123456`, matching occurrences are still treated as protected. If the model used `123456` first, immutable first-seen leaves a later password with that value unprotected. No global string-replacement scheme can reliably satisfy both meanings.
-
-Use pi-data-masking for high-entropy, opaque operational values—API keys, access tokens, private hostnames, and connection credentials—that the model should pass through to tools rather than inspect or independently reproduce.
-
-## Mitigations, not guarantees
-
-| Measure | What it helps | What it cannot guarantee |
-|---|---|---|
-| Format-preserving or custom realistic placeholders | Normal reasoning flow and tool-call willingness | The real value's meaning |
-| Stable HMAC mapping and persisted snapshots | Context consistency and cache-prefix reuse | Correct reasoning about hidden characters |
-| `keepPrefix` / `keepIPv4Octets` | Selected prefix or network assertions | Unpreserved structure or semantics |
-| High-entropy values and narrow contextual rules | Accidental matches and same-string ambiguity | Perfect semantic identity |
-| `systemPromptGuidance` | Discouraging placeholder transformation | Model compliance |
-| `/masking-history` comparison | Detecting unexpected model views and semantic drift | Preventing the problem automatically |
+- Format-preserving placeholders keep tokens, URLs, and addresses operationally believable instead of replacing them with obvious `[REDACTED]` markers.
+- Tool arguments are restored immediately before execution, so tools continue to receive real values.
+- Stable per-conversation mappings preserve the model-facing context and the opportunity for provider prompt-cache hits.
+- `/masking-history` shows the exact local and model-facing views for auditing.
 
 ## Quick start
 
@@ -83,7 +26,7 @@ Use pi-data-masking for high-entropy, opaque operational values—API keys, acce
 pi install npm:@sevten/pi-data-masking
 ```
 
-Restart Pi and open `/masking`. Select `＋ Add new rule`, choose project or global scope, and test the rule in the same screen before saving.
+Start Pi and open `/masking`. Select `＋ Add new rule`, choose project or global scope, test the rule in the same screen, and save it.
 
 | Scope | Configuration path |
 |---|---|
@@ -123,7 +66,39 @@ pi
 
 Enter only the variable name in `realFromEnv`, without `$`. A missing or empty variable leaves the rule in `WAIT` state.
 
-## Rules
+## How it works
+
+### Realistic placeholders
+
+An obvious marker such as `[REDACTED]` tells the model that data is missing. That can change its reasoning, make it ask for the value again, or make it avoid a tool call.
+
+Automatic placeholders instead preserve character classes and separators: letters remain letters, digits remain digits, and URL or token structure remains usable. Rules can preserve safe prefixes or IP octets, and literal rules may specify a deliberately realistic replacement.
+
+```text
+sk-prod-abc123456789  → sk-nqpz-mwx847312654  (with keepPrefix)
+172.16.254.1          → 233.84.19.207
+db.prod.internal      → db-primary.prod.corpnet.internal
+```
+
+Automatic placeholders use HMAC-SHA-256 keyed by a random per-conversation key to derive deterministic replacement characters. This is not standard format-preserving encryption: character classes and separators—and any prefixes or IP octets explicitly configured to be retained—remain visible.
+
+The replacement is operationally believable, not semantically equivalent to the real value.
+
+### Stable model context
+
+The same real value maps to the same placeholder throughout a conversation. Reopening a persisted Pi conversation restores the same session key and model-facing history, keeping earlier prefixes stable. A new conversation uses a new key.
+
+### Transparent tool execution
+
+The model plans tool calls using placeholders. Immediately before a tool runs, matching placeholders in its arguments are restored to their real values. Tool results remain real in the local conversation and are masked again before the next model request.
+
+The model must pass a placeholder verbatim. A placeholder that the model slices, concatenates, hashes, or otherwise transforms cannot be restored.
+
+### Inspectable model view
+
+`/masking-history` highlights replacements and switches among the local original, the exact model-facing representation, and a comparison view. Wide terminals show the comparison side by side; narrow terminals stack both versions.
+
+## Rules and configuration
 
 | Rule source | Configuration | Best use |
 |---|---|---|
@@ -138,6 +113,12 @@ Custom patterns use standard JavaScript `RegExp` syntax. Store the pattern sourc
 
 The packaged [`masking.config.example.json`](masking.config.example.json) contains exact, environment, custom-regex, and preset examples. [`masking.config.schema.json`](masking.config.schema.json) is the complete field reference and enables editor validation.
 
+## Performance
+
+Masking recursively scans every string in the outbound model context against each active rule. The final provider-boundary safety hook may make a second, idempotent pass. Rules are compiled once per configuration load and placeholders are reused, but large histories, many active rules, or broad and backtracking-heavy custom regexes can add local latency.
+
+Regex safety diagnostics are advisory and do not reject a rule. Keep patterns narrow and test representative positive, negative, and large inputs in `/masking` before relying on them.
+
 ## Commands
 
 | Command | Purpose |
@@ -146,9 +127,39 @@ The packaged [`masking.config.example.json`](masking.config.example.json) contai
 | `/masking-toggle` | Persistently enable or disable masking |
 | `/masking-history` | Audit highlighted local/model views and side-by-side comparison |
 
-In `/masking`, `Space` toggles a rule immediately, `Enter` edits or adds, `Ctrl+↑/↓` changes priority, `D`/`Delete` removes, `Tab` focuses local testing, and `R` reveals the selected literal value. The screen lists the remaining filter, search, batch, help, import, and redacted-export shortcuts.
+In `/masking`, `Space` toggles a rule, `Enter` edits or adds, `Ctrl+↑/↓` changes priority, `D`/`Delete` removes, `Tab` focuses local testing, and `R` reveals the selected literal value. The screen lists the remaining filter, search, batch, help, import, and redacted-export shortcuts.
 
 The test areas are local: sample text does not enter model context, session history, configuration, or live placeholder mappings.
+
+## Security model and limitations
+
+> Do not mask a value whose exact characters or meaning the model must analyze. A realistic placeholder is an operational substitute, not a semantic equivalent. Even when a task is not explicitly about the secret, the model may infer properties from the placeholder and generate code based on them.
+
+Masking has several inherent limitations:
+
+- **Assertions about hidden characters may be wrong.** Password-strength judgments, numeric comparisons, parsing, and generated checks for prefixes, lengths, or character classes describe the placeholder unless that structure was explicitly preserved.
+- **Derived values cannot be restored.** Arithmetic, slicing, concatenation, hashing, checksums, and signatures operate on placeholder characters rather than the real value.
+- **One string cannot carry two semantic identities.** If `password` is protected as the real password and the model later writes the ordinary word `password` in code or documentation, the next request masks both alike. The model then sees a changed version of its own earlier answer, which can cause confusion or inconsistent reasoning.
+
+Low-entropy and common values are therefore unsuitable. Prefer high-entropy secrets and narrow contextual rules, and test both positive and negative samples before relying on a rule. Options such as `keepPrefix`, `keepIPv4Octets`, and `systemPromptGuidance` can reduce semantic drift but cannot recover hidden meaning or guarantee model compliance.
+
+### Immutable first-seen classification
+
+To preserve reasoning consistency and cache prefixes, the first matching occurrence determines how that exact string is classified for the rest of the conversation:
+
+- First seen in user, system, or tool-result data: `protected`. It is masked consistently, including later assistant echoes.
+- First seen in model output: `model-known`. Later occurrences from the user or tools remain unmasked.
+
+If the model saw a string first, protecting it later would rewrite text the model had already seen. pi-data-masking preserves the established model view instead, accepting that a later secret with the same string will not be protected. This deterministic policy matters primarily for low-entropy values; independently reproducing an exact high-entropy secret is extremely unlikely.
+
+### Security boundaries
+
+- This is rule-based masking, not encryption or automatic PII detection. Only configured string matches are protected.
+- Pi session files contain the real conversation under `~/.pi/agent/sessions/`; protect their permissions and backups.
+- Binary and other non-string data is not scanned. The final provider-request safety pass also depends on provider support for that Pi hook.
+- Literal matching includes substring occurrences. Prefer exact high-entropy values; use narrow regex rules for value classes.
+- A custom placeholder must be unique and must not equal another real value. Generated placeholders include collision checks.
+- Content injected only at the final provider boundary can be protected without corresponding to a stored message that `/masking-history` can replay.
 
 ## Scope, persistence, and recovery
 
@@ -160,23 +171,21 @@ Config writes are atomic and use user-only permissions where POSIX modes are ava
 
 Other options are `caseSensitive`, `showStatusBar`, and `systemPromptGuidance`; see the JSON Schema for their defaults and descriptions.
 
-## Implementation and security boundaries
-
-- This is rule-based masking, not encryption or automatic PII detection. Only configured string matches are protected.
-- Pi session files contain the real conversation under `~/.pi/agent/sessions/`; protect their permissions and backups.
-- Binary and other non-string data is not scanned. The final provider-request safety pass also depends on provider support for that Pi hook.
-- PINs, weak passwords, ordinary words, and other low-entropy values are unsuitable; see [Inherent limitations of masking](#inherent-limitations-of-masking).
-- Literal matching includes substring occurrences. Prefer exact high-entropy values; use narrow regex rules for value classes and test positive and negative samples.
-- A custom placeholder must be unique and must not equal another real value. Generated placeholders include collision checks.
-- Content injected only at the final provider boundary can be protected without corresponding to a stored message that `/masking-history` can replay.
-
 ## Development
 
+Development and CI use Node.js 24. Install the locked dependencies and run all checks:
+
 ```bash
-npm install
+npm ci
 npm run check
 npm test
 npm run pack:dry
 ```
 
-See [`CHANGELOG.md`](CHANGELOG.md) for release history and [`CONFIGURATION_REQUIREMENTS.md`](CONFIGURATION_REQUIREMENTS.md) for the detailed product requirements.
+To load the working tree for an end-to-end check without installing it, run `pi -e .`, then open `/masking` to verify rule editing, local tests, and history inspection. `npm run pack:dry` verifies the files that would be included in the published package.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for release history.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
