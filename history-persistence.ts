@@ -55,7 +55,7 @@ function isSafePath(path: unknown[]): path is PathPart[] {
   );
 }
 
-function textHash(value: string): string {
+export function textHash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 

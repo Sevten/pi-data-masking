@@ -21,6 +21,9 @@ export interface TranscriptEntry {
   pending?: boolean;
   /** Restored from a session that predates persisted model-input snapshots. */
   snapshotMissing?: boolean;
+  /** Fingerprint of the source message for the stored copies; lets
+   *  mergeTranscript skip re-cloning entries whose content did not change. */
+  hash?: string;
 }
 
 interface HistoryTheme {
@@ -82,6 +85,7 @@ export function mergeTranscript(
   originals: readonly JsonRecord[],
   masked: readonly JsonRecord[],
   capturedAt = Date.now(),
+  hashes?: readonly (string | undefined)[],
 ): TranscriptEntry[] {
   const byKey = new Map(existing.map((entry) => [entry.key, entry]));
   const next = [...existing];
@@ -90,19 +94,29 @@ export function mergeTranscript(
     const original = originals[index]!;
     const maskedMessage = masked[index] ?? original;
     const key = transcriptKey(original, index);
+    const hash = hashes?.[index];
     const prior = byKey.get(key);
     if (prior) {
-      prior.original = cloneMessage(original);
-      prior.masked = cloneMessage(maskedMessage);
-      prior.capturedAt = capturedAt;
+      // Flag transitions apply even when content is unchanged: a pending
+      // assistant response is confirmed by reaching the provider boundary.
       prior.pending = false;
       prior.snapshotMissing = false;
+      prior.capturedAt = capturedAt;
+      // Originals never mutate between requests, so matching fingerprints
+      // mean the stored copies are already identical — skip the two
+      // structuredClone calls. Missing hashes (legacy callers) reclone.
+      if (!hash || prior.hash !== hash) {
+        prior.original = cloneMessage(original);
+        prior.masked = cloneMessage(maskedMessage);
+        prior.hash = hash;
+      }
     } else {
       const entry: TranscriptEntry = {
         key,
         original: cloneMessage(original),
         masked: cloneMessage(maskedMessage),
         capturedAt,
+        hash,
       };
       next.push(entry);
       byKey.set(key, entry);

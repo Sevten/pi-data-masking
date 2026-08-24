@@ -78,6 +78,7 @@ import {
   createHistoryViewer,
   mergePendingAssistant,
   mergeTranscript,
+  transcriptKey,
   type TranscriptEntry,
 } from "./history-viewer.ts";
 import {
@@ -90,6 +91,7 @@ import {
   type SessionEntryLike,
   type SnapshotBatch,
 } from "./history-persistence.ts";
+import { MaskedCache, hashMessage } from "./masked-cache.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -108,6 +110,11 @@ const SYSTEM_PROMPT_GUIDANCE =
   "appearance, never transform or derive from them, and note that text " +
   "describing a value's properties (prefix, format, strength) may refer to " +
   "the original value, not the placeholder.]";
+
+// Upper bound for snapshotContentHashes (last-persisted per-message
+// fingerprints). It otherwise mirrors transcript growth, which is unbounded
+// by design; overflowing clears it wholesale, costing one re-diff pass.
+const SNAPSHOT_CONTENT_HASH_MAX_ENTRIES = 10_000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -213,8 +220,20 @@ export default async function (pi: ExtensionAPI) {
   // A local-only replay of messages that crossed the model boundary.
   let transcript: TranscriptEntry[] = [];
   let snapshotSignatures = new Map<string, string>();
+  /** Last-persisted content fingerprints per messageKey; lets persistSnapshots
+   *  skip buildMessageSnapshot for messages whose original AND masked forms
+   *  are provably unchanged since the previous request. */
+  let snapshotContentHashes = new Map<string, MessageContentHashPair>();
   let requestSequence = 0;
   let sessionStatePersisted = false;
+
+  // Masked-output caches (see masked-cache.ts): history messages are
+  // immutable between turns and masking is deterministic, so unchanged
+  // messages reuse their stored masked form instead of re-running every
+  // rule regex. Cleared by invalidateMaskedCaches() on any masker-input
+  // change (rebuild, toggle, session_start).
+  const maskedCache = new MaskedCache();
+  let systemPromptMemo: { input: string; text: string; count: number } | null = null;
 
   // One-time-per-session warning flags (reset on session_start)
   let fallbackNotifiedThisTurn = false;
@@ -245,10 +264,81 @@ export default async function (pi: ExtensionAPI) {
     return { discover: true };
   }
 
+  /** Cache contents depend on rules, case sensitivity, sessionKey-derived
+   *  placeholders, and provenance behavior; every path that swaps the Masker
+   *  or starts a new session must clear them. Clearing is always safe —
+   *  misses merely refill. */
+  function invalidateMaskedCaches(): void {
+    maskedCache.invalidate();
+    systemPromptMemo = null;
+  }
+
+  interface MessageContentHashPair {
+    original: string;
+    masked: string;
+  }
+
+  interface ResolvedMaskedMessage {
+    masked: unknown;
+    pair: MessageContentHashPair;
+    /** True when served from cache (fill side effects happened earlier). */
+    fromCache: boolean;
+    /** masker-reported replacement count; 0 for cache hits. */
+    count: number;
+  }
+
+  function resolveMaskedMessage(message: unknown, index: number): ResolvedMaskedMessage {
+    const key = message !== null && typeof message === "object"
+      ? transcriptKey(message as Record<string, unknown>, index)
+      : `raw:index:${index}`;
+    const hash = hashMessage(message);
+    const cached = maskedCache.lookup(key, hash);
+    if (cached) {
+      return {
+        masked: cached.masked,
+        pair: { original: hash, masked: cached.maskedHash },
+        fromCache: true,
+        count: 0,
+      };
+    }
+    const role = (message as { role?: string } | null | undefined)?.role;
+    const r = masker.maskValue(message, maskOptionsForRole(role));
+    const maskedHash = hashMessage(r.value);
+    maskedCache.record(key, hash, maskedHash, r.value);
+    return {
+      masked: r.value,
+      pair: { original: hash, masked: maskedHash },
+      fromCache: false,
+      count: r.count,
+    };
+  }
+
+  /**
+   * Mask the system prompt through a one-entry memo. The prompt is static
+   * for a session, yet before_agent_start and before_provider_request each
+   * mask it; the memo stores the pre-guidance text and callers append
+   * options-dependent guidance themselves. Fill runs the full discover:true
+   * mask so provenance registration happens exactly once.
+   */
+  function maskSystemPromptCached(input: string): { text: string; count: number } {
+    if (
+      systemPromptMemo !== null &&
+      systemPromptMemo.input.length === input.length &&
+      systemPromptMemo.input === input
+    ) {
+      return systemPromptMemo;
+    }
+    const r = masker.mask(input, { discover: true });
+    systemPromptMemo = { input, text: r.text, count: r.count };
+    return systemPromptMemo;
+  }
+
   /** Rebuild masker and return any regex-compile warnings for the caller to surface */
   function rebuild(cfg: MaskingConfig): string[] {
     config = cfg;
     masker = buildMasker(cfg.rules);
+    // Rules/caseSensitive changed → cached masked outputs are stale.
+    invalidateMaskedCaches();
     return masker.warnings;
   }
 
@@ -285,19 +375,39 @@ export default async function (pi: ExtensionAPI) {
     updateStatus(ctx);
   }
 
-  /** Persist only new/changed per-message model-input differences. */
+  /** Persist only new/changed per-message model-input differences.
+   *  contentHashes (when provided) skips the full diff/hash walk for
+   *  messages whose original AND masked forms are unchanged since the last
+   *  persisted request — the common case for history on every turn. */
   function persistSnapshots(
     ctx: ExtensionContext,
     originals: Record<string, unknown>[],
     masked: Record<string, unknown>[],
+    contentHashes?: ReadonlyArray<MessageContentHashPair | undefined>,
   ) {
     if (!config.options.persistHistory) return;
     requestSequence++;
     const changed: MessageSnapshot[] = [];
+    const changedPairs: Array<{ key: string; pair?: MessageContentHashPair }> = [];
     for (let index = 0; index < originals.length; index++) {
       const original = originals[index]!;
-      const snapshot = buildMessageSnapshot(original, masked[index] ?? original, index);
-      if (snapshotSignatures.get(snapshot.messageKey) !== snapshot.signature) changed.push(snapshot);
+      const maskedMessage = masked[index] ?? original;
+      const messageKey = transcriptKey(original, index);
+      const pair = contentHashes?.[index];
+      if (pair) {
+        const prev = snapshotContentHashes.get(messageKey);
+        if (
+          prev !== undefined &&
+          snapshotSignatures.has(messageKey) &&
+          prev.original === pair.original &&
+          prev.masked === pair.masked
+        ) continue;
+      }
+      const snapshot = buildMessageSnapshot(original, maskedMessage, index);
+      if (snapshotSignatures.get(snapshot.messageKey) !== snapshot.signature) {
+        changed.push(snapshot);
+        changedPairs.push({ key: snapshot.messageKey, pair });
+      }
     }
     if (changed.length === 0) return;
 
@@ -309,7 +419,12 @@ export default async function (pi: ExtensionAPI) {
     };
     try {
       pi.appendEntry(SNAPSHOT_ENTRY, batch);
-      for (const snapshot of changed) snapshotSignatures.set(snapshot.messageKey, snapshot.signature);
+      if (snapshotContentHashes.size >= SNAPSHOT_CONTENT_HASH_MAX_ENTRIES) snapshotContentHashes.clear();
+      for (let i = 0; i < changed.length; i++) {
+        snapshotSignatures.set(changed[i]!.messageKey, changed[i]!.signature);
+        const recordedPair = changedPairs[i]!.pair;
+        if (recordedPair) snapshotContentHashes.set(changedPairs[i]!.key, recordedPair);
+      }
     } catch (err) {
       if (!persistenceWarned) {
         persistenceWarned = true;
@@ -350,6 +465,11 @@ export default async function (pi: ExtensionAPI) {
     dynamicPlaceholderMap = new Map();
     llmInventedValues = new Set();
     protectedValues = new Set();
+    snapshotContentHashes = new Map();
+    // Fresh sessionKey and provenance sets — cached masked outputs from any
+    // prior state must not survive. (rebuild() below clears again; this also
+    // covers paths that never reach it.)
+    invalidateMaskedCaches();
     fallbackNotifiedThisTurn = false;
     systemPromptWarned = false;
     dynamicMapWarned = false;
@@ -363,11 +483,11 @@ export default async function (pi: ExtensionAPI) {
     const compileWarnings = rebuild(persisted.config);
 
     // Replay the full active branch locally to rebuild dynamic mappings and
-    // first-seen provenance using the restored session key. Nothing from this
-    // pass is counted or sent to the model.
-    for (const message of restored.messages) {
-      const role = typeof message.role === "string" ? message.role : undefined;
-      masker.maskValue(message, maskOptionsForRole(role));
+    // first-seen provenance using the restored session key, priming the
+    // masked-output cache so the first post-restore request skips re-masking
+    // history. Nothing from this pass is counted or sent to the model.
+    for (let index = 0; index < restored.messages.length; index++) {
+      resolveMaskedMessage(restored.messages[index], index);
     }
 
     ensureSessionStatePersisted(ctx);
@@ -400,25 +520,35 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("context", async (event, ctx) => {
     const messages = event.messages;
+    const originals = messages as unknown as Record<string, unknown>[];
     // Retain the complete local replay even while masking is off. When it is
     // enabled, the same entries are replaced below with the actual masked form
     // sent through this boundary.
     if (!config.enabled || config.rules.length === 0) {
-      const originals = messages as unknown as Record<string, unknown>[];
-      transcript = mergeTranscript(
-        transcript,
-        originals,
-        originals,
-      );
-      persistSnapshots(ctx, originals, originals);
+      const disabledHashes: string[] = [];
+      const disabledPairs: MessageContentHashPair[] = [];
+      for (let index = 0; index < originals.length; index++) {
+        const hash = hashMessage(originals[index]);
+        disabledHashes.push(hash);
+        disabledPairs.push({ original: hash, masked: hash });
+      }
+      transcript = mergeTranscript(transcript, originals, originals, Date.now(), disabledHashes);
+      persistSnapshots(ctx, originals, originals, disabledPairs);
       return;
     }
 
     // Mask everything (including history) before returning to the LLM, so
-    // it only ever sees placeholders for protected values.
-    const maskedMessages = messages.map((msg) =>
-      masker.maskValue(msg, maskOptionsForRole((msg as { role?: string }).role)).value
-    );
+    // it only ever sees placeholders for protected values. History messages
+    // are immutable between turns, so resolveMaskedMessage serves their
+    // stored masked form from the cache; the full maskValue cost is paid
+    // only for new or changed tail messages.
+    const maskedMessages: Record<string, unknown>[] = [];
+    const contentHashes: MessageContentHashPair[] = [];
+    for (let index = 0; index < originals.length; index++) {
+      const resolved = resolveMaskedMessage(originals[index], index);
+      maskedMessages.push(resolved.masked as Record<string, unknown>);
+      contentHashes.push(resolved.pair);
+    }
 
     if (!dynamicMapWarned && dynamicPlaceholderMap.size >= DYNAMIC_MAP_WARN_THRESHOLD) {
       dynamicMapWarned = true;
@@ -437,15 +567,13 @@ export default async function (pi: ExtensionAPI) {
 
     transcript = mergeTranscript(
       transcript,
-      messages as unknown as Record<string, unknown>[],
-      maskedMessages as Record<string, unknown>[],
+      originals,
+      maskedMessages,
+      Date.now(),
+      contentHashes.map((pair) => pair.original),
     );
-    persistSnapshots(
-      ctx,
-      messages as unknown as Record<string, unknown>[],
-      maskedMessages as Record<string, unknown>[],
-    );
-    return { messages: maskedMessages as typeof event.messages };
+    persistSnapshots(ctx, originals, maskedMessages, contentHashes);
+    return { messages: maskedMessages as unknown as typeof event.messages };
   });
 
   // ── Hook 2: message_end — inbound unmasking ───────────────────────────────
@@ -502,7 +630,9 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, ctx) => {
     if (!config.enabled || config.rules.length === 0) return;
-    const r = masker.mask(event.systemPrompt, { discover: true });
+    // Memoized: the prompt is static per session and is masked again at the
+    // provider boundary; fill registers provenance exactly once.
+    const r = maskSystemPromptCached(event.systemPrompt);
     let text = r.text;
     if (config.options.systemPromptGuidance) {
       text += "\n\n" + SYSTEM_PROMPT_GUIDANCE;
@@ -527,22 +657,29 @@ export default async function (pi: ExtensionAPI) {
 
     const record = payload as Record<string, unknown>;
     let intercepted = 0;
+    let changedCount = 0;
 
     if (Array.isArray(record.messages)) {
-      const masked = record.messages.map((m) => {
+      const source = record.messages as unknown[];
+      const maskedMessages: unknown[] = new Array(source.length);
+      for (let index = 0; index < source.length; index++) {
+        const m = source[index];
+        const resolved = resolveMaskedMessage(m, index);
+        maskedMessages[index] = resolved.masked;
+        // Cache hits mean the context hook already sent this exact content
+        // through the masker — only fills can be boundary interceptions.
+        // Assistant re-masking at this boundary is bookkeeping and never
+        // counts toward the fallback notice.
         const role = (m as { role?: string } | null)?.role;
-        const isAssistant = role === "assistant";
-        const r = masker.maskValue(m, maskOptionsForRole(role));
-        // Assistant re-masking at this boundary is bookkeeping (idempotent
-        // on the context hook's output); only genuinely intercepted
-        // user/tool-side values count toward the fallback notice.
-        if (!isAssistant) intercepted += r.count;
-        return r.value;
-      });
-      record.messages = masked;
+        if (!resolved.fromCache && role !== "assistant") intercepted += resolved.count;
+        if (resolved.masked !== m) changedCount++;
+      }
+      // Replace the payload only when something actually differs; system and
+      // prompt below are still scanned unconditionally either way.
+      if (changedCount > 0) record.messages = maskedMessages;
     }
     if (typeof record.system === "string") {
-      const r = masker.mask(record.system, { discover: true });
+      const r = maskSystemPromptCached(record.system);
       if (r.count > 0) {
         record.system = r.text;
         intercepted += r.count;
@@ -2096,6 +2233,9 @@ export default async function (pi: ExtensionAPI) {
       }
       config = { ...config, enabled };
       masker = buildMasker(enabled ? config.rules : []);
+      // Bypasses rebuild(), so clear the masked-output caches explicitly:
+      // toggling must never serve cached outputs across an enable cycle.
+      invalidateMaskedCaches();
       ctx.ui.notify(`Data masking ${enabled ? "enabled" : "disabled"} (saved for future sessions)`, "info");
       notifyWarnings(ctx, masker.warnings);
       updateStatus(ctx);

@@ -6,6 +6,14 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ## [Unreleased]
 
+### Changed
+
+- Cache masked message output across requests: each turn now masks only new or changed messages instead of re-scanning the whole conversation twice (context hook + provider-boundary safety net). Cache fills run the full provenance-registering mask; hits require a content fingerprint match and are cleared whenever rules, case sensitivity, masking toggle, or session change. Snapshot persistence and transcript bookkeeping share the same per-message fingerprints to skip unchanged history.
+
+### Added
+
+- Add `tests/perf-mask.bench.ts`, a manual benchmark for the masking hot path (`node tests/perf-mask.bench.ts`).
+
 ## [0.5.0] - 2026-08-24
 
 ### Added
