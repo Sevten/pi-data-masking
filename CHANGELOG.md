@@ -6,6 +6,10 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ## [Unreleased]
 
+### Fixed
+
+- Make masked-output cache lookups match either the original input fingerprint or the stored masked-output fingerprint. The provider boundary re-checks the context hook's already-masked output, so single-hash lookups missed, overwrote the entry, and made the next context pass re-mask unchanged sensitive messages.
+
 ### Changed
 
 - Cache masked message output across requests: each turn now masks only new or changed messages instead of re-scanning the whole conversation twice (context hook + provider-boundary safety net). Cache fills run the full provenance-registering mask; hits require a content fingerprint match and are cleared whenever rules, case sensitivity, masking toggle, or session change. Snapshot persistence and transcript bookkeeping share the same per-message fingerprints to skip unchanged history.

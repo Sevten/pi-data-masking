@@ -43,6 +43,33 @@ test("cache serves hits only when the content fingerprint matches", () => {
   assert.equal(cache.lookup("tool:other", "hash-a"), undefined);
 });
 
+test("masked-output hash is also a hit and never replaces the original mapping", () => {
+  // Regression for PR #2 review: the context hook records entries under the
+  // original hash, but before_provider_request receives the context hook's
+  // masked output and looks it up by the masked hash. If only the original
+  // hash matched, that lookup missed, overwrote the entry under the masked
+  // hash, and made the next context(original) miss again — sensitive
+  // messages thrashed between the two hashes and never hit.
+  const cache = new MaskedCache();
+  const masked = { role: "user", content: "call [PHONE_1]" };
+  cache.record("user:index:0", "hash-original", "hash-masked", masked);
+
+  // provider(masked): hits via the stored masked-output hash…
+  const viaMasked = cache.lookup("user:index:0", "hash-masked");
+  assert.ok(viaMasked);
+  assert.ok(viaMasked === cache.lookup("user:index:0", "hash-original"));
+  assert.equal(viaMasked!.masked, masked);
+  assert.equal(viaMasked!.hash, "hash-original");
+
+  // …without replacing the entry, so the next context(original) still hits.
+  const nextContext = cache.lookup("user:index:0", "hash-original");
+  assert.ok(nextContext);
+  assert.equal(nextContext!.masked, masked);
+
+  // An unrelated fingerprint under the same key still misses.
+  assert.equal(cache.lookup("user:index:0", "hash-other"), undefined);
+});
+
 test("cache clears wholesale at capacity instead of tracking LRU order", () => {
   const cache = new MaskedCache();
   for (let index = 0; index < MASKED_CACHE_MAX_ENTRIES; index++) {

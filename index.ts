@@ -294,9 +294,13 @@ export default async function (pi: ExtensionAPI) {
     const hash = hashMessage(message);
     const cached = maskedCache.lookup(key, hash);
     if (cached) {
+      // Serve the entry's canonical pair: a hit may have matched via the
+      // stored masked-output hash (provider boundary re-checks the context
+      // hook's output), and pair.original must stay the un-masked
+      // fingerprint either way.
       return {
         masked: cached.masked,
-        pair: { original: hash, masked: cached.maskedHash },
+        pair: { original: cached.hash, masked: cached.maskedHash },
         fromCache: true,
         count: 0,
       };

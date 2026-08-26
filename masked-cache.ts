@@ -15,10 +15,19 @@
  *  - Fill always runs the full masker.maskValue(), so provenance side
  *    effects (shouldMaskSpan registering protected/llmInvented values)
  *    happen exactly once, at fill time. Hits skip only the regex work.
- *  - A hit requires the ORIGINAL content fingerprint to match, so any
- *    mutation of a payload object between hooks is re-masked, never served
- *    stale. Key collisions (e.g. transcriptKey's role:index fallback
- *    shifting after appends) degrade to misses, never false hits.
+ *  - A hit requires a content fingerprint match against EITHER the entry's
+ *    original input hash or its stored masked-output hash. The context hook
+ *    records entries under the original hash, while before_provider_request
+ *    receives the context hook's masked output and looks it up by the masked
+ *    hash — accepting both keeps those alternating views on one entry
+ *    instead of missing and overwriting each other (which would make every
+ *    sensitive message thrash between the two hashes and never hit). A hit
+ *    never replaces the stored original mapping, so the next context(original)
+ *    still resolves. Masking is idempotent over placeholders, so serving an
+ *    entry's masked output for its masked input equals a fresh maskValue run;
+ *    any genuinely different payload under the same key degrades to a miss
+ *    (key collisions like transcriptKey's role:index fallback shifting after
+ *    appends), never a false hit.
  *  - invalidate() must be called whenever masker inputs change: rebuild()
  *    (rules, caseSensitive), /masking-toggle (bypasses rebuild()), and
  *    session_start (fresh sessionKey + provenance sets). Clearing is always
@@ -72,10 +81,18 @@ export class MaskedCache {
     return this.entries.size;
   }
 
-  /** Cached entry for key, but only when the content fingerprint matches. */
+  /**
+   * Cached entry for key when the fingerprint matches the recorded ORIGINAL
+   * hash or the stored masked-output hash. The masked-hash branch serves the
+   * provider boundary (whose input is the context hook's already-masked
+   * output) without touching the entry: the original mapping survives so the
+   * next context(original) lookup still hits.
+   */
   lookup(key: string, hash: string): MaskedCacheEntry | undefined {
     const entry = this.entries.get(key);
-    return entry !== undefined && entry.hash === hash ? entry : undefined;
+    return entry !== undefined && (entry.hash === hash || entry.maskedHash === hash)
+      ? entry
+      : undefined;
   }
 
   record(key: string, hash: string, maskedHash: string, masked: unknown): void {
