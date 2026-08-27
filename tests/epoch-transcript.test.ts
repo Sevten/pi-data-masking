@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   EPOCH_TRANSCRIPT_ENTRY,
   createEpochTranscriptState,
+  findObservedPrefixImpact,
   markEpochBatchPersisted,
   mergeEpochFacts,
   restoreEpochTranscripts,
@@ -106,6 +107,42 @@ test("a newer epoch contains only messages it actually processed after compactio
 
   assert.deepEqual(firstEpoch.entries.map((entry) => entry.messageKey), ["user:1", "user:2"]);
   assert.deepEqual(secondEpoch.entries.map((entry) => entry.messageKey), ["user:2"]);
+});
+
+test("prefix impact compares only factual shared messages and reports the earliest change", () => {
+  const previous = createEpochTranscriptState(epoch(1));
+  const unchanged = { role: "user", timestamp: 1, content: "unchanged" };
+  const changed = { role: "assistant", timestamp: 2, content: "secret" };
+  mergeEpochFacts(previous, [
+    observation(unchanged, unchanged, "user:1"),
+    observation(changed, { ...changed, content: "MASK-1" }, "assistant:2"),
+  ]);
+
+  const newTail = { role: "user", timestamp: 3, content: "new secret" };
+  const observations = [
+    observation(unchanged, unchanged, "user:1"),
+    observation(changed, { ...changed, content: "MASK-2" }, "assistant:2"),
+    observation(newTail, { ...newTail, content: "NEW-MASK" }, "user:3"),
+  ];
+  const impact = findObservedPrefixImpact(previous, observations);
+
+  assert.deepEqual(impact, {
+    changedMessageCount: 1,
+    firstChangedIndex: 1,
+    firstChangedMessageKey: "assistant:2",
+  });
+});
+
+test("prefix impact stays silent for new tails, missing compacted facts, and equal output", () => {
+  const previous = createEpochTranscriptState(epoch(1));
+  const retained = { role: "user", timestamp: 2, content: "same" };
+  mergeEpochFacts(previous, [observation(retained, retained, "user:2")]);
+  const newTail = { role: "user", timestamp: 3, content: "new" };
+
+  assert.equal(findObservedPrefixImpact(previous, [
+    observation(retained, retained, "user:2"),
+    observation(newTail, { ...newTail, content: "MASK" }, "user:3"),
+  ]), undefined);
 });
 
 test("invalid or unknown epoch batches are ignored during recovery", () => {

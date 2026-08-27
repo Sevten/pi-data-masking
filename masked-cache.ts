@@ -28,6 +28,9 @@
  *    any genuinely different payload under the same key degrades to a miss
  *    (key collisions like transcriptKey's role:index fallback shifting after
  *    appends), never a false hit.
+ *  - The canonical cached output is cloned on both record and lookup. Callers
+ *    may pass results through other extensions or provider adapters that
+ *    mutate objects; those writes must never corrupt a future cache hit.
  *  - invalidate() must be called whenever masker inputs change: rebuild()
  *    (rules, caseSensitive), /masking-toggle (bypasses rebuild()), and
  *    session_start (fresh sessionKey + provenance sets). Clearing is always
@@ -64,13 +67,7 @@ export interface MaskedCacheEntry {
   /** Fingerprint of the masked output; lets snapshot persistence skip
    *  re-diffing messages whose masked form provably did not change. */
   maskedHash: string;
-  /**
-   * Stored AND served BY REFERENCE: the same object may be handed to many
-   * consecutive requests (context hook return value and provider payload).
-   * Callers must treat it as read-only shared state — fingerprint checks
-   * protect against input-side mutations, not output-side ones. Mutating a
-   * served value would corrupt every future hit for that key.
-   */
+  /** An isolated copy of the canonical cached model-facing value. */
   masked: unknown;
 }
 
@@ -90,14 +87,13 @@ export class MaskedCache {
    */
   lookup(key: string, hash: string): MaskedCacheEntry | undefined {
     const entry = this.entries.get(key);
-    return entry !== undefined && (entry.hash === hash || entry.maskedHash === hash)
-      ? entry
-      : undefined;
+    if (entry === undefined || (entry.hash !== hash && entry.maskedHash !== hash)) return undefined;
+    return { ...entry, masked: structuredClone(entry.masked) };
   }
 
   record(key: string, hash: string, maskedHash: string, masked: unknown): void {
     if (this.entries.size >= MASKED_CACHE_MAX_ENTRIES) this.entries.clear();
-    this.entries.set(key, { hash, maskedHash, masked });
+    this.entries.set(key, { hash, maskedHash, masked: structuredClone(masked) });
   }
 
   invalidate(): void {

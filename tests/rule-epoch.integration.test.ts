@@ -106,7 +106,8 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     assert.equal(first.messages[0]!.content, "use masked-service-token");
 
     await harness.command("masking-toggle");
-    assert.ok(harness.notifications.some((message) => message.includes("queued for the next agent run")));
+    assert.ok(harness.notifications.some((message) => message.includes("active run keeps its current rules")));
+    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
 
     // The persisted toggle changed, but every context/tool operation in this
     // still-running agent uses E1 and its placeholder map.
@@ -124,14 +125,17 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     await harness.emit("before_agent_start", { systemPrompt: "system", prompt: "next" });
     assert.deepEqual(epochs(harness.entries).map((epoch) => epoch.epochId), [1, 2]);
     assert.ok(epochs(harness.entries)[1]!.changes.some((change) => change.kind === "masking_disabled"));
+    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
     const disabledResult = await harness.emit("context", { messages: [structuredClone(original)] });
     assert.equal(disabledResult, undefined);
+    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 1);
     assert.equal(epochBatches(harness.entries).filter((batch) => batch.epochId === 2).length, 1);
     const disabledInjected = { role: "user", timestamp: 98, content: "unmasked while disabled" };
     await harness.emit("before_provider_request", { payload: { messages: [disabledInjected] } });
     const e2Batches = epochBatches(harness.entries).filter((batch) => batch.epochId === 2);
     assert.equal(e2Batches.length, 2);
     assert.equal(e2Batches[1]!.messages[0]!.messageKey, "user:98");
+    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 1);
 
     // Two edits during E2 coalesce to the original disabled behavior, so the
     // next run reuses E2 instead of creating unused E3/E4 epochs.
@@ -150,7 +154,7 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     writeFileSync(join(configDir, "masking.config.json"), JSON.stringify({
       rules: [{ id: "token", real: "secret-service-token", placeholder: "rotated-mask-value" }],
     }));
-    await waitFor(() => harness.notifications.some((message) => message.includes("reload queued")));
+    await waitFor(() => harness.notifications.some((message) => message.includes("reload saved")));
 
     const beforeReloadActivation = await harness.emit("context", { messages: [structuredClone(original)] }) as {
       messages: Array<{ content: string }>;

@@ -63,6 +63,13 @@ export interface EpochTranscriptMergeResult {
   batch?: EpochTranscriptBatch;
 }
 
+export interface ObservedPrefixImpact {
+  changedMessageCount: number;
+  /** Zero-based position in the factual observation order. */
+  firstChangedIndex: number;
+  firstChangedMessageKey: string;
+}
+
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -85,6 +92,38 @@ export function createEpochTranscriptState(epoch: RuleEpoch): EpochTranscriptSta
     entries: [],
     records: new Map(),
     persistedMaskedHashes: new Map(),
+  };
+}
+
+/**
+ * Compare only representations that actually occurred in both epochs. This is
+ * deliberately not a rule replay: new messages and compacted-away messages
+ * without a factual counterpart are excluded.
+ */
+export function findObservedPrefixImpact(
+  previous: EpochTranscriptState,
+  observations: readonly Pick<EpochFactObservation, "messageKey" | "hashes">[],
+): ObservedPrefixImpact | undefined {
+  const changedRecords = new Set<string>();
+  let firstChangedIndex = -1;
+  let firstChangedMessageKey = "";
+
+  for (let index = 0; index < observations.length; index++) {
+    const observation = observations[index]!;
+    const recordKey = epochRecordKey(observation.messageKey, observation.hashes.original);
+    const prior = previous.records.get(recordKey);
+    if (!prior || prior.maskedHash === observation.hashes.masked || changedRecords.has(recordKey)) continue;
+    changedRecords.add(recordKey);
+    if (firstChangedIndex < 0) {
+      firstChangedIndex = index;
+      firstChangedMessageKey = observation.messageKey;
+    }
+  }
+
+  return firstChangedIndex < 0 ? undefined : {
+    changedMessageCount: changedRecords.size,
+    firstChangedIndex,
+    firstChangedMessageKey,
   };
 }
 

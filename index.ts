@@ -105,6 +105,7 @@ import {
 import {
   EPOCH_TRANSCRIPT_ENTRY,
   createEpochTranscriptState,
+  findObservedPrefixImpact,
   markEpochBatchPersisted,
   mergeEpochFacts,
   restoreEpochTranscripts,
@@ -255,6 +256,7 @@ export default async function (pi: ExtensionAPI) {
   let activeRuleEpoch: RuleEpoch | undefined;
   let activeEpochConfig: MaskingConfig | undefined;
   let persistedEpochIds = new Set<number>();
+  let prefixImpactHandledEpochIds = new Set<number>();
   let agentRunActive = false;
   let pendingConfigActivation: { config: MaskingConfig; reason: RuleEpochReason } | null = null;
 
@@ -393,12 +395,42 @@ export default async function (pi: ExtensionAPI) {
     return state;
   }
 
+  function previousFactualEpochState(epochId: number): EpochTranscriptState | undefined {
+    return [...epochTranscripts.values()]
+      .filter((candidate) => candidate.epoch.epochId < epochId && candidate.entries.length > 0)
+      .sort((left, right) => left.epoch.epochId - right.epoch.epochId)
+      .at(-1);
+  }
+
+  function notifyObservedPrefixImpact(
+    ctx: ExtensionContext,
+    epoch: RuleEpoch,
+    observations: readonly EpochFactObservation[],
+    completeContext: boolean,
+  ): void {
+    if (prefixImpactHandledEpochIds.has(epoch.epochId)) return;
+    const previous = previousFactualEpochState(epoch.epochId);
+    const impact = previous ? findObservedPrefixImpact(previous, observations) : undefined;
+    // A full context observation covers every historical message that this
+    // epoch actually processed. Provider-only observations can be partial, so
+    // a no-change result there must remain eligible for the later context.
+    if (completeContext || impact) prefixImpactHandledEpochIds.add(epoch.epochId);
+    if (!impact) return;
+    const count = impact.changedMessageCount;
+    ctx.ui.notify(
+      `⚠️ E${epoch.epochId} has actually changed the model input for ${count} existing message${count === 1 ? "" : "s"}; the earliest observed changed conversation message is #${impact.firstChangedIndex + 1}, so provider prefix-cache reuse may decrease`,
+      "warning",
+    );
+  }
+
   function observeEpochFacts(
     ctx: ExtensionContext,
     observations: readonly EpochFactObservation[],
     capturedAt = Date.now(),
+    completeContext = false,
   ): void {
     if (!activeRuleEpoch || observations.length === 0) return;
+    notifyObservedPrefixImpact(ctx, activeRuleEpoch, observations, completeContext);
     const state = ensureEpochTranscript(activeRuleEpoch);
     const { batch } = mergeEpochFacts(state, observations, capturedAt);
     if (!batch || !config.options.persistHistory) return;
@@ -488,7 +520,10 @@ export default async function (pi: ExtensionAPI) {
     pendingConfigActivation = null;
     activateConfig(pending.config, pending.reason, ctx);
     ensureSessionStatePersisted(ctx);
-    ctx.ui.notify(`🔒 Pending masking changes activated as E${activeRuleEpoch?.epochId ?? 1}`, "info");
+    ctx.ui.notify(
+      `🔒 Pending masking changes activated as E${activeRuleEpoch?.epochId ?? 1} for this agent run; previously recorded masking facts remain unchanged`,
+      "info",
+    );
     updateStatus(ctx);
   }
 
@@ -528,7 +563,10 @@ export default async function (pi: ExtensionAPI) {
       [...loaded.warnings, ...persisted.warnings],
     );
     if (disposition === "queued") {
-      ctx.ui.notify("Masking changes are saved and will activate before the next agent run", "info");
+      ctx.ui.notify(
+        "Masking changes are saved; the active agent run keeps its current rules, the final change activates before the next run, and recorded history is not rewritten",
+        "info",
+      );
     }
   }
 
@@ -624,6 +662,11 @@ export default async function (pi: ExtensionAPI) {
     activeRuleEpoch = ruleEpochs.at(-1);
     activeEpochConfig = undefined;
     persistedEpochIds = new Set(ruleEpochs.map((epoch) => epoch.epochId));
+    // Existing factual epochs were evaluated in the process that produced
+    // their stored observations; do not repeat historical warnings on resume.
+    prefixImpactHandledEpochIds = new Set([...epochTranscripts.values()]
+      .filter((state) => state.entries.length > 0)
+      .map((state) => state.epoch.epochId));
     agentRunActive = false;
     pendingConfigActivation = null;
     dynamicPlaceholderMap = new Map();
@@ -671,8 +714,8 @@ export default async function (pi: ExtensionAPI) {
       if (disposition === "activated") ensureSessionStatePersisted(ctx);
       ctx.ui.notify(
         disposition === "queued"
-          ? "🔒 Masking config reload queued for the next agent run"
-          : `🔒 Masking config reloaded (${persistedReload.config.rules.length} active / ${persistedReload.config.configuredRules.length} configured)`,
+          ? "🔒 Masking config reload saved; the active run keeps its current rules, the reload activates before the next run, and recorded history is not rewritten"
+          : `🔒 Masking config reloaded (${persistedReload.config.rules.length} active / ${persistedReload.config.configuredRules.length} configured); recorded history remains unchanged`,
         "info"
       );
     });
@@ -703,7 +746,7 @@ export default async function (pi: ExtensionAPI) {
         disabledPairs.push({ original: hash, masked: hash });
       }
       transcript = mergeTranscript(transcript, originals, originals, capturedAt, disabledPairs);
-      observeEpochFacts(ctx, epochObservations(originals, originals, disabledPairs), capturedAt);
+      observeEpochFacts(ctx, epochObservations(originals, originals, disabledPairs), capturedAt, true);
       persistSnapshots(ctx, originals, originals, disabledPairs);
       return;
     }
@@ -744,7 +787,7 @@ export default async function (pi: ExtensionAPI) {
       capturedAt,
       contentHashes,
     );
-    observeEpochFacts(ctx, epochObservations(originals, maskedMessages, contentHashes), capturedAt);
+    observeEpochFacts(ctx, epochObservations(originals, maskedMessages, contentHashes), capturedAt, true);
     persistSnapshots(ctx, originals, maskedMessages, contentHashes);
     return { messages: maskedMessages as unknown as typeof event.messages };
   });
@@ -894,7 +937,7 @@ export default async function (pi: ExtensionAPI) {
         // counts toward the fallback notice.
         const role = (m as { role?: string } | null)?.role;
         if (!resolved.fromCache && role !== "assistant") intercepted += resolved.count;
-        if (resolved.masked !== m) changedCount++;
+        if (hashMessage(m) !== resolved.pair.masked) changedCount++;
       }
       // Replace the payload only when something actually differs; system and
       // prompt below are still scanned unconditionally either way.
@@ -2467,8 +2510,8 @@ export default async function (pi: ExtensionAPI) {
       const disposition = acceptConfigChange(ctx, { ...baseConfig, enabled }, "toggle");
       ctx.ui.notify(
         disposition === "queued"
-          ? `Data masking ${enabled ? "enable" : "disable"} queued for the next agent run (saved)`
-          : `Data masking ${enabled ? "enabled" : "disabled"} (saved for future sessions)`,
+          ? `Data masking ${enabled ? "enable" : "disable"} saved; the active run keeps its current rules, the change activates before the next run, and recorded history is not rewritten`
+          : `Data masking ${enabled ? "enabled" : "disabled"}; previously recorded masking facts remain unchanged (saved for future sessions)`,
         "info",
       );
     },

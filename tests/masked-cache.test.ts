@@ -57,17 +57,31 @@ test("masked-output hash is also a hit and never replaces the original mapping",
   // provider(masked): hits via the stored masked-output hash…
   const viaMasked = cache.lookup("user:index:0", "hash-masked");
   assert.ok(viaMasked);
-  assert.ok(viaMasked === cache.lookup("user:index:0", "hash-original"));
-  assert.equal(viaMasked!.masked, masked);
+  assert.deepEqual(viaMasked!.masked, masked);
   assert.equal(viaMasked!.hash, "hash-original");
 
   // …without replacing the entry, so the next context(original) still hits.
   const nextContext = cache.lookup("user:index:0", "hash-original");
   assert.ok(nextContext);
-  assert.equal(nextContext!.masked, masked);
+  assert.deepEqual(nextContext!.masked, masked);
 
   // An unrelated fingerprint under the same key still misses.
   assert.equal(cache.lookup("user:index:0", "hash-other"), undefined);
+});
+
+test("cache clones recorded and returned values so callers cannot corrupt later hits", () => {
+  const cache = new MaskedCache();
+  const recorded = { role: "user", content: [{ type: "text", text: "MASK" }] };
+  cache.record("user:index:0", "hash-original", "hash-masked", recorded);
+
+  recorded.content[0]!.text = "mutated after record";
+  const first = cache.lookup("user:index:0", "hash-original")!;
+  assert.equal((first.masked as typeof recorded).content[0]!.text, "MASK");
+
+  (first.masked as typeof recorded).content[0]!.text = "mutated returned hit";
+  const second = cache.lookup("user:index:0", "hash-original")!;
+  assert.equal((second.masked as typeof recorded).content[0]!.text, "MASK");
+  assert.notEqual(first.masked, second.masked);
 });
 
 test("cache clears wholesale at capacity instead of tracking LRU order", () => {

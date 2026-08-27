@@ -88,6 +88,19 @@ The replacement is operationally believable, not semantically equivalent to the 
 
 The same real value maps to the same placeholder throughout a conversation. Reopening a persisted Pi conversation restores the same session key and model-facing history, keeping earlier prefixes stable. A new conversation uses a new key.
 
+When masking behavior changes, the activation notice explains which agent run
+keeps the old rules and confirms that recorded history is not rewritten. It
+does not claim that a provider cache was affected. On the first complete,
+actual context under the new rule version, shared historical messages are
+compared with the most recent factual epoch. A prefix-cache warning appears
+once only when their stored model-input fingerprints really differ; new tail
+messages, compacted-away messages, and unchanged output do not trigger it.
+
+The warning reports an observed conversation-message change, not a simulated
+rule replay or a guaranteed provider cache miss. Provider serialization,
+tokenization, system-prompt changes, and cache policy remain outside this
+message-level comparison.
+
 ### Transparent tool execution
 
 The model plans tool calls using placeholders. Immediately before a tool runs, matching placeholders in its arguments are restored to their real values. Tool results remain real in the local conversation and are masked again before the next model request.

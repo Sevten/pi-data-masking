@@ -13,6 +13,8 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
   Transcript clone-skipping now requires both original and masked fingerprints
   to match.
 - Make masked-output cache lookups match either the original input fingerprint or the stored masked-output fingerprint. The provider boundary re-checks the context hook's already-masked output, so single-hash lookups missed, overwrote the entry, and made the next context pass re-mask unchanged sensitive messages.
+- Isolate cached masked values by cloning both stored and returned objects, so
+  mutation by a later extension or provider adapter cannot corrupt future hits.
 
 ### Changed
 
@@ -20,6 +22,9 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
   calls. Toggles and config reloads received mid-run are coalesced and activate
   before the next run, keeping placeholder unmasking consistent.
 - Cache masked message output across requests: each turn now masks only new or changed messages instead of re-scanning the whole conversation twice (context hook + provider-boundary safety net). Cache fills run the full provenance-registering mask; hits require a content fingerprint match and are cleared whenever rules, case sensitivity, masking toggle, or session change. Snapshot persistence and transcript bookkeeping share the same per-message fingerprints to skip unchanged history.
+- Separate rule-activation guidance from prefix-cache warnings. Activation
+  notices describe the in-flight boundary and immutable past; cache impact is
+  reported only after factual model-input fingerprints actually differ.
 
 ### Added
 
@@ -31,6 +36,10 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
   actually processed by the selected version, hides unused versions, preserves
   compacted facts in their original epoch, and restores valid records without
   accepting late mutations to closed epochs.
+- Compare shared factual messages with the latest prior epoch on the first real
+  context after a rule change. A once-per-epoch warning reports the earliest
+  observed changed conversation message without simulating old rules or
+  predicting provider-specific cache hits.
 - Add `tests/perf-mask.bench.ts`, a manual benchmark for the masking hot path (`node tests/perf-mask.bench.ts`).
 
 ## [0.5.0] - 2026-08-24
