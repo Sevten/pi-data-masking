@@ -96,6 +96,49 @@ test("single mapping hides navigation while multiple mappings jump to their mess
   assert.doesNotMatch(selected, /first-secret/);
 });
 
+test("M toggles original and masked views while Ctrl+M is not captured", () => {
+  let renderRequests = 0;
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (_color: unknown, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    inverse: (text: string) => text,
+    underline: (text: string) => text,
+  };
+  const viewer = createHistoryViewer(
+    { terminal: { rows: 12 }, requestRender: () => { renderRequests++; } },
+    theme,
+    { matches: () => false },
+    [{
+      key: "user:1",
+      original: { role: "user", content: "mysecret" },
+      masked: { role: "user", content: "maskedsecret" },
+      capturedAt: 1,
+    }],
+    () => undefined,
+  );
+
+  const original = viewer.render(120).join("\n");
+  assert.match(original, /LOCAL ORIGINAL/);
+  assert.match(original, /M original\/masked · C side-by-side compare/);
+
+  viewer.handleInput?.("m");
+  const masked = viewer.render(120).join("\n");
+  assert.match(masked, /MODEL INPUT/);
+  assert.equal(renderRequests, 1);
+
+  // Ctrl+M is carriage return in terminals; leave it to the host instead of
+  // treating Enter as a history-view mode switch.
+  viewer.handleInput?.("\r");
+  assert.match(viewer.render(120).join("\n"), /MODEL INPUT/);
+  assert.equal(renderRequests, 1);
+
+  viewer.handleInput?.("M");
+  assert.match(viewer.render(120).join("\n"), /LOCAL ORIGINAL/);
+  assert.equal(renderRequests, 2);
+});
+
 test("selected replacement styling does not reset the surrounding message background", () => {
   const calls: string[] = [];
   const theme = {

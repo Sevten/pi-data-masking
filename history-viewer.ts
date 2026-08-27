@@ -4,7 +4,6 @@ import {
   Markdown,
   Spacer,
   Text,
-  matchesKey,
   truncateToWidth,
   visibleWidth,
   type Component,
@@ -715,7 +714,7 @@ export function createHistoryViewer(
           : "Left: local original · Right: model input · highlighted spans differ";
       const footerPrefix = options.footerPrefix ? `${options.footerPrefix} · ` : "";
       const mappingControl = replacements.length > 1 ? " · N/P mapping" : "";
-      const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll · Ctrl+M or M model · C compare${mappingControl} · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
+      const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll · M original/masked · C side-by-side compare${mappingControl} · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
       const lines = [
         truncateToWidth(header, width),
         ...(options.subtitle ? [theme.fg("muted", truncateToWidth(options.subtitle, width))] : []),
@@ -737,7 +736,7 @@ export function createHistoryViewer(
         thinkingVisible = !thinkingVisible;
         cacheVersion++;
       }
-      else if (data === "m" || data === "M" || matchesKey(data, "ctrl+m")) toggleModelView();
+      else if (data === "m" || data === "M") toggleModelView();
       else if (data === "c" || data === "C") toggleCompareView();
       else if ((data === "n" || data === "N") && replacements.length > 1) selectReplacement(1);
       else if ((data === "p" || data === "P") && replacements.length > 1) selectReplacement(-1);
