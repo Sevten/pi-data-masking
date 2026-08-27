@@ -3,9 +3,11 @@ import test from "node:test";
 import {
   EPOCH_TRANSCRIPT_ENTRY,
   createEpochTranscriptState,
+  findObservedPrefixComponentImpact,
   findObservedPrefixImpact,
   markEpochBatchPersisted,
   mergeEpochFacts,
+  mergeEpochPrefixObservation,
   restoreEpochTranscripts,
   type EpochFactObservation,
 } from "../epoch-transcript.ts";
@@ -143,6 +145,42 @@ test("prefix impact stays silent for new tails, missing compacted facts, and equ
     observation(retained, retained, "user:2"),
     observation(newTail, { ...newTail, content: "MASK" }, "user:3"),
   ]), undefined);
+});
+
+test("provider prefix facts persist once, restore without plaintext, and prioritize system", () => {
+  const first = createEpochTranscriptState(epoch(1));
+  const sourceHash = "a".repeat(64);
+  const firstSystemHash = "b".repeat(64);
+  const firstPromptHash = "c".repeat(64);
+  const firstObservation = {
+    observedAt: 10,
+    system: { sourceHash, emittedHash: firstSystemHash },
+    prompt: { sourceHash, emittedHash: firstPromptHash },
+  };
+  const batch = mergeEpochPrefixObservation(first, firstObservation).batch!;
+  assert.equal(batch.messages.length, 0);
+  assert.equal(JSON.stringify(batch).includes("system secret"), false);
+  markEpochBatchPersisted(first, batch);
+  assert.equal(mergeEpochPrefixObservation(first, { ...firstObservation, observedAt: 20 }).batch, undefined);
+
+  const restored = restoreEpochTranscripts([
+    { type: "custom", customType: "pi-data-masking.rule-epoch.v1", data: first.epoch },
+    { type: "custom", customType: EPOCH_TRANSCRIPT_ENTRY, data: batch },
+  ], [first.epoch], []);
+  assert.deepEqual(restored.get(1)!.prefixObservation, firstObservation);
+  assert.equal(restored.get(1)!.prefixPersisted, true);
+
+  const secondSystem = {
+    observedAt: 30,
+    system: { sourceHash, emittedHash: "d".repeat(64) },
+    prompt: { sourceHash, emittedHash: "e".repeat(64) },
+  };
+  assert.equal(findObservedPrefixComponentImpact(restored.get(1)!, secondSystem), "system");
+  assert.equal(findObservedPrefixComponentImpact(restored.get(1)!, {
+    observedAt: 30,
+    system: { sourceHash: "f".repeat(64), emittedHash: "d".repeat(64) },
+    prompt: { sourceHash, emittedHash: "e".repeat(64) },
+  }), "prompt");
 });
 
 test("invalid or unknown epoch batches are ignored during recovery", () => {

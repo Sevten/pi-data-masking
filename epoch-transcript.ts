@@ -40,6 +40,20 @@ export interface EpochTranscriptBatch {
   epochId: number;
   capturedAt: number;
   messages: PersistedEpochMessage[];
+  prefix?: EpochPrefixObservation;
+}
+
+export interface PrefixComponentFingerprint {
+  /** Session-keyed HMAC of the component before this extension masks it. */
+  sourceHash: string;
+  /** Session-keyed HMAC of the exact component emitted by this boundary. */
+  emittedHash: string;
+}
+
+export interface EpochPrefixObservation {
+  observedAt: number;
+  system?: PrefixComponentFingerprint;
+  prompt?: PrefixComponentFingerprint;
 }
 
 export interface EpochTranscriptEntry extends TranscriptEntry {
@@ -57,6 +71,9 @@ export interface EpochTranscriptState {
   records: Map<string, EpochTranscriptEntry>;
   /** The masked fingerprint last successfully appended for each record. */
   persistedMaskedHashes: Map<string, string>;
+  /** First factual provider-prefix observation under this epoch. */
+  prefixObservation?: EpochPrefixObservation;
+  prefixPersisted: boolean;
 }
 
 export interface EpochTranscriptMergeResult {
@@ -69,6 +86,8 @@ export interface ObservedPrefixImpact {
   firstChangedIndex: number;
   firstChangedMessageKey: string;
 }
+
+export type ObservedPrefixComponentImpact = "system" | "prompt";
 
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -92,6 +111,42 @@ export function createEpochTranscriptState(epoch: RuleEpoch): EpochTranscriptSta
     entries: [],
     records: new Map(),
     persistedMaskedHashes: new Map(),
+    prefixPersisted: false,
+  };
+}
+
+/** System has precedence because it appears before provider prompt content. */
+export function findObservedPrefixComponentImpact(
+  previous: EpochTranscriptState,
+  current: EpochPrefixObservation,
+): ObservedPrefixComponentImpact | undefined {
+  const prior = previous.prefixObservation;
+  if (!prior) return undefined;
+  for (const component of ["system", "prompt"] as const) {
+    const before = prior[component];
+    const after = current[component];
+    if (before && after && before.sourceHash === after.sourceHash && before.emittedHash !== after.emittedHash) {
+      return component;
+    }
+  }
+  return undefined;
+}
+
+/** Keep one first-provider fact per epoch; repeated tool calls add no request list. */
+export function mergeEpochPrefixObservation(
+  state: EpochTranscriptState,
+  observation: EpochPrefixObservation,
+): EpochTranscriptMergeResult {
+  state.prefixObservation ??= structuredClone(observation);
+  if (state.prefixPersisted) return {};
+  return {
+    batch: {
+      version: 1,
+      epochId: state.epoch.epochId,
+      capturedAt: state.prefixObservation.observedAt,
+      messages: [],
+      prefix: structuredClone(state.prefixObservation),
+    },
   };
 }
 
@@ -208,6 +263,20 @@ export function markEpochBatchPersisted(
   for (const message of batch.messages) {
     state.persistedMaskedHashes.set(message.recordKey, message.maskedHash);
   }
+  if (batch.prefix) state.prefixPersisted = true;
+}
+
+function parsePrefixComponent(value: unknown): PrefixComponentFingerprint | undefined {
+  if (!isRecord(value) || !isHash(value.sourceHash) || !isHash(value.emittedHash)) return undefined;
+  return { sourceHash: value.sourceHash, emittedHash: value.emittedHash };
+}
+
+function parseEpochPrefixObservation(value: unknown): EpochPrefixObservation | undefined {
+  if (!isRecord(value) || !isFiniteTimestamp(value.observedAt)) return undefined;
+  const system = value.system === undefined ? undefined : parsePrefixComponent(value.system);
+  const prompt = value.prompt === undefined ? undefined : parsePrefixComponent(value.prompt);
+  if ((value.system !== undefined && !system) || (value.prompt !== undefined && !prompt)) return undefined;
+  return { observedAt: value.observedAt, system, prompt };
 }
 
 function parsePersistedEpochMessage(value: unknown): PersistedEpochMessage | undefined {
@@ -247,11 +316,14 @@ export function parseEpochTranscriptBatch(value: unknown): EpochTranscriptBatch 
   ) return undefined;
   const messages = value.messages.map(parsePersistedEpochMessage);
   if (messages.some((message) => message === undefined)) return undefined;
+  const prefix = value.prefix === undefined ? undefined : parseEpochPrefixObservation(value.prefix);
+  if (value.prefix !== undefined && !prefix) return undefined;
   return {
     version: 1,
     epochId: value.epochId,
     capturedAt: value.capturedAt,
     messages: messages as PersistedEpochMessage[],
+    prefix,
   };
 }
 
@@ -292,6 +364,11 @@ export function restoreEpochTranscripts(
     // A transcript can grow only while its owning epoch is the active record
     // in the append-only log. Late batches cannot mutate a closed epoch.
     if (!batch || !state || batch.epochId !== activeEpochId) continue;
+
+    if (batch.prefix && !state.prefixObservation) {
+      state.prefixObservation = structuredClone(batch.prefix);
+      state.prefixPersisted = true;
+    }
 
     for (const message of batch.messages) {
       const original = originalsByRecordKey.get(message.recordKey);

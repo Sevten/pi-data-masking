@@ -85,6 +85,10 @@ function epochBatches(entries: Array<{ customType: string; data: unknown }>): Ep
     .map((entry) => entry.data as EpochTranscriptBatch);
 }
 
+function epochFactBatches(entries: Array<{ customType: string; data: unknown }>, epochId: number): EpochTranscriptBatch[] {
+  return epochBatches(entries).filter((batch) => batch.epochId === epochId && batch.messages.length > 0);
+}
+
 test("a running agent keeps one epoch across tool loops and coalesces pending toggles", async () => {
   const dir = mkdtempSync(join(tmpdir(), "masking-epoch-"));
   const configDir = join(dir, ".pi", "pi-data-masking");
@@ -95,15 +99,28 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
 
   const harness = await createHarness(dir);
   const original = { role: "user", content: "use secret-service-token" };
+  const systemOriginal = "system secret-service-token";
 
   try {
     assert.deepEqual(epochs(harness.entries).map((epoch) => epoch.epochId), [1]);
-    await harness.emit("before_agent_start", { systemPrompt: "system", prompt: "go" });
+    const firstStart = await harness.emit("before_agent_start", { systemPrompt: systemOriginal, prompt: "go" }) as {
+      systemPrompt?: string;
+    } | undefined;
 
     const first = await harness.emit("context", { messages: [structuredClone(original)] }) as {
       messages: Array<{ content: string }>;
     };
     assert.equal(first.messages[0]!.content, "use masked-service-token");
+    const firstProviderPayload = {
+      messages: first.messages,
+      system: firstStart?.systemPrompt ?? systemOriginal,
+    };
+    await harness.emit("before_provider_request", { payload: firstProviderPayload });
+    assert.equal(firstProviderPayload.system, "system masked-service-token");
+    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
+    const e1PrefixBatch = epochBatches(harness.entries).find((batch) => batch.epochId === 1 && batch.prefix);
+    assert.ok(e1PrefixBatch?.prefix?.system);
+    assert.equal(JSON.stringify(e1PrefixBatch).includes(systemOriginal), false);
 
     await harness.command("masking-toggle");
     assert.ok(harness.notifications.some((message) => message.includes("active run keeps its current rules")));
@@ -115,27 +132,32 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
       messages: Array<{ content: string }>;
     };
     assert.equal(duringToolLoop.messages[0]!.content, "use masked-service-token");
-    assert.equal(epochBatches(harness.entries).filter((batch) => batch.epochId === 1).length, 1);
+    assert.equal(epochFactBatches(harness.entries, 1).length, 1);
+    await harness.emit("before_provider_request", {
+      payload: { messages: duringToolLoop.messages, system: firstStart?.systemPrompt ?? systemOriginal },
+    });
+    assert.equal(epochBatches(harness.entries).filter((batch) => batch.epochId === 1 && batch.prefix).length, 1);
     const toolEvent = { input: { token: "masked-service-token" } };
     await harness.emit("tool_call", toolEvent);
     assert.equal(toolEvent.input.token, "secret-service-token");
     assert.equal(epochs(harness.entries).length, 1);
 
     await harness.emit("agent_settled", {});
-    await harness.emit("before_agent_start", { systemPrompt: "system", prompt: "next" });
+    await harness.emit("before_agent_start", { systemPrompt: systemOriginal, prompt: "next" });
     assert.deepEqual(epochs(harness.entries).map((epoch) => epoch.epochId), [1, 2]);
     assert.ok(epochs(harness.entries)[1]!.changes.some((change) => change.kind === "masking_disabled"));
     assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
     const disabledResult = await harness.emit("context", { messages: [structuredClone(original)] });
     assert.equal(disabledResult, undefined);
-    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 1);
-    assert.equal(epochBatches(harness.entries).filter((batch) => batch.epochId === 2).length, 1);
+    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
+    assert.equal(epochFactBatches(harness.entries, 2).length, 1);
     const disabledInjected = { role: "user", timestamp: 98, content: "unmasked while disabled" };
-    await harness.emit("before_provider_request", { payload: { messages: [disabledInjected] } });
-    const e2Batches = epochBatches(harness.entries).filter((batch) => batch.epochId === 2);
-    assert.equal(e2Batches.length, 2);
-    assert.equal(e2Batches[1]!.messages[0]!.messageKey, "user:98");
+    await harness.emit("before_provider_request", { payload: { messages: [disabledInjected], system: systemOriginal } });
+    const e2FactBatches = epochFactBatches(harness.entries, 2);
+    assert.equal(e2FactBatches.length, 2);
+    assert.equal(e2FactBatches[1]!.messages[0]!.messageKey, "user:98");
     assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 1);
+    assert.ok(harness.notifications.some((message) => message.includes("provider system prompt")));
 
     // Two edits during E2 coalesce to the original disabled behavior, so the
     // next run reuses E2 instead of creating unused E3/E4 epochs.
@@ -160,7 +182,7 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
       messages: Array<{ content: string }>;
     };
     assert.equal(beforeReloadActivation.messages[0]!.content, "use masked-service-token");
-    assert.equal(epochBatches(harness.entries).filter((batch) => batch.epochId === 3).length, 1);
+    assert.equal(epochFactBatches(harness.entries, 3).length, 1);
     assert.deepEqual(epochs(harness.entries).map((epoch) => epoch.epochId), [1, 2, 3]);
 
     await harness.emit("agent_settled", {});
@@ -169,7 +191,7 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
       messages: Array<{ content: string }>;
     };
     assert.equal(afterReloadActivation.messages[0]!.content, "use rotated-mask-value");
-    assert.equal(epochBatches(harness.entries).filter((batch) => batch.epochId === 4).length, 1);
+    assert.equal(epochFactBatches(harness.entries, 4).length, 1);
     assert.deepEqual(epochs(harness.entries).map((epoch) => epoch.epochId), [1, 2, 3, 4]);
 
     // Content injected after the context hook is still captured as a factual
@@ -179,9 +201,9 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     const providerPayload = { messages: [injected] };
     await harness.emit("before_provider_request", { payload: providerPayload });
     assert.equal((providerPayload.messages[0] as typeof injected).content, "injected rotated-mask-value");
-    const e4Batches = epochBatches(harness.entries).filter((batch) => batch.epochId === 4);
-    assert.equal(e4Batches.length, 2);
-    assert.equal(e4Batches[1]!.messages[0]!.messageKey, "user:99");
+    const e4FactBatches = epochFactBatches(harness.entries, 4);
+    assert.equal(e4FactBatches.length, 2);
+    assert.equal(e4FactBatches[1]!.messages[0]!.messageKey, "user:99");
 
     // A process restart on the same Pi branch restores E4 and must not append
     // a duplicate epoch when the effective config fingerprint is unchanged.

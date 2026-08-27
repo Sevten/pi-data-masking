@@ -40,6 +40,11 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
   context after a rule change. A once-per-epoch warning reports the earliest
   observed changed conversation message without simulating old rules or
   predicting provider-specific cache hits.
+- Record the first factual provider `system` and `prompt` source/output
+  fingerprints per epoch as session-keyed HMACs. Prefix-impact warnings now
+  wait for the provider boundary and prioritize an observed system-prompt
+  change over prompt or conversation-message changes without storing plaintext
+  or creating a request timeline.
 - Add `tests/perf-mask.bench.ts`, a manual benchmark for the masking hot path (`node tests/perf-mask.bench.ts`).
 
 ## [0.5.0] - 2026-08-24

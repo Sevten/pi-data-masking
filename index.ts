@@ -43,6 +43,7 @@ import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-cod
 import { Editor, Key, decodeKittyPrintable, matchesKey, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { EditorTheme } from "@earendil-works/pi-tui";
 import { existsSync } from "node:fs";
+import { createHmac } from "node:crypto";
 import { resolve } from "node:path";
 import { Masker, isRegexRule } from "./masker.ts";
 import type { DynamicPlaceholderMap, MaskingRule, MaskOptions } from "./masker.ts";
@@ -105,12 +106,18 @@ import {
 import {
   EPOCH_TRANSCRIPT_ENTRY,
   createEpochTranscriptState,
+  findObservedPrefixComponentImpact,
   findObservedPrefixImpact,
   markEpochBatchPersisted,
   mergeEpochFacts,
+  mergeEpochPrefixObservation,
   restoreEpochTranscripts,
   type EpochFactObservation,
+  type EpochPrefixObservation,
+  type EpochTranscriptBatch,
   type EpochTranscriptState,
+  type ObservedPrefixImpact,
+  type PrefixComponentFingerprint,
 } from "./epoch-transcript.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -257,6 +264,8 @@ export default async function (pi: ExtensionAPI) {
   let activeEpochConfig: MaskingConfig | undefined;
   let persistedEpochIds = new Set<number>();
   let prefixImpactHandledEpochIds = new Set<number>();
+  let pendingMessagePrefixImpacts = new Map<number, ObservedPrefixImpact>();
+  let pendingSystemSourceHash: string | undefined;
   let agentRunActive = false;
   let pendingConfigActivation: { config: MaskingConfig; reason: RuleEpochReason } | null = null;
 
@@ -397,49 +406,36 @@ export default async function (pi: ExtensionAPI) {
 
   function previousFactualEpochState(epochId: number): EpochTranscriptState | undefined {
     return [...epochTranscripts.values()]
-      .filter((candidate) => candidate.epoch.epochId < epochId && candidate.entries.length > 0)
+      .filter((candidate) =>
+        candidate.epoch.epochId < epochId &&
+        (candidate.entries.length > 0 || candidate.prefixObservation !== undefined)
+      )
       .sort((left, right) => left.epoch.epochId - right.epoch.epochId)
       .at(-1);
   }
 
-  function notifyObservedPrefixImpact(
-    ctx: ExtensionContext,
+  function observeMessagePrefixImpact(
     epoch: RuleEpoch,
     observations: readonly EpochFactObservation[],
-    completeContext: boolean,
   ): void {
     if (prefixImpactHandledEpochIds.has(epoch.epochId)) return;
     const previous = previousFactualEpochState(epoch.epochId);
     const impact = previous ? findObservedPrefixImpact(previous, observations) : undefined;
-    // A full context observation covers every historical message that this
-    // epoch actually processed. Provider-only observations can be partial, so
-    // a no-change result there must remain eligible for the later context.
-    if (completeContext || impact) prefixImpactHandledEpochIds.add(epoch.epochId);
-    if (!impact) return;
-    const count = impact.changedMessageCount;
-    ctx.ui.notify(
-      `⚠️ E${epoch.epochId} has actually changed the model input for ${count} existing message${count === 1 ? "" : "s"}; the earliest observed changed conversation message is #${impact.firstChangedIndex + 1}, so provider prefix-cache reuse may decrease`,
-      "warning",
-    );
+    if (impact && !pendingMessagePrefixImpacts.has(epoch.epochId)) {
+      pendingMessagePrefixImpacts.set(epoch.epochId, impact);
+    }
   }
 
-  function observeEpochFacts(
+  function persistEpochTranscriptBatch(
     ctx: ExtensionContext,
-    observations: readonly EpochFactObservation[],
-    capturedAt = Date.now(),
-    completeContext = false,
+    state: EpochTranscriptState,
+    batch: EpochTranscriptBatch | undefined,
   ): void {
-    if (!activeRuleEpoch || observations.length === 0) return;
-    notifyObservedPrefixImpact(ctx, activeRuleEpoch, observations, completeContext);
-    const state = ensureEpochTranscript(activeRuleEpoch);
-    const { batch } = mergeEpochFacts(state, observations, capturedAt);
     if (!batch || !config.options.persistHistory) return;
     ensureSessionStatePersisted(ctx);
     if (!sessionStatePersisted) return;
-    // Keep the append-only log self-describing: a failed epoch append is
-    // retried before its first factual transcript batch is allowed through.
-    persistRuleEpoch(ctx, activeRuleEpoch);
-    if (!persistedEpochIds.has(activeRuleEpoch.epochId)) return;
+    persistRuleEpoch(ctx, state.epoch);
+    if (!persistedEpochIds.has(state.epoch.epochId)) return;
     try {
       pi.appendEntry(EPOCH_TRANSCRIPT_ENTRY, batch);
       markEpochBatchPersisted(state, batch);
@@ -449,6 +445,63 @@ export default async function (pi: ExtensionAPI) {
         ctx.ui.notify(`⚠️ Failed to persist factual masking history: ${(err as Error).message}`, "warning");
       }
     }
+  }
+
+  function observeEpochFacts(
+    ctx: ExtensionContext,
+    observations: readonly EpochFactObservation[],
+    capturedAt = Date.now(),
+  ): void {
+    if (!activeRuleEpoch || observations.length === 0) return;
+    observeMessagePrefixImpact(activeRuleEpoch, observations);
+    const state = ensureEpochTranscript(activeRuleEpoch);
+    const { batch } = mergeEpochFacts(state, observations, capturedAt);
+    persistEpochTranscriptBatch(ctx, state, batch);
+  }
+
+  function prefixValueFingerprint(value: string): string {
+    return createHmac("sha256", sessionKey).update(value).digest("hex");
+  }
+
+  function prefixComponentFingerprint(source: string, emitted: string): PrefixComponentFingerprint {
+    return { sourceHash: prefixValueFingerprint(source), emittedHash: prefixValueFingerprint(emitted) };
+  }
+
+  function observeEpochProviderPrefix(ctx: ExtensionContext, observation: EpochPrefixObservation): void {
+    if (!activeRuleEpoch) return;
+    const epoch = activeRuleEpoch;
+    const state = ensureEpochTranscript(epoch);
+    if (!prefixImpactHandledEpochIds.has(epoch.epochId)) {
+      const previous = previousFactualEpochState(epoch.epochId);
+      const componentImpact = previous
+        ? findObservedPrefixComponentImpact(previous, observation)
+        : undefined;
+      const messageImpact = pendingMessagePrefixImpacts.get(epoch.epochId);
+      if (componentImpact === "system") {
+        const messageSuffix = messageImpact
+          ? `; ${messageImpact.changedMessageCount} existing conversation message${messageImpact.changedMessageCount === 1 ? "" : "s"} also changed`
+          : "";
+        ctx.ui.notify(
+          `⚠️ E${epoch.epochId} has actually changed the provider system prompt${messageSuffix}; prefix-cache reuse may decrease from the system prompt`,
+          "warning",
+        );
+      } else if (componentImpact === "prompt") {
+        ctx.ui.notify(
+          `⚠️ E${epoch.epochId} has actually changed the provider prompt; prefix-cache reuse may decrease from that component`,
+          "warning",
+        );
+      } else if (messageImpact) {
+        const count = messageImpact.changedMessageCount;
+        ctx.ui.notify(
+          `⚠️ E${epoch.epochId} has actually changed the model input for ${count} existing message${count === 1 ? "" : "s"}; the earliest observed changed conversation message is #${messageImpact.firstChangedIndex + 1}, so provider prefix-cache reuse may decrease`,
+          "warning",
+        );
+      }
+      prefixImpactHandledEpochIds.add(epoch.epochId);
+      pendingMessagePrefixImpacts.delete(epoch.epochId);
+    }
+    const { batch } = mergeEpochPrefixObservation(state, observation);
+    persistEpochTranscriptBatch(ctx, state, batch);
   }
 
   function epochObservations(
@@ -663,10 +716,13 @@ export default async function (pi: ExtensionAPI) {
     activeEpochConfig = undefined;
     persistedEpochIds = new Set(ruleEpochs.map((epoch) => epoch.epochId));
     // Existing factual epochs were evaluated in the process that produced
-    // their stored observations; do not repeat historical warnings on resume.
+    // their provider-prefix observation; context-only facts may have been
+    // persisted just before a crash and still need final evaluation on resume.
     prefixImpactHandledEpochIds = new Set([...epochTranscripts.values()]
-      .filter((state) => state.entries.length > 0)
+      .filter((state) => state.prefixObservation !== undefined)
       .map((state) => state.epoch.epochId));
+    pendingMessagePrefixImpacts = new Map();
+    pendingSystemSourceHash = undefined;
     agentRunActive = false;
     pendingConfigActivation = null;
     dynamicPlaceholderMap = new Map();
@@ -728,6 +784,8 @@ export default async function (pi: ExtensionAPI) {
     stopWatching = null;
     agentRunActive = false;
     pendingConfigActivation = null;
+    pendingMessagePrefixImpacts.clear();
+    pendingSystemSourceHash = undefined;
   });
 
   // ── Hook 1: context — outbound masking ────────────────────────────────────
@@ -746,7 +804,7 @@ export default async function (pi: ExtensionAPI) {
         disabledPairs.push({ original: hash, masked: hash });
       }
       transcript = mergeTranscript(transcript, originals, originals, capturedAt, disabledPairs);
-      observeEpochFacts(ctx, epochObservations(originals, originals, disabledPairs), capturedAt, true);
+      observeEpochFacts(ctx, epochObservations(originals, originals, disabledPairs), capturedAt);
       persistSnapshots(ctx, originals, originals, disabledPairs);
       return;
     }
@@ -787,7 +845,7 @@ export default async function (pi: ExtensionAPI) {
       capturedAt,
       contentHashes,
     );
-    observeEpochFacts(ctx, epochObservations(originals, maskedMessages, contentHashes), capturedAt, true);
+    observeEpochFacts(ctx, epochObservations(originals, maskedMessages, contentHashes), capturedAt);
     persistSnapshots(ctx, originals, maskedMessages, contentHashes);
     return { messages: maskedMessages as unknown as typeof event.messages };
   });
@@ -853,6 +911,7 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("agent_settled", async () => {
     agentRunActive = false;
+    pendingSystemSourceHash = undefined;
   });
 
   // ── Hook 5: before_agent_start — mask the system prompt (default on) ──────
@@ -860,6 +919,7 @@ export default async function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     activatePendingConfig(ctx);
     agentRunActive = true;
+    pendingSystemSourceHash = prefixValueFingerprint(event.systemPrompt);
     if (!config.enabled || config.rules.length === 0) return;
     // Memoized: the prompt is static per session and is masked again at the
     // provider boundary; fill registers provenance exactly once.
@@ -886,7 +946,10 @@ export default async function (pi: ExtensionAPI) {
     if (payload === null || typeof payload !== "object") return;
 
     const record = payload as Record<string, unknown>;
-    if (!config.enabled || config.rules.length === 0) {
+    const maskingActive = config.enabled && config.rules.length > 0;
+    let intercepted = 0;
+
+    if (!maskingActive) {
       if (Array.isArray(record.messages)) {
         const observations: EpochFactObservation[] = [];
         for (let index = 0; index < record.messages.length; index++) {
@@ -902,12 +965,8 @@ export default async function (pi: ExtensionAPI) {
         }
         observeEpochFacts(ctx, observations);
       }
-      return;
-    }
-    let intercepted = 0;
-    let changedCount = 0;
-
-    if (Array.isArray(record.messages)) {
+    } else if (Array.isArray(record.messages)) {
+      let changedCount = 0;
       const source = record.messages as unknown[];
       const maskedMessages: unknown[] = new Array(source.length);
       const boundaryObservations: EpochFactObservation[] = [];
@@ -944,22 +1003,39 @@ export default async function (pi: ExtensionAPI) {
       if (changedCount > 0) record.messages = maskedMessages;
       observeEpochFacts(ctx, boundaryObservations);
     }
+
+    let system: PrefixComponentFingerprint | undefined;
     if (typeof record.system === "string") {
-      const r = maskSystemPromptCached(record.system);
-      if (r.count > 0) {
-        record.system = r.text;
-        intercepted += r.count;
+      const source = record.system;
+      if (maskingActive) {
+        const r = maskSystemPromptCached(source);
+        if (r.count > 0) {
+          record.system = r.text;
+          intercepted += r.count;
+        }
       }
-    }
-    if (typeof record.prompt === "string") {
-      const r = masker.mask(record.prompt, { discover: true });
-      if (r.count > 0) {
-        record.prompt = r.text;
-        intercepted += r.count;
-      }
+      system = {
+        sourceHash: pendingSystemSourceHash ?? prefixValueFingerprint(source),
+        emittedHash: prefixValueFingerprint(record.system as string),
+      };
     }
 
-    if (intercepted > 0 && !fallbackNotifiedThisTurn) {
+    let prompt: PrefixComponentFingerprint | undefined;
+    if (typeof record.prompt === "string") {
+      const source = record.prompt;
+      if (maskingActive) {
+        const r = masker.mask(source, { discover: true });
+        if (r.count > 0) {
+          record.prompt = r.text;
+          intercepted += r.count;
+        }
+      }
+      prompt = prefixComponentFingerprint(source, record.prompt as string);
+    }
+
+    observeEpochProviderPrefix(ctx, { observedAt: Date.now(), system, prompt });
+
+    if (maskingActive && intercepted > 0 && !fallbackNotifiedThisTurn) {
       fallbackNotifiedThisTurn = true;
       ctx.ui.notify(
         `🛡️ ${intercepted} sensitive value(s) intercepted at the provider request boundary (bypassed the context hook — check other extensions or injected content)`,
@@ -967,7 +1043,7 @@ export default async function (pi: ExtensionAPI) {
       );
     }
 
-    return payload;
+    if (maskingActive) return payload;
   });
 
   // ── Command: /masking ────────────────────────────────────────────────────

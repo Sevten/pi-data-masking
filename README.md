@@ -90,16 +90,21 @@ The same real value maps to the same placeholder throughout a conversation. Reop
 
 When masking behavior changes, the activation notice explains which agent run
 keeps the old rules and confirms that recorded history is not rewritten. It
-does not claim that a provider cache was affected. On the first complete,
-actual context under the new rule version, shared historical messages are
-compared with the most recent factual epoch. A prefix-cache warning appears
-once only when their stored model-input fingerprints really differ; new tail
-messages, compacted-away messages, and unchanged output do not trigger it.
+does not claim that a provider cache was affected. At the first actual provider
+boundary under the new rule version, the emitted system prompt and provider
+prompt are compared with the most recent factual epoch when their source
+fingerprints match. Shared historical messages follow the same factual rule. A
+prefix-cache warning appears once only when one of these stored model-input
+fingerprints really differs; system has priority over prompt and conversation
+position. New tail messages, compacted-away messages, and unchanged output do
+not trigger it.
 
-The warning reports an observed conversation-message change, not a simulated
-rule replay or a guaranteed provider cache miss. Provider serialization,
-tokenization, system-prompt changes, and cache policy remain outside this
-message-level comparison.
+The warning reports an observed provider-boundary change, not a simulated rule
+replay or a guaranteed provider cache miss. System and prompt facts are stored
+only as session-keyed HMACs, never plaintext, and only the first provider
+observation is retained per epoch—there is no request timeline. Serialization
+or mutation after this extension's hook, tokenization, and provider cache policy
+remain outside the comparison.
 
 ### Transparent tool execution
 
