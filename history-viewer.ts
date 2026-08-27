@@ -272,19 +272,15 @@ function isContextAnchor(text: string, start: number): boolean {
 function collectReplacements(
   original: unknown,
   masked: unknown,
-  target: Map<string, Replacement>,
+  target: Replacement[],
   entryIndex?: number,
 ): void {
   if (typeof original === "string" && typeof masked === "string") {
     for (const segment of diffText(original, masked)) {
       if (!segment.changed || segment.original === segment.masked) continue;
-      const key = `${segment.original}\0${segment.masked}`;
-      const prior = target.get(key);
-      if (!prior) {
-        target.set(key, { original: segment.original, masked: segment.masked, entryIndex });
-      } else if (prior.entryIndex === undefined && entryIndex !== undefined) {
-        prior.entryIndex = entryIndex;
-      }
+      // Keep every factual occurrence. Repeated uses of the same mapping are
+      // separate audit locations and should each be reachable with N/P.
+      target.push({ original: segment.original, masked: segment.masked, entryIndex });
     }
     return;
   }
@@ -551,18 +547,20 @@ export function createHistoryViewer(
   let replacementIndex = 0;
   let lastWidth = 80;
   let cacheVersion = 0;
-  let position = { entry: 0, line: 0 };
 
   const toolResults = new Map(entries
     .filter((entry) => entry.original.role === "toolResult")
     .map((entry) => [entry.key, entry]));
   const displayEntries = entries.filter((entry) => entry.original.role !== "toolResult");
+  // History is a replay: open at its live edge rather than at session start.
+  // visiblePage() will retreat just enough to fill the screen on first render.
+  let position = { entry: displayEntries.length, line: 0 };
   const entryCache = new Map<number, { width: number; version: number; lines: string[] }>();
 
-  const replacementMap = new Map<string, Replacement>();
+  const replacements: Replacement[] = [];
   for (let index = 0; index < displayEntries.length; index++) {
     const entry = displayEntries[index]!;
-    collectReplacements(entry.original, entry.masked, replacementMap, index);
+    collectReplacements(entry.original, entry.masked, replacements, index);
   }
   const toolOwners = new Map<string, number>();
   for (let index = 0; index < displayEntries.length; index++) {
@@ -577,9 +575,11 @@ export function createHistoryViewer(
   for (const entry of entries) {
     if (entry.original.role !== "toolResult") continue;
     const toolCallId = typeof entry.original.toolCallId === "string" ? entry.original.toolCallId : "";
-    collectReplacements(entry.original, entry.masked, replacementMap, toolOwners.get(toolCallId));
+    collectReplacements(entry.original, entry.masked, replacements, toolOwners.get(toolCallId));
   }
-  const replacements = [...replacementMap.values()];
+  // The inspector starts at the most recent masked occurrence, matching the
+  // initial viewport. N wraps forward; P walks backward through occurrences.
+  replacementIndex = Math.max(0, replacements.length - 1);
   const selectedReplacement = () => replacements[replacementIndex];
 
   const selectReplacement = (delta: number) => {
@@ -705,7 +705,7 @@ export function createHistoryViewer(
         : "";
       const selected = selectedReplacement();
       const inspector = selected
-        ? `Mapping ${replacementIndex + 1}/${replacements.length}${replacements.length === 1 ? " (only)" : " (selected)"}  LOCAL: ${selected.original}  →  MODEL: ${selected.masked}`
+        ? `Masked occurrence ${replacementIndex + 1}/${replacements.length}${replacements.length === 1 ? " (only)" : " (selected)"}  LOCAL: ${selected.original}  →  MODEL: ${selected.masked}`
         : "No masking replacements in this session";
       const legend = viewMode === "original"
         ? "Highlighted text is sensitive local content replaced before the model request"
@@ -713,8 +713,8 @@ export function createHistoryViewer(
           ? "Highlighted text is the replacement sent to the model"
           : "Left: local original · Right: model input · highlighted spans differ";
       const footerPrefix = options.footerPrefix ? `${options.footerPrefix} · ` : "";
-      const mappingControl = replacements.length > 1 ? " · N/P mapping" : "";
-      const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll · M original/masked · C side-by-side compare${mappingControl} · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
+      const occurrenceControl = replacements.length > 1 ? " · N/P masked text" : "";
+      const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll · M original/masked · C side-by-side compare${occurrenceControl} · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
       const lines = [
         truncateToWidth(header, width),
         ...(options.subtitle ? [theme.fg("muted", truncateToWidth(options.subtitle, width))] : []),

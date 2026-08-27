@@ -46,7 +46,7 @@ test("text diff does not split a replacement at its shared word suffix", () => {
   );
 });
 
-test("single mapping hides navigation while multiple mappings jump to their message", () => {
+test("N/P navigates every masked occurrence, including repeated mappings", () => {
   let renderRequests = 0;
   const theme = {
     fg: (_color: unknown, text: string) => text,
@@ -72,8 +72,8 @@ test("single mapping hides navigation while multiple mappings jump to their mess
     () => undefined,
   );
   const singleRender = single.render(120).join("\n");
-  assert.match(singleRender, /Mapping 1\/1 \(only\).*LOCAL: mysecret.*MODEL: maskedsecret/);
-  assert.doesNotMatch(singleRender, /N\/P mapping/);
+  assert.match(singleRender, /Masked occurrence 1\/1 \(only\).*LOCAL: mysecret.*MODEL: maskedsecret/);
+  assert.doesNotMatch(singleRender, /N\/P masked text/);
   single.handleInput?.("n");
   assert.equal(renderRequests, 0);
 
@@ -82,18 +82,23 @@ test("single mapping hides navigation while multiple mappings jump to their mess
     theme,
     keybindings,
     [
-      entry("user:1", "first-secret", "first-masked"),
+      entry("user:1", "old same-secret", "old same-masked"),
       entry("user:2", "unchanged", "unchanged"),
-      entry("user:3", "second-token", "second-hidden"),
+      entry("user:3", "latest same-secret", "latest same-masked"),
     ],
     () => undefined,
   );
-  assert.match(multiple.render(120).join("\n"), /N\/P mapping/);
+  const latest = multiple.render(120).join("\n");
+  assert.match(latest, /N\/P masked text/);
+  assert.match(latest, /Masked occurrence 2\/2 \(selected\)/);
+  assert.match(latest, /latest same-/);
+  assert.doesNotMatch(latest, /old same-/);
+
   multiple.handleInput?.("n");
-  const selected = multiple.render(120).join("\n");
-  assert.match(selected, /Mapping 2\/2 \(selected\)/);
-  assert.match(selected, /second-.*token/);
-  assert.doesNotMatch(selected, /first-secret/);
+  const wrapped = multiple.render(120).join("\n");
+  assert.match(wrapped, /Masked occurrence 1\/2 \(selected\)/);
+  assert.match(wrapped, /old same-/);
+  assert.doesNotMatch(wrapped, /latest same-/);
 });
 
 test("M toggles original and masked views while Ctrl+M is not captured", () => {
@@ -200,12 +205,14 @@ test("history scrolling renders only the visible transcript window", () => {
     () => undefined,
   );
 
-  viewer.render(100);
+  const initial = viewer.render(100).join("\n");
   const firstPageRenders = backgroundRenders;
+  assert.match(initial, /message 999/);
+  assert.doesNotMatch(initial, /message 0(?:\D|$)/);
   assert.ok(firstPageRenders > 0);
   assert.ok(firstPageRenders < 20, `first page rendered ${firstPageRenders} message backgrounds`);
 
-  viewer.handleInput?.("tui.select.pageDown");
+  viewer.handleInput?.("tui.select.pageUp");
   viewer.render(100);
 
   assert.equal(renderRequests, 1);
@@ -213,7 +220,7 @@ test("history scrolling renders only the visible transcript window", () => {
   assert.ok(backgroundRenders < 40, `two pages rendered ${backgroundRenders} message backgrounds`);
 
   const twoPageRenders = backgroundRenders;
-  viewer.handleInput?.("tui.select.pageUp");
+  viewer.handleInput?.("tui.select.pageDown");
   viewer.render(100);
   assert.equal(backgroundRenders, twoPageRenders);
 });
