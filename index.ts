@@ -75,6 +75,7 @@ import type {
 import { generatePlaceholder, generateSessionKey } from "./placeholder-gen.ts";
 import { MASKING_PRESETS } from "./presets.ts";
 import {
+  createEpochHistoryViewer,
   createHistoryViewer,
   mergePendingAssistant,
   mergeTranscript,
@@ -101,6 +102,15 @@ import {
   type RuleEpoch,
   type RuleEpochReason,
 } from "./rule-epoch.ts";
+import {
+  EPOCH_TRANSCRIPT_ENTRY,
+  createEpochTranscriptState,
+  markEpochBatchPersisted,
+  mergeEpochFacts,
+  restoreEpochTranscripts,
+  type EpochFactObservation,
+  type EpochTranscriptState,
+} from "./epoch-transcript.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -241,6 +251,7 @@ export default async function (pi: ExtensionAPI) {
   // call. Changes that arrive during a run are coalesced here and activated
   // atomically before the next run starts.
   let ruleEpochs: RuleEpoch[] = [];
+  let epochTranscripts = new Map<number, EpochTranscriptState>();
   let activeRuleEpoch: RuleEpoch | undefined;
   let activeEpochConfig: MaskingConfig | undefined;
   let persistedEpochIds = new Set<number>();
@@ -354,15 +365,71 @@ export default async function (pi: ExtensionAPI) {
 
   function persistRuleEpoch(ctx: ExtensionContext, epoch: RuleEpoch): void {
     if (!config.options.persistHistory || persistedEpochIds.has(epoch.epochId)) return;
+    // Persist a contiguous chain. This matters when persistHistory was off for
+    // an earlier in-memory epoch and is enabled later in the same session.
+    for (const candidate of ruleEpochs) {
+      if (candidate.epochId > epoch.epochId) break;
+      if (persistedEpochIds.has(candidate.epochId)) continue;
+      if (candidate.parentEpochId !== undefined && !persistedEpochIds.has(candidate.parentEpochId)) return;
+      try {
+        pi.appendEntry(RULE_EPOCH_ENTRY, candidate);
+        persistedEpochIds.add(candidate.epochId);
+      } catch (err) {
+        if (!persistenceWarned) {
+          persistenceWarned = true;
+          ctx.ui.notify(`⚠️ Failed to persist masking rule history: ${(err as Error).message}`, "warning");
+        }
+        return;
+      }
+    }
+  }
+
+  function ensureEpochTranscript(epoch: RuleEpoch): EpochTranscriptState {
+    let state = epochTranscripts.get(epoch.epochId);
+    if (!state) {
+      state = createEpochTranscriptState(epoch);
+      epochTranscripts.set(epoch.epochId, state);
+    }
+    return state;
+  }
+
+  function observeEpochFacts(
+    ctx: ExtensionContext,
+    observations: readonly EpochFactObservation[],
+    capturedAt = Date.now(),
+  ): void {
+    if (!activeRuleEpoch || observations.length === 0) return;
+    const state = ensureEpochTranscript(activeRuleEpoch);
+    const { batch } = mergeEpochFacts(state, observations, capturedAt);
+    if (!batch || !config.options.persistHistory) return;
+    ensureSessionStatePersisted(ctx);
+    if (!sessionStatePersisted) return;
+    // Keep the append-only log self-describing: a failed epoch append is
+    // retried before its first factual transcript batch is allowed through.
+    persistRuleEpoch(ctx, activeRuleEpoch);
+    if (!persistedEpochIds.has(activeRuleEpoch.epochId)) return;
     try {
-      pi.appendEntry(RULE_EPOCH_ENTRY, epoch);
-      persistedEpochIds.add(epoch.epochId);
+      pi.appendEntry(EPOCH_TRANSCRIPT_ENTRY, batch);
+      markEpochBatchPersisted(state, batch);
     } catch (err) {
       if (!persistenceWarned) {
         persistenceWarned = true;
-        ctx.ui.notify(`⚠️ Failed to persist masking rule history: ${(err as Error).message}`, "warning");
+        ctx.ui.notify(`⚠️ Failed to persist factual masking history: ${(err as Error).message}`, "warning");
       }
     }
+  }
+
+  function epochObservations(
+    originals: readonly Record<string, unknown>[],
+    masked: readonly Record<string, unknown>[],
+    hashes: readonly MessageContentHashPair[],
+  ): EpochFactObservation[] {
+    return originals.map((original, index) => ({
+      messageKey: transcriptKey(original, index),
+      original,
+      masked: masked[index] ?? original,
+      hashes: hashes[index]!,
+    }));
   }
 
   /** Activate one behavior version; equal behavior reuses the current epoch. */
@@ -385,7 +452,10 @@ export default async function (pi: ExtensionAPI) {
       activeRuleEpoch = epoch;
     }
     activeEpochConfig = cfg;
-    if (activeRuleEpoch) persistRuleEpoch(ctx, activeRuleEpoch);
+    if (activeRuleEpoch) {
+      ensureEpochTranscript(activeRuleEpoch);
+      persistRuleEpoch(ctx, activeRuleEpoch);
+    }
     return masker.warnings;
   }
 
@@ -550,6 +620,7 @@ export default async function (pi: ExtensionAPI) {
     // key and clearly marked missing snapshots for their existing messages.
     sessionKey = restored.sessionKey ?? generateSessionKey();
     ruleEpochs = restored.sessionKey ? restoreRuleEpochs(branchEntries) : [];
+    epochTranscripts = restoreEpochTranscripts(branchEntries, ruleEpochs, restored.messages);
     activeRuleEpoch = ruleEpochs.at(-1);
     activeEpochConfig = undefined;
     persistedEpochIds = new Set(ruleEpochs.map((epoch) => epoch.epochId));
@@ -625,12 +696,14 @@ export default async function (pi: ExtensionAPI) {
     // enabled, the same entries are replaced below with the actual masked form
     // sent through this boundary.
     if (!config.enabled || config.rules.length === 0) {
+      const capturedAt = Date.now();
       const disabledPairs: MessageContentHashPair[] = [];
       for (let index = 0; index < originals.length; index++) {
         const hash = hashMessage(originals[index]);
         disabledPairs.push({ original: hash, masked: hash });
       }
-      transcript = mergeTranscript(transcript, originals, originals, Date.now(), disabledPairs);
+      transcript = mergeTranscript(transcript, originals, originals, capturedAt, disabledPairs);
+      observeEpochFacts(ctx, epochObservations(originals, originals, disabledPairs), capturedAt);
       persistSnapshots(ctx, originals, originals, disabledPairs);
       return;
     }
@@ -663,13 +736,15 @@ export default async function (pi: ExtensionAPI) {
       );
     }
 
+    const capturedAt = Date.now();
     transcript = mergeTranscript(
       transcript,
       originals,
       maskedMessages,
-      Date.now(),
+      capturedAt,
       contentHashes,
     );
+    observeEpochFacts(ctx, epochObservations(originals, maskedMessages, contentHashes), capturedAt);
     persistSnapshots(ctx, originals, maskedMessages, contentHashes);
     return { messages: maskedMessages as unknown as typeof event.messages };
   });
@@ -764,21 +839,55 @@ export default async function (pi: ExtensionAPI) {
   // ── Hook 6: before_provider_request — final outbound safety net ────────────
 
   pi.on("before_provider_request", async (event, ctx) => {
-    if (!config.enabled || config.rules.length === 0) return;
     const payload = event.payload;
     if (payload === null || typeof payload !== "object") return;
 
     const record = payload as Record<string, unknown>;
+    if (!config.enabled || config.rules.length === 0) {
+      if (Array.isArray(record.messages)) {
+        const observations: EpochFactObservation[] = [];
+        for (let index = 0; index < record.messages.length; index++) {
+          const message = record.messages[index];
+          if (message === null || typeof message !== "object" || Array.isArray(message)) continue;
+          const hash = hashMessage(message);
+          observations.push({
+            messageKey: transcriptKey(message as Record<string, unknown>, index),
+            original: message as Record<string, unknown>,
+            masked: message as Record<string, unknown>,
+            hashes: { original: hash, masked: hash },
+          });
+        }
+        observeEpochFacts(ctx, observations);
+      }
+      return;
+    }
     let intercepted = 0;
     let changedCount = 0;
 
     if (Array.isArray(record.messages)) {
       const source = record.messages as unknown[];
       const maskedMessages: unknown[] = new Array(source.length);
+      const boundaryObservations: EpochFactObservation[] = [];
       for (let index = 0; index < source.length; index++) {
         const m = source[index];
         const resolved = resolveMaskedMessage(m, index);
         maskedMessages[index] = resolved.masked;
+        // A context-produced masked object hits via pair.masked and has already
+        // been recorded. An unmasked source (including injected content or a
+        // request that bypassed context) matches pair.original and is a new
+        // factual boundary observation. Equal hashes are harmlessly deduped.
+        if (
+          m !== null && typeof m === "object" && !Array.isArray(m) &&
+          resolved.masked !== null && typeof resolved.masked === "object" && !Array.isArray(resolved.masked) &&
+          hashMessage(m) === resolved.pair.original
+        ) {
+          boundaryObservations.push({
+            messageKey: transcriptKey(m as Record<string, unknown>, index),
+            original: m as Record<string, unknown>,
+            masked: resolved.masked as Record<string, unknown>,
+            hashes: resolved.pair,
+          });
+        }
         // Cache hits mean the context hook already sent this exact content
         // through the masker — only fills can be boundary interceptions.
         // Assistant re-masking at this boundary is bookkeeping and never
@@ -790,6 +899,7 @@ export default async function (pi: ExtensionAPI) {
       // Replace the payload only when something actually differs; system and
       // prompt below are still scanned unconditionally either way.
       if (changedCount > 0) record.messages = maskedMessages;
+      observeEpochFacts(ctx, boundaryObservations);
     }
     if (typeof record.system === "string") {
       const r = maskSystemPromptCached(record.system);
@@ -2317,14 +2427,23 @@ export default async function (pi: ExtensionAPI) {
   // ── Command: /masking-history ────────────────────────────────────────────
 
   pi.registerCommand("masking-history", {
-    description: "Replay this session with original and masked text",
+    description: "Replay factual masking results by rule version",
     handler: async (_args, ctx) => {
-      if (transcript.length === 0) {
+      const epochViews = [...epochTranscripts.values()]
+        .filter((state) => state.entries.length > 0)
+        .sort((left, right) => left.epoch.epochId - right.epoch.epochId)
+        .map((state) => ({
+          epoch: state.epoch,
+          entries: state.entries,
+          current: state.epoch.epochId === activeRuleEpoch?.epochId,
+        }));
+      if (epochViews.length === 0 && transcript.length === 0) {
         ctx.ui.notify("No conversation has reached the masking boundary yet", "info");
         return;
       }
-      await ctx.ui.custom<void>((tui, theme, keybindings, done) =>
-        createHistoryViewer(tui, theme, keybindings, transcript, done),
+      await ctx.ui.custom<void>((tui, theme, keybindings, done) => epochViews.length > 0
+        ? createEpochHistoryViewer(tui, theme, keybindings, epochViews, done)
+        : createHistoryViewer(tui, theme, keybindings, transcript, done),
       {
         overlay: true,
         overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },

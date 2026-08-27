@@ -142,7 +142,7 @@ export function applyMessageSnapshot(
   return { message, valid: true };
 }
 
-function asMessageSnapshot(value: unknown): MessageSnapshot | undefined {
+export function parseMessageSnapshot(value: unknown): MessageSnapshot | undefined {
   if (!isRecord(value) || typeof value.messageKey !== "string" || typeof value.signature !== "string" || !Array.isArray(value.changes)) {
     return undefined;
   }
@@ -174,7 +174,7 @@ function asSnapshotBatch(value: unknown): SnapshotBatch | undefined {
   if (!isRecord(value) || value.version !== 1 || typeof value.requestSequence !== "number" || typeof value.capturedAt !== "number" || !Array.isArray(value.messages)) {
     return undefined;
   }
-  const messages = value.messages.map(asMessageSnapshot);
+  const messages = value.messages.map(parseMessageSnapshot);
   if (messages.some((message) => message === undefined)) return undefined;
   return {
     version: 1,

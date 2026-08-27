@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHistoryViewer, diffText, mergePendingAssistant, mergeTranscript } from "../history-viewer.ts";
+import { createEpochHistoryViewer, createHistoryViewer, diffText, mergePendingAssistant, mergeTranscript } from "../history-viewer.ts";
+import type { RuleEpoch } from "../rule-epoch.ts";
 
 test("history transcript updates a context message instead of duplicating it", () => {
   const original = { role: "user", timestamp: 1, content: "secret" };
@@ -84,4 +85,58 @@ test("history scrolling renders only the visible transcript window", () => {
   viewer.handleInput?.("tui.select.pageUp");
   viewer.render(100);
   assert.equal(backgroundRenders, twoPageRenders);
+});
+
+test("epoch history defaults to the latest factual version and switches without simulated messages", () => {
+  let renderRequests = 0;
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (_color: unknown, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    underline: (text: string) => text,
+  };
+  const keybindings = { matches: (data: string, keybinding: string) => data === keybinding };
+  const makeEpoch = (epochId: number): RuleEpoch => ({
+    version: 1,
+    epochId,
+    parentEpochId: epochId > 1 ? epochId - 1 : undefined,
+    activatedAt: epochId,
+    behaviorFingerprint: `fingerprint-${epochId}`,
+    enabled: true,
+    caseSensitive: true,
+    systemPromptGuidance: false,
+    reason: epochId === 1 ? "session_start" : "ui_edit",
+    rules: [],
+    changes: [{ kind: epochId === 1 ? "initialized" : "configuration_changed" }],
+  });
+  const entry = (key: string, content: string) => ({
+    key,
+    original: { role: "user", content },
+    masked: { role: "user", content },
+    capturedAt: 1,
+  });
+  const viewer = createEpochHistoryViewer(
+    { terminal: { rows: 20 }, requestRender: () => { renderRequests++; } },
+    theme,
+    keybindings,
+    [
+      { epoch: makeEpoch(1), entries: [entry("user:1", "only factual in E1")] },
+      { epoch: makeEpoch(2), entries: [] },
+      { epoch: makeEpoch(3), entries: [entry("user:3", "only factual in E3")] },
+    ],
+    () => undefined,
+  );
+
+  const latest = viewer.render(120).join("\n");
+  assert.match(latest, /E3 \(2\/2\)/);
+  assert.match(latest, /only factual in E3/);
+  assert.doesNotMatch(latest, /only factual in E1/);
+
+  viewer.handleInput?.("[");
+  const previous = viewer.render(120).join("\n");
+  assert.match(previous, /E1 \(1\/2\)/);
+  assert.match(previous, /only factual in E1/);
+  assert.doesNotMatch(previous, /only factual in E3/);
+  assert.equal(renderRequests, 1);
 });

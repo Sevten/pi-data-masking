@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RULE_EPOCH_ENTRY, type RuleEpoch } from "../rule-epoch.ts";
+import { EPOCH_TRANSCRIPT_ENTRY, type EpochTranscriptBatch } from "../epoch-transcript.ts";
 
 const TEST_AGENT_DIR = mkdtempSync(join(tmpdir(), "masking-epoch-agent-"));
 process.env.PI_CODING_AGENT_DIR = TEST_AGENT_DIR;
@@ -78,6 +79,12 @@ function epochs(entries: Array<{ customType: string; data: unknown }>): RuleEpoc
   return entries.filter((entry) => entry.customType === RULE_EPOCH_ENTRY).map((entry) => entry.data as RuleEpoch);
 }
 
+function epochBatches(entries: Array<{ customType: string; data: unknown }>): EpochTranscriptBatch[] {
+  return entries
+    .filter((entry) => entry.customType === EPOCH_TRANSCRIPT_ENTRY)
+    .map((entry) => entry.data as EpochTranscriptBatch);
+}
+
 test("a running agent keeps one epoch across tool loops and coalesces pending toggles", async () => {
   const dir = mkdtempSync(join(tmpdir(), "masking-epoch-"));
   const configDir = join(dir, ".pi", "pi-data-masking");
@@ -107,6 +114,7 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
       messages: Array<{ content: string }>;
     };
     assert.equal(duringToolLoop.messages[0]!.content, "use masked-service-token");
+    assert.equal(epochBatches(harness.entries).filter((batch) => batch.epochId === 1).length, 1);
     const toolEvent = { input: { token: "masked-service-token" } };
     await harness.emit("tool_call", toolEvent);
     assert.equal(toolEvent.input.token, "secret-service-token");
@@ -118,6 +126,12 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     assert.ok(epochs(harness.entries)[1]!.changes.some((change) => change.kind === "masking_disabled"));
     const disabledResult = await harness.emit("context", { messages: [structuredClone(original)] });
     assert.equal(disabledResult, undefined);
+    assert.equal(epochBatches(harness.entries).filter((batch) => batch.epochId === 2).length, 1);
+    const disabledInjected = { role: "user", timestamp: 98, content: "unmasked while disabled" };
+    await harness.emit("before_provider_request", { payload: { messages: [disabledInjected] } });
+    const e2Batches = epochBatches(harness.entries).filter((batch) => batch.epochId === 2);
+    assert.equal(e2Batches.length, 2);
+    assert.equal(e2Batches[1]!.messages[0]!.messageKey, "user:98");
 
     // Two edits during E2 coalesce to the original disabled behavior, so the
     // next run reuses E2 instead of creating unused E3/E4 epochs.
@@ -142,6 +156,7 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
       messages: Array<{ content: string }>;
     };
     assert.equal(beforeReloadActivation.messages[0]!.content, "use masked-service-token");
+    assert.equal(epochBatches(harness.entries).filter((batch) => batch.epochId === 3).length, 1);
     assert.deepEqual(epochs(harness.entries).map((epoch) => epoch.epochId), [1, 2, 3]);
 
     await harness.emit("agent_settled", {});
@@ -150,7 +165,19 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
       messages: Array<{ content: string }>;
     };
     assert.equal(afterReloadActivation.messages[0]!.content, "use rotated-mask-value");
+    assert.equal(epochBatches(harness.entries).filter((batch) => batch.epochId === 4).length, 1);
     assert.deepEqual(epochs(harness.entries).map((epoch) => epoch.epochId), [1, 2, 3, 4]);
+
+    // Content injected after the context hook is still captured as a factual
+    // E4 observation by the final provider boundary, without exposing a
+    // provider-request timeline in the viewer.
+    const injected = { role: "user", timestamp: 99, content: "injected secret-service-token" };
+    const providerPayload = { messages: [injected] };
+    await harness.emit("before_provider_request", { payload: providerPayload });
+    assert.equal((providerPayload.messages[0] as typeof injected).content, "injected rotated-mask-value");
+    const e4Batches = epochBatches(harness.entries).filter((batch) => batch.epochId === 4);
+    assert.equal(e4Batches.length, 2);
+    assert.equal(e4Batches[1]!.messages[0]!.messageKey, "user:99");
 
     // A process restart on the same Pi branch restores E4 and must not append
     // a duplicate epoch when the effective config fingerprint is unchanged.

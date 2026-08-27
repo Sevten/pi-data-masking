@@ -26,6 +26,11 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 - Record immutable, sanitized `RuleEpoch` metadata for effective masking
   behavior changes, including monotonic ids, behavior fingerprints, activation
   reasons, and secret-free change summaries.
+- Persist cumulative factual masking transcripts per `RuleEpoch`. The history
+  viewer now switches between E1/E2/E3 with `[` and `]`, shows only messages
+  actually processed by the selected version, hides unused versions, preserves
+  compacted facts in their original epoch, and restores valid records without
+  accepting late mutations to closed epochs.
 - Add `tests/perf-mask.bench.ts`, a manual benchmark for the masking hot path (`node tests/perf-mask.bench.ts`).
 
 ## [0.5.0] - 2026-08-24

@@ -96,7 +96,18 @@ The model must pass a placeholder verbatim. A placeholder that the model slices,
 
 ### Inspectable model view
 
-`/masking-history` highlights replacements and switches among the local original, the exact model-facing representation, and a comparison view. Wide terminals show the comparison side by side; narrow terminals stack both versions.
+`/masking-history` is a factual audit grouped by masking rule version (E1, E2,
+E3, ...). Use `[` and `]` to switch versions. Each version shows only messages
+that actually crossed an outbound boundary while that version was active; it
+does not apply old or current rules hypothetically to other messages. Empty,
+unused versions are hidden.
+
+Within a version, the viewer highlights replacements and switches among the
+local original, the exact stored model-facing representation, and a comparison
+view. Wide terminals show the comparison side by side; narrow terminals stack
+both versions. The header includes the activation source, secret-free change
+summary, and behavior fingerprint so similar rule versions remain
+distinguishable.
 
 ## Rules and configuration
 
@@ -125,7 +136,7 @@ Regex safety diagnostics are advisory and do not reject a rule. Keep patterns na
 |---|---|
 | `/masking` | Manage, order, enable, edit, and locally test project/global rules |
 | `/masking-toggle` | Persistently enable or disable masking |
-| `/masking-history` | Audit highlighted local/model views and side-by-side comparison |
+| `/masking-history` | Audit factual local/model views by active rule version (`[`/`]`) |
 
 In `/masking`, `Space` toggles a rule, `Enter` edits or adds, `Ctrl+↑/↓` changes priority, `D`/`Delete` removes, `Tab` focuses local testing, and `R` reveals the selected literal value. The screen lists the remaining filter, search, batch, help, import, and redacted-export shortcuts.
 
@@ -159,7 +170,9 @@ If the model saw a string first, protecting it later would rewrite text the mode
 - Binary and other non-string data is not scanned. The final provider-request safety pass also depends on provider support for that Pi hook.
 - Literal matching includes substring occurrences. Prefer exact high-entropy values; use narrow regex rules for value classes.
 - A custom placeholder must be unique and must not equal another real value. Generated placeholders include collision checks.
-- Content injected only at the final provider boundary can be protected without corresponding to a stored message that `/masking-history` can replay.
+- Content injected only at the final provider boundary is visible in the live
+  factual history, but cannot be reconstructed after restart unless Pi also
+  stored its local original as a session message.
 
 ## Scope, persistence, and recovery
 
@@ -174,7 +187,14 @@ run, so tool placeholders are always restored by the masker that created them.
 Effective behavior changes append sanitized, secret-free `RuleEpoch` metadata to
 the session when history persistence is enabled.
 
-`persistHistory` defaults to `true`. It stores the session key and model-facing text differences in Pi custom session metadata so placeholders and `/masking-history` survive a restart. It does not duplicate original secrets, although Pi's normal session file already contains the real conversation.
+`persistHistory` defaults to `true`. It stores the session key, immutable rule
+epochs, and per-epoch model-facing text differences in Pi custom session
+metadata so placeholders and factual `/masking-history` views survive a
+restart. Repeated tool-loop requests do not create request records or duplicate
+unchanged messages. Compacted-away messages remain only in epochs that actually
+processed them; a newer epoch never inherits or recomputes them. Persistence
+does not duplicate original secrets, although Pi's normal session file already
+contains the real conversation.
 
 Other options are `caseSensitive`, `showStatusBar`, and `systemPromptGuidance`; see the JSON Schema for their defaults and descriptions.
 

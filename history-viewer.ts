@@ -9,6 +9,7 @@ import {
   visibleWidth,
   type Component,
 } from "@earendil-works/pi-tui";
+import type { RuleEpoch, RuleEpochChange } from "./rule-epoch.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -62,6 +63,18 @@ interface HistoryTui {
 
 interface HistoryKeybindings {
   matches(data: string, keybinding: any): boolean;
+}
+
+export interface HistoryViewerOptions {
+  title?: string;
+  subtitle?: string;
+  footerPrefix?: string;
+}
+
+export interface EpochHistoryView {
+  epoch: RuleEpoch;
+  entries: readonly TranscriptEntry[];
+  current?: boolean;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -484,6 +497,7 @@ export function createHistoryViewer(
   keybindings: HistoryKeybindings,
   entries: readonly TranscriptEntry[],
   done: () => void,
+  options: HistoryViewerOptions = {},
 ): Component {
   let toolsExpanded = false;
   let thinkingVisible = true;
@@ -505,7 +519,7 @@ export function createHistoryViewer(
   const replacements = [...replacementMap.values()];
   const selectedReplacement = () => replacements[replacementIndex];
 
-  const pageSize = () => Math.max(3, tui.terminal.rows - 4);
+  const pageSize = () => Math.max(3, tui.terminal.rows - (options.subtitle ? 5 : 4));
   const entryLines = (index: number, width: number): string[] => {
     const cached = entryCache.get(index);
     if (cached?.width === width && cached.version === cacheVersion) return cached.lines;
@@ -612,7 +626,8 @@ export function createHistoryViewer(
       lastWidth = width;
       const { visible, cursor } = visiblePage(width);
       const modeLabel = viewMode === "original" ? "LOCAL ORIGINAL" : viewMode === "model" ? "MODEL INPUT" : "SIDE-BY-SIDE COMPARE";
-      const header = theme.fg("accent", theme.bold(`Masking history · ${entries.length} messages · ${modeLabel}`));
+      const title = options.title ?? `Masking history · ${entries.length} messages`;
+      const header = theme.fg("accent", theme.bold(`${title} · ${modeLabel}`));
       const visibleEnd = Math.min(cursor.entry + (cursor.line > 0 ? 1 : 0), displayEntries.length);
       const progress = displayEntries.length > 0
         ? ` messages ${Math.min(position.entry + 1, displayEntries.length)}-${visibleEnd}/${displayEntries.length}`
@@ -626,9 +641,11 @@ export function createHistoryViewer(
         : viewMode === "model"
           ? "Highlighted text is the replacement sent to the model"
           : "Left: local original · Right: model input · highlighted spans differ";
-      const footer = `↑↓/PgUp/PgDn scroll · Ctrl+M or M model · C compare · N/P mapping · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
+      const footerPrefix = options.footerPrefix ? `${options.footerPrefix} · ` : "";
+      const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll · Ctrl+M or M model · C compare · N/P mapping · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
       const lines = [
         truncateToWidth(header, width),
+        ...(options.subtitle ? [theme.fg("muted", truncateToWidth(options.subtitle, width))] : []),
         theme.fg("dim", truncateToWidth(legend, width)),
         ...visible,
         theme.fg("muted", truncateToWidth(inspector, width)),
@@ -665,6 +682,84 @@ export function createHistoryViewer(
       else if (data === "\x1b[F" || data === "\x1bOF") position = { entry: displayEntries.length, line: 0 };
       else if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) done();
       else return;
+      tui.requestRender();
+    },
+  };
+}
+
+function epochChangeLabel(change: RuleEpochChange): string {
+  const rule = change.ruleName ?? change.ruleId ?? "rule";
+  switch (change.kind) {
+    case "initialized": return "session start";
+    case "masking_enabled": return "masking enabled";
+    case "masking_disabled": return "masking disabled";
+    case "option_changed": return `${change.option ?? "option"} changed`;
+    case "rule_added": return `${rule} added`;
+    case "rule_removed": return `${rule} removed`;
+    case "rule_enabled": return `${rule} enabled`;
+    case "rule_disabled": return `${rule} disabled`;
+    case "rule_moved": return `${rule} reordered`;
+    case "rule_updated": return `${rule} updated`;
+    case "configuration_changed": return "configuration changed";
+  }
+}
+
+function epochLabel(view: EpochHistoryView, index: number, total: number): string {
+  return `Masking history · E${view.epoch.epochId} (${index + 1}/${total}) · ${view.entries.length} factual messages`;
+}
+
+function epochDetails(view: EpochHistoryView): string {
+  const changeSummary = view.epoch.changes.map(epochChangeLabel).join("; ");
+  const activated = new Date(view.epoch.activatedAt).toLocaleString();
+  const status = view.current ? "current" : "closed";
+  return `${status} · activated ${activated} · ${view.epoch.reason} · fingerprint ${view.epoch.behaviorFingerprint.slice(0, 12)} · ${changeSummary}`;
+}
+
+/**
+ * Epoch selector around the transcript viewer. Empty/unused epochs are hidden;
+ * the newest epoch with factual outbound observations is selected by default.
+ */
+export function createEpochHistoryViewer(
+  tui: HistoryTui,
+  theme: HistoryTheme,
+  keybindings: HistoryKeybindings,
+  epochViews: readonly EpochHistoryView[],
+  done: () => void,
+): Component {
+  const views = epochViews.filter((view) => view.entries.length > 0);
+  let selectedIndex = Math.max(0, views.length - 1);
+  const createSelected = (): Component => {
+    const view = views[selectedIndex];
+    return createHistoryViewer(
+      tui,
+      theme,
+      keybindings,
+      view?.entries ?? [],
+      done,
+      {
+        title: view
+          ? epochLabel(view, selectedIndex, views.length)
+          : "Masking history · no factual epochs",
+        subtitle: view ? epochDetails(view) : undefined,
+        footerPrefix: views.length > 1 ? "[/] rule epoch" : undefined,
+      },
+    );
+  };
+  let selected = createSelected();
+
+  return {
+    invalidate: () => selected.invalidate?.(),
+    render: (width) => selected.render(width),
+    handleInput: (data) => {
+      const delta = data === "[" ? -1 : data === "]" ? 1 : 0;
+      if (delta === 0 || views.length < 2) {
+        selected.handleInput?.(data);
+        return;
+      }
+      const next = Math.max(0, Math.min(views.length - 1, selectedIndex + delta));
+      if (next === selectedIndex) return;
+      selectedIndex = next;
+      selected = createSelected();
       tui.requestRender();
     },
   };
