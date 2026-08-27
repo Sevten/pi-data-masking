@@ -39,6 +39,7 @@ interface HistoryTheme {
   bg(color: any, text: string): string;
   bold(text: string): string;
   italic(text: string): string;
+  inverse?(text: string): string;
   strikethrough?(text: string): string;
   underline?(text: string): string;
 }
@@ -54,6 +55,8 @@ export interface DiffSegment {
 interface Replacement {
   original: string;
   masked: string;
+  /** First visible transcript entry containing this factual replacement. */
+  entryIndex?: number;
 }
 
 interface HistoryTui {
@@ -203,6 +206,22 @@ export function diffText(original: string, masked: string): DiffSegment[] {
   while (before !== after && before.length > 0 && after.length > 0) {
     let prefix = 0;
     while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
+    // A shared prefix that ends inside a word can belong to the replacement
+    // itself (for example the leading `m` in mysecret → maskedsecret). Keep
+    // stable punctuation/context, but move the tentative boundary back to the
+    // beginning of that lexical token before recording the changed span.
+    if (
+      prefix > 0 && prefix < before.length && prefix < after.length &&
+      WORD_CHARACTER.test(before[prefix - 1] ?? "") &&
+      WORD_CHARACTER.test(before[prefix] ?? "") &&
+      WORD_CHARACTER.test(after[prefix] ?? "")
+    ) {
+      while (
+        prefix > 0 &&
+        WORD_CHARACTER.test(before[prefix - 1] ?? "") &&
+        WORD_CHARACTER.test(after[prefix - 1] ?? "")
+      ) prefix--;
+    }
     push(before.slice(0, prefix), after.slice(0, prefix), false);
     before = before.slice(prefix);
     after = after.slice(prefix);
@@ -220,7 +239,7 @@ export function diffText(original: string, masked: string): DiffSegment[] {
       const fragment = before.slice(start, start + 6);
       if (fragment.length < 3) break;
       const found = after.indexOf(fragment);
-      if (found >= 0) {
+      if (found >= 0 && isContextAnchor(before, start) && isContextAnchor(after, found)) {
         anchorOriginal = start;
         anchorMasked = found;
         break;
@@ -238,24 +257,47 @@ export function diffText(original: string, masked: string): DiffSegment[] {
   return segments;
 }
 
-function collectReplacements(original: unknown, masked: unknown, target: Map<string, Replacement>): void {
+const WORD_CHARACTER = /[\p{L}\p{N}_]/u;
+
+/**
+ * Shared text inside a replacement is not unchanged context. Only use an
+ * anchor that begins at a lexical boundary; this keeps `mysecret` →
+ * `maskedsecret` as one factual-looking replacement instead of inventing the
+ * misleading `my` → `masked` mapping from their shared `secret` suffix.
+ */
+function isContextAnchor(text: string, start: number): boolean {
+  if (start <= 0) return true;
+  return !WORD_CHARACTER.test(text[start - 1] ?? "") || !WORD_CHARACTER.test(text[start] ?? "");
+}
+
+function collectReplacements(
+  original: unknown,
+  masked: unknown,
+  target: Map<string, Replacement>,
+  entryIndex?: number,
+): void {
   if (typeof original === "string" && typeof masked === "string") {
     for (const segment of diffText(original, masked)) {
       if (!segment.changed || segment.original === segment.masked) continue;
       const key = `${segment.original}\0${segment.masked}`;
-      if (!target.has(key)) target.set(key, { original: segment.original, masked: segment.masked });
+      const prior = target.get(key);
+      if (!prior) {
+        target.set(key, { original: segment.original, masked: segment.masked, entryIndex });
+      } else if (prior.entryIndex === undefined && entryIndex !== undefined) {
+        prior.entryIndex = entryIndex;
+      }
     }
     return;
   }
   if (Array.isArray(original) && Array.isArray(masked)) {
     for (let index = 0; index < Math.max(original.length, masked.length); index++) {
-      collectReplacements(original[index], masked[index], target);
+      collectReplacements(original[index], masked[index], target, entryIndex);
     }
     return;
   }
   if (isRecord(original) && isRecord(masked)) {
     for (const key of new Set([...Object.keys(original), ...Object.keys(masked)])) {
-      collectReplacements(original[key], masked[key], target);
+      collectReplacements(original[key], masked[key], target, entryIndex);
     }
   }
 }
@@ -289,10 +331,14 @@ function highlightSegment(
   const value = side === "original" ? segment.original : segment.masked;
   if (!segment.changed) return theme.fg(baseColor, value);
   const isSelected = selected?.original === segment.original && selected.masked === segment.masked;
-  const emphasized = isSelected ? theme.bold(theme.underline?.(value) ?? value) : value;
-  return side === "original"
-    ? theme.bg("toolErrorBg", theme.fg("warning", emphasized))
-    : theme.bg("toolSuccessBg", theme.fg("success", emphasized));
+  const colored = side === "original"
+    ? theme.fg("warning", value)
+    : theme.fg("success", value);
+  if (isSelected) {
+    const emphasized = theme.bold(theme.underline?.(colored) ?? colored);
+    return theme.inverse?.(emphasized) ?? emphasized;
+  }
+  return theme.underline?.(colored) ?? colored;
 }
 
 function styledSide(
@@ -515,9 +561,35 @@ export function createHistoryViewer(
   const entryCache = new Map<number, { width: number; version: number; lines: string[] }>();
 
   const replacementMap = new Map<string, Replacement>();
-  for (const entry of entries) collectReplacements(entry.original, entry.masked, replacementMap);
+  for (let index = 0; index < displayEntries.length; index++) {
+    const entry = displayEntries[index]!;
+    collectReplacements(entry.original, entry.masked, replacementMap, index);
+  }
+  const toolOwners = new Map<string, number>();
+  for (let index = 0; index < displayEntries.length; index++) {
+    const content = displayEntries[index]!.original.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (isRecord(block) && block.type === "toolCall" && typeof block.id === "string") {
+        toolOwners.set(block.id, index);
+      }
+    }
+  }
+  for (const entry of entries) {
+    if (entry.original.role !== "toolResult") continue;
+    const toolCallId = typeof entry.original.toolCallId === "string" ? entry.original.toolCallId : "";
+    collectReplacements(entry.original, entry.masked, replacementMap, toolOwners.get(toolCallId));
+  }
   const replacements = [...replacementMap.values()];
   const selectedReplacement = () => replacements[replacementIndex];
+
+  const selectReplacement = (delta: number) => {
+    if (replacements.length < 2) return;
+    replacementIndex = (replacementIndex + delta + replacements.length) % replacements.length;
+    const selected = selectedReplacement();
+    if (selected?.entryIndex !== undefined) position = { entry: selected.entryIndex, line: 0 };
+    cacheVersion++;
+  };
 
   const pageSize = () => Math.max(3, tui.terminal.rows - (options.subtitle ? 5 : 4));
   const entryLines = (index: number, width: number): string[] => {
@@ -634,7 +706,7 @@ export function createHistoryViewer(
         : "";
       const selected = selectedReplacement();
       const inspector = selected
-        ? `Replacement ${replacementIndex + 1}/${replacements.length}  LOCAL: ${selected.original}  →  MODEL: ${selected.masked}`
+        ? `Mapping ${replacementIndex + 1}/${replacements.length}${replacements.length === 1 ? " (only)" : " (selected)"}  LOCAL: ${selected.original}  →  MODEL: ${selected.masked}`
         : "No masking replacements in this session";
       const legend = viewMode === "original"
         ? "Highlighted text is sensitive local content replaced before the model request"
@@ -642,7 +714,8 @@ export function createHistoryViewer(
           ? "Highlighted text is the replacement sent to the model"
           : "Left: local original · Right: model input · highlighted spans differ";
       const footerPrefix = options.footerPrefix ? `${options.footerPrefix} · ` : "";
-      const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll · Ctrl+M or M model · C compare · N/P mapping · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
+      const mappingControl = replacements.length > 1 ? " · N/P mapping" : "";
+      const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll · Ctrl+M or M model · C compare${mappingControl} · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
       const lines = [
         truncateToWidth(header, width),
         ...(options.subtitle ? [theme.fg("muted", truncateToWidth(options.subtitle, width))] : []),
@@ -666,14 +739,8 @@ export function createHistoryViewer(
       }
       else if (data === "m" || data === "M" || matchesKey(data, "ctrl+m")) toggleModelView();
       else if (data === "c" || data === "C") toggleCompareView();
-      else if ((data === "n" || data === "N") && replacements.length > 0) {
-        replacementIndex = (replacementIndex + 1) % replacements.length;
-        cacheVersion++;
-      }
-      else if ((data === "p" || data === "P") && replacements.length > 0) {
-        replacementIndex = (replacementIndex - 1 + replacements.length) % replacements.length;
-        cacheVersion++;
-      }
+      else if ((data === "n" || data === "N") && replacements.length > 1) selectReplacement(1);
+      else if ((data === "p" || data === "P") && replacements.length > 1) selectReplacement(-1);
       else if (keybindings.matches(data, "tui.select.up")) move(-1);
       else if (keybindings.matches(data, "tui.select.down")) move(1);
       else if (keybindings.matches(data, "tui.select.pageUp")) move(-pageSize());

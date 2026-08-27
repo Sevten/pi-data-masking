@@ -15,6 +15,10 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 - Make masked-output cache lookups match either the original input fingerprint or the stored masked-output fingerprint. The provider boundary re-checks the context hook's already-masked output, so single-hash lookups missed, overwrote the entry, and made the next context pass re-mask unchanged sensitive messages.
 - Isolate cached masked values by cloning both stored and returned objects, so
   mutation by a later extension or provider adapter cannot corrupt future hits.
+- Keep `/masking-history` replacement highlights on complete lexical spans
+  when a real value and placeholder share text, preserve the enclosing message
+  background across highlighted spans, and make `N`/`P` navigation visible
+  only for multiple mappings while jumping to the selected mapping's message.
 
 ### Changed
 

@@ -39,6 +39,94 @@ test("text diff keeps replacement spans separate without injecting punctuation",
   );
 });
 
+test("text diff does not split a replacement at its shared word suffix", () => {
+  assert.deepEqual(
+    diffText("mysecret", "maskedsecret"),
+    [{ original: "mysecret", masked: "maskedsecret", changed: true }],
+  );
+});
+
+test("single mapping hides navigation while multiple mappings jump to their message", () => {
+  let renderRequests = 0;
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (_color: unknown, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    inverse: (text: string) => `[selected]${text}[/selected]`,
+    underline: (text: string) => text,
+  };
+  const keybindings = { matches: (data: string, keybinding: string) => data === keybinding };
+  const entry = (key: string, original: string, masked: string) => ({
+    key,
+    original: { role: "user", content: original },
+    masked: { role: "user", content: masked },
+    capturedAt: 1,
+  });
+
+  const single = createHistoryViewer(
+    { terminal: { rows: 20 }, requestRender: () => { renderRequests++; } },
+    theme,
+    keybindings,
+    [entry("user:1", "mysecret", "maskedsecret")],
+    () => undefined,
+  );
+  const singleRender = single.render(120).join("\n");
+  assert.match(singleRender, /Mapping 1\/1 \(only\).*LOCAL: mysecret.*MODEL: maskedsecret/);
+  assert.doesNotMatch(singleRender, /N\/P mapping/);
+  single.handleInput?.("n");
+  assert.equal(renderRequests, 0);
+
+  const multiple = createHistoryViewer(
+    { terminal: { rows: 8 }, requestRender: () => { renderRequests++; } },
+    theme,
+    keybindings,
+    [
+      entry("user:1", "first-secret", "first-masked"),
+      entry("user:2", "unchanged", "unchanged"),
+      entry("user:3", "second-token", "second-hidden"),
+    ],
+    () => undefined,
+  );
+  assert.match(multiple.render(120).join("\n"), /N\/P mapping/);
+  multiple.handleInput?.("n");
+  const selected = multiple.render(120).join("\n");
+  assert.match(selected, /Mapping 2\/2 \(selected\)/);
+  assert.match(selected, /second-.*token/);
+  assert.doesNotMatch(selected, /first-secret/);
+});
+
+test("selected replacement styling does not reset the surrounding message background", () => {
+  const calls: string[] = [];
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (color: unknown, text: string) => {
+      calls.push(String(color));
+      return `<bg:${String(color)}>${text}</bg>`;
+    },
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    inverse: (text: string) => `<inverse>${text}</inverse>`,
+    underline: (text: string) => text,
+  };
+  const viewer = createHistoryViewer(
+    { terminal: { rows: 12 }, requestRender: () => undefined },
+    theme,
+    { matches: () => false },
+    [{
+      key: "user:1",
+      original: { role: "user", content: "mysecret" },
+      masked: { role: "user", content: "maskedsecret" },
+      capturedAt: 1,
+    }],
+    () => undefined,
+  );
+
+  const rendered = viewer.render(120).join("\n");
+  assert.match(rendered, /<inverse>mysecret<\/inverse>/);
+  assert.deepEqual(new Set(calls), new Set(["userMessageBg"]));
+});
+
 test("history scrolling renders only the visible transcript window", () => {
   let backgroundRenders = 0;
   let renderRequests = 0;
