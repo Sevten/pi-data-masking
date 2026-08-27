@@ -12,6 +12,13 @@ import {
 
 type JsonRecord = Record<string, unknown>;
 
+export interface MessageContentHashPair {
+  /** Fingerprint of the source message before outbound masking. */
+  original: string;
+  /** Fingerprint of the exact model-facing message after outbound masking. */
+  masked: string;
+}
+
 export interface TranscriptEntry {
   key: string;
   original: JsonRecord;
@@ -21,9 +28,9 @@ export interface TranscriptEntry {
   pending?: boolean;
   /** Restored from a session that predates persisted model-input snapshots. */
   snapshotMissing?: boolean;
-  /** Fingerprint of the source message for the stored copies; lets
-   *  mergeTranscript skip re-cloning entries whose content did not change. */
-  hash?: string;
+  /** Fingerprints of both stored copies; mergeTranscript may skip cloning only
+   *  when the source and model-facing forms are both unchanged. */
+  contentHashes?: MessageContentHashPair;
 }
 
 interface HistoryTheme {
@@ -85,7 +92,7 @@ export function mergeTranscript(
   originals: readonly JsonRecord[],
   masked: readonly JsonRecord[],
   capturedAt = Date.now(),
-  hashes?: readonly (string | undefined)[],
+  contentHashes?: readonly (MessageContentHashPair | undefined)[],
 ): TranscriptEntry[] {
   const byKey = new Map(existing.map((entry) => [entry.key, entry]));
   const next = [...existing];
@@ -94,7 +101,7 @@ export function mergeTranscript(
     const original = originals[index]!;
     const maskedMessage = masked[index] ?? original;
     const key = transcriptKey(original, index);
-    const hash = hashes?.[index];
+    const hashes = contentHashes?.[index];
     const prior = byKey.get(key);
     if (prior) {
       // Flag transitions apply even when content is unchanged: a pending
@@ -102,13 +109,18 @@ export function mergeTranscript(
       prior.pending = false;
       prior.snapshotMissing = false;
       prior.capturedAt = capturedAt;
-      // Originals never mutate between requests, so matching fingerprints
-      // mean the stored copies are already identical — skip the two
-      // structuredClone calls. Missing hashes (legacy callers) reclone.
-      if (!hash || prior.hash !== hash) {
+      // A source message can be remasked after a rule/toggle change without
+      // changing its original fingerprint. Both stored copies are reusable
+      // only when both fingerprints still match. Missing hashes (legacy
+      // callers and restored v1 entries) take the safe re-clone path.
+      if (
+        !hashes ||
+        prior.contentHashes?.original !== hashes.original ||
+        prior.contentHashes.masked !== hashes.masked
+      ) {
         prior.original = cloneMessage(original);
         prior.masked = cloneMessage(maskedMessage);
-        prior.hash = hash;
+        prior.contentHashes = hashes;
       }
     } else {
       const entry: TranscriptEntry = {
@@ -116,7 +128,7 @@ export function mergeTranscript(
         original: cloneMessage(original),
         masked: cloneMessage(maskedMessage),
         capturedAt,
-        hash,
+        contentHashes: hashes,
       };
       next.push(entry);
       byKey.set(key, entry);

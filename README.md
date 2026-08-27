@@ -167,6 +167,13 @@ When both configuration files exist, project rules run before global rules; proj
 
 Config writes are atomic and use user-only permissions where POSIX modes are available. Multi-file operations roll back on failure. If a watched file is temporarily invalid or unreadable, the last successfully parsed configuration remains active; deleting the file intentionally removes that scope.
 
+Masking behavior is pinned for one complete agent run, including all model/tool
+loop iterations. A config reload or `/masking-toggle` change that arrives while
+the agent is running is saved immediately but activates before the next agent
+run, so tool placeholders are always restored by the masker that created them.
+Effective behavior changes append sanitized, secret-free `RuleEpoch` metadata to
+the session when history persistence is enabled.
+
 `persistHistory` defaults to `true`. It stores the session key and model-facing text differences in Pi custom session metadata so placeholders and `/masking-history` survive a restart. It does not duplicate original secrets, although Pi's normal session file already contains the real conversation.
 
 Other options are `caseSensitive`, `showStatusBar`, and `systemPromptGuidance`; see the JSON Schema for their defaults and descriptions.

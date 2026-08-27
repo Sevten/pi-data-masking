@@ -79,6 +79,7 @@ import {
   mergePendingAssistant,
   mergeTranscript,
   transcriptKey,
+  type MessageContentHashPair,
   type TranscriptEntry,
 } from "./history-viewer.ts";
 import {
@@ -92,6 +93,14 @@ import {
   type SnapshotBatch,
 } from "./history-persistence.ts";
 import { MaskedCache, hashMessage } from "./masked-cache.ts";
+import {
+  RULE_EPOCH_ENTRY,
+  createRuleEpoch,
+  restoreRuleEpochs,
+  ruleBehaviorFingerprint,
+  type RuleEpoch,
+  type RuleEpochReason,
+} from "./rule-epoch.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -227,6 +236,17 @@ export default async function (pi: ExtensionAPI) {
   let requestSequence = 0;
   let sessionStatePersisted = false;
 
+  // Rule configuration is immutable for one complete agent run (from
+  // before_agent_start through agent_settled), including every tool-loop LLM
+  // call. Changes that arrive during a run are coalesced here and activated
+  // atomically before the next run starts.
+  let ruleEpochs: RuleEpoch[] = [];
+  let activeRuleEpoch: RuleEpoch | undefined;
+  let activeEpochConfig: MaskingConfig | undefined;
+  let persistedEpochIds = new Set<number>();
+  let agentRunActive = false;
+  let pendingConfigActivation: { config: MaskingConfig; reason: RuleEpochReason } | null = null;
+
   // Masked-output caches (see masked-cache.ts): history messages are
   // immutable between turns and masking is deterministic, so unchanged
   // messages reuse their stored masked form instead of re-running every
@@ -244,11 +264,11 @@ export default async function (pi: ExtensionAPI) {
 
   // ── Internal helpers ──────────────────────────────────────────────────────
 
-  /** Build a new Masker from the current config.options, sessionKey, and dynamicPlaceholderMap */
-  function buildMasker(rules: MaskingConfig["rules"]): Masker {
+  /** Build a Masker from one immutable config and the session-wide mapping state. */
+  function buildMasker(cfg: MaskingConfig): Masker {
     return new Masker(
-      rules,
-      config.options.caseSensitive,
+      cfg.enabled ? cfg.rules : [],
+      cfg.options.caseSensitive,
       sessionKey,
       dynamicPlaceholderMap,
       llmInventedValues,
@@ -271,11 +291,6 @@ export default async function (pi: ExtensionAPI) {
   function invalidateMaskedCaches(): void {
     maskedCache.invalidate();
     systemPromptMemo = null;
-  }
-
-  interface MessageContentHashPair {
-    original: string;
-    masked: string;
   }
 
   interface ResolvedMaskedMessage {
@@ -337,13 +352,74 @@ export default async function (pi: ExtensionAPI) {
     return systemPromptMemo;
   }
 
-  /** Rebuild masker and return any regex-compile warnings for the caller to surface */
-  function rebuild(cfg: MaskingConfig): string[] {
+  function persistRuleEpoch(ctx: ExtensionContext, epoch: RuleEpoch): void {
+    if (!config.options.persistHistory || persistedEpochIds.has(epoch.epochId)) return;
+    try {
+      pi.appendEntry(RULE_EPOCH_ENTRY, epoch);
+      persistedEpochIds.add(epoch.epochId);
+    } catch (err) {
+      if (!persistenceWarned) {
+        persistenceWarned = true;
+        ctx.ui.notify(`⚠️ Failed to persist masking rule history: ${(err as Error).message}`, "warning");
+      }
+    }
+  }
+
+  /** Activate one behavior version; equal behavior reuses the current epoch. */
+  function activateConfig(cfg: MaskingConfig, reason: RuleEpochReason, ctx: ExtensionContext): string[] {
+    const fingerprint = ruleBehaviorFingerprint(cfg, sessionKey);
+    const behaviorChanged = activeRuleEpoch?.behaviorFingerprint !== fingerprint;
     config = cfg;
-    masker = buildMasker(cfg.rules);
+    masker = buildMasker(cfg);
     // Rules/caseSensitive changed → cached masked outputs are stale.
     invalidateMaskedCaches();
+    if (behaviorChanged) {
+      const epoch = createRuleEpoch({
+        config: cfg,
+        previousConfig: activeEpochConfig,
+        previousEpoch: activeRuleEpoch,
+        sessionKey,
+        reason,
+      });
+      ruleEpochs.push(epoch);
+      activeRuleEpoch = epoch;
+    }
+    activeEpochConfig = cfg;
+    if (activeRuleEpoch) persistRuleEpoch(ctx, activeRuleEpoch);
     return masker.warnings;
+  }
+
+  /** Validate now, then activate immediately or coalesce behind the active run. */
+  function acceptConfigChange(
+    ctx: ExtensionContext,
+    cfg: MaskingConfig,
+    reason: RuleEpochReason,
+    warnings: string[] = [],
+  ): "activated" | "queued" {
+    const compileWarnings = buildMasker(cfg).warnings;
+    notifyWarnings(ctx, [...warnings, ...compileWarnings]);
+    if (agentRunActive) {
+      pendingConfigActivation = { config: cfg, reason };
+      updateStatus(ctx);
+      return "queued";
+    }
+    // A change accepted after the previous run settled supersedes anything
+    // that had been queued during that run.
+    pendingConfigActivation = null;
+    activateConfig(cfg, reason, ctx);
+    ensureSessionStatePersisted(ctx);
+    updateStatus(ctx);
+    return "activated";
+  }
+
+  function activatePendingConfig(ctx: ExtensionContext): void {
+    if (!pendingConfigActivation) return;
+    const pending = pendingConfigActivation;
+    pendingConfigActivation = null;
+    activateConfig(pending.config, pending.reason, ctx);
+    ensureSessionStatePersisted(ctx);
+    ctx.ui.notify(`🔒 Pending masking changes activated as E${activeRuleEpoch?.epochId ?? 1}`, "info");
+    updateStatus(ctx);
   }
 
   /** Apply the user-level /masking-toggle override after config-file merging. */
@@ -367,16 +443,23 @@ export default async function (pi: ExtensionAPI) {
       ctx.ui.setStatus("masking", undefined);
       return;
     }
-    ctx.ui.setStatus("masking", statusLabel(config));
+    const pending = pendingConfigActivation ? " · changes pending" : "";
+    ctx.ui.setStatus("masking", statusLabel(config) + pending);
   }
 
   async function reloadConfigNow(ctx: ExtensionContext): Promise<void> {
     const loaded = await loadConfig(ctx.cwd, sessionKey, configSnapshot);
     configSnapshot = loaded.snapshot;
     const persisted = await applyPersistentToggle(loaded.config);
-    const compileWarnings = rebuild(persisted.config);
-    notifyWarnings(ctx, [...loaded.warnings, ...persisted.warnings, ...compileWarnings]);
-    updateStatus(ctx);
+    const disposition = acceptConfigChange(
+      ctx,
+      persisted.config,
+      "ui_edit",
+      [...loaded.warnings, ...persisted.warnings],
+    );
+    if (disposition === "queued") {
+      ctx.ui.notify("Masking changes are saved and will activate before the next agent run", "info");
+    }
   }
 
   /** Persist only new/changed per-message model-input differences.
@@ -466,12 +549,18 @@ export default async function (pi: ExtensionAPI) {
     // stable across process restarts. Sessions predating persistence get a new
     // key and clearly marked missing snapshots for their existing messages.
     sessionKey = restored.sessionKey ?? generateSessionKey();
+    ruleEpochs = restored.sessionKey ? restoreRuleEpochs(branchEntries) : [];
+    activeRuleEpoch = ruleEpochs.at(-1);
+    activeEpochConfig = undefined;
+    persistedEpochIds = new Set(ruleEpochs.map((epoch) => epoch.epochId));
+    agentRunActive = false;
+    pendingConfigActivation = null;
     dynamicPlaceholderMap = new Map();
     llmInventedValues = new Set();
     protectedValues = new Set();
     snapshotContentHashes = new Map();
     // Fresh sessionKey and provenance sets — cached masked outputs from any
-    // prior state must not survive. (rebuild() below clears again; this also
+    // prior state must not survive. (activateConfig() below clears again; this also
     // covers paths that never reach it.)
     invalidateMaskedCaches();
     fallbackNotifiedThisTurn = false;
@@ -484,7 +573,7 @@ export default async function (pi: ExtensionAPI) {
     const loaded = await loadConfig(ctx.cwd, sessionKey);
     configSnapshot = loaded.snapshot;
     const persisted = await applyPersistentToggle(loaded.config);
-    const compileWarnings = rebuild(persisted.config);
+    const compileWarnings = activateConfig(persisted.config, "session_start", ctx);
 
     // Replay the full active branch locally to rebuild dynamic mappings and
     // first-seen provenance using the restored session key, priming the
@@ -502,14 +591,19 @@ export default async function (pi: ExtensionAPI) {
       const reloaded = await loadConfig(ctx.cwd, sessionKey, configSnapshot);
       configSnapshot = reloaded.snapshot;
       const persistedReload = await applyPersistentToggle(reloaded.config);
-      const reloadWarnings = rebuild(persistedReload.config);
-      ensureSessionStatePersisted(ctx);
+      const disposition = acceptConfigChange(
+        ctx,
+        persistedReload.config,
+        "file_reload",
+        [...reloaded.warnings, ...persistedReload.warnings],
+      );
+      if (disposition === "activated") ensureSessionStatePersisted(ctx);
       ctx.ui.notify(
-        `🔒 Masking config reloaded (${persistedReload.config.rules.length} active / ${persistedReload.config.configuredRules.length} configured)`,
+        disposition === "queued"
+          ? "🔒 Masking config reload queued for the next agent run"
+          : `🔒 Masking config reloaded (${persistedReload.config.rules.length} active / ${persistedReload.config.configuredRules.length} configured)`,
         "info"
       );
-      notifyWarnings(ctx, [...reloaded.warnings, ...persistedReload.warnings, ...reloadWarnings]);
-      updateStatus(ctx);
     });
 
     updateStatus(ctx);
@@ -518,6 +612,8 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     stopWatching?.();
     stopWatching = null;
+    agentRunActive = false;
+    pendingConfigActivation = null;
   });
 
   // ── Hook 1: context — outbound masking ────────────────────────────────────
@@ -529,14 +625,12 @@ export default async function (pi: ExtensionAPI) {
     // enabled, the same entries are replaced below with the actual masked form
     // sent through this boundary.
     if (!config.enabled || config.rules.length === 0) {
-      const disabledHashes: string[] = [];
       const disabledPairs: MessageContentHashPair[] = [];
       for (let index = 0; index < originals.length; index++) {
         const hash = hashMessage(originals[index]);
-        disabledHashes.push(hash);
         disabledPairs.push({ original: hash, masked: hash });
       }
-      transcript = mergeTranscript(transcript, originals, originals, Date.now(), disabledHashes);
+      transcript = mergeTranscript(transcript, originals, originals, Date.now(), disabledPairs);
       persistSnapshots(ctx, originals, originals, disabledPairs);
       return;
     }
@@ -574,7 +668,7 @@ export default async function (pi: ExtensionAPI) {
       originals,
       maskedMessages,
       Date.now(),
-      contentHashes.map((pair) => pair.original),
+      contentHashes,
     );
     persistSnapshots(ctx, originals, maskedMessages, contentHashes);
     return { messages: maskedMessages as unknown as typeof event.messages };
@@ -630,9 +724,24 @@ export default async function (pi: ExtensionAPI) {
     fallbackNotifiedThisTurn = false;
   });
 
+  // before_agent_start normally pins the run before agent_start fires. The
+  // latter is a fallback for programmatic continuations that skip prompt
+  // assembly. Keep the pin through every tool-loop turn until agent_settled.
+  pi.on("agent_start", async (_event, ctx) => {
+    if (agentRunActive) return;
+    activatePendingConfig(ctx);
+    agentRunActive = true;
+  });
+
+  pi.on("agent_settled", async () => {
+    agentRunActive = false;
+  });
+
   // ── Hook 5: before_agent_start — mask the system prompt (default on) ──────
 
   pi.on("before_agent_start", async (event, ctx) => {
+    activatePendingConfig(ctx);
+    agentRunActive = true;
     if (!config.enabled || config.rules.length === 0) return;
     // Memoized: the prompt is static per session and is masked again at the
     // provider boundary; fill registers provenance exactly once.
@@ -2228,21 +2337,21 @@ export default async function (pi: ExtensionAPI) {
   pi.registerCommand("masking-toggle", {
     description: "Toggle masking on/off for future sessions too",
     handler: async (_args, ctx) => {
-      const enabled = !config.enabled;
+      const baseConfig = pendingConfigActivation?.config ?? config;
+      const enabled = !baseConfig.enabled;
       try {
         await savePersistentToggle(enabled);
       } catch (err) {
         ctx.ui.notify(`Failed to save masking setting: ${(err as Error).message}`, "error");
         return;
       }
-      config = { ...config, enabled };
-      masker = buildMasker(enabled ? config.rules : []);
-      // Bypasses rebuild(), so clear the masked-output caches explicitly:
-      // toggling must never serve cached outputs across an enable cycle.
-      invalidateMaskedCaches();
-      ctx.ui.notify(`Data masking ${enabled ? "enabled" : "disabled"} (saved for future sessions)`, "info");
-      notifyWarnings(ctx, masker.warnings);
-      updateStatus(ctx);
+      const disposition = acceptConfigChange(ctx, { ...baseConfig, enabled }, "toggle");
+      ctx.ui.notify(
+        disposition === "queued"
+          ? `Data masking ${enabled ? "enable" : "disable"} queued for the next agent run (saved)`
+          : `Data masking ${enabled ? "enabled" : "disabled"} (saved for future sessions)`,
+        "info",
+      );
     },
   });
 

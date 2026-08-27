@@ -119,10 +119,11 @@ test("masking stays deterministic while the dynamic map and provenance sets grow
 
 test("mergeTranscript skips cloning entries whose content hash is unchanged", () => {
   const message = { role: "user", timestamp: 1, content: "secret" };
-  const first = mergeTranscript([], [message], [{ ...message, content: "[MASKED]" }], 10, ["hash-1"]);
+  const hashes = { original: "original-1", masked: "masked-1" };
+  const first = mergeTranscript([], [message], [{ ...message, content: "[MASKED]" }], 10, [hashes]);
   const entry = first[0]!;
 
-  const second = mergeTranscript(first, [message], [{ ...message, content: "[MASKED]" }], 20, ["hash-1"]);
+  const second = mergeTranscript(first, [message], [{ ...message, content: "[MASKED]" }], 20, [hashes]);
   assert.equal(second.length, 1);
   assert.ok(second[0] === entry);
   assert.ok(second[0]!.original === entry.original);
@@ -130,28 +131,55 @@ test("mergeTranscript skips cloning entries whose content hash is unchanged", ()
   assert.equal(second[0]!.capturedAt, 20);
 });
 
-test("mergeTranscript re-clones when the hash changes", () => {
+test("mergeTranscript re-clones when the original hash changes", () => {
   const message = { role: "user", timestamp: 1, content: "secret" };
-  const first = mergeTranscript([], [message], [{ ...message, content: "[MASKED]" }], 10, ["hash-1"]);
+  const first = mergeTranscript([], [message], [{ ...message, content: "[MASKED]" }], 10, [
+    { original: "original-1", masked: "masked-1" },
+  ]);
   const entry = first[0]!;
   const staleMasked = entry.masked;
   const staleOriginal = entry.original;
 
-  const second = mergeTranscript(first, [message], [{ ...message, content: "[REMASKED]" }], 20, ["hash-2"]);
+  const second = mergeTranscript(first, [message], [{ ...message, content: "[REMASKED]" }], 20, [
+    { original: "original-2", masked: "masked-2" },
+  ]);
   assert.equal(second.length, 1);
   assert.ok(second[0] === entry); // entry object is reused…
   assert.ok(second[0]!.masked !== staleMasked); // …but the stored copies are fresh
   assert.ok(second[0]!.original !== staleOriginal);
   assert.equal(second[0]!.masked.content, "[REMASKED]");
-  assert.equal(second[0]!.hash, "hash-2");
+  assert.deepEqual(second[0]!.contentHashes, { original: "original-2", masked: "masked-2" });
+});
+
+test("mergeTranscript refreshes masked history when rules change but source content does not", () => {
+  const message = { role: "user", timestamp: 1, content: "secret" };
+  const first = mergeTranscript([], [message], [{ ...message, content: "[RULE_A]" }], 10, [
+    { original: "same-original", masked: "masked-by-a" },
+  ]);
+  const staleOriginal = first[0]!.original;
+  const staleMasked = first[0]!.masked;
+
+  const second = mergeTranscript(first, [message], [{ ...message, content: "[RULE_B]" }], 20, [
+    { original: "same-original", masked: "masked-by-b" },
+  ]);
+
+  assert.ok(second[0]!.original !== staleOriginal);
+  assert.ok(second[0]!.masked !== staleMasked);
+  assert.equal(second[0]!.masked.content, "[RULE_B]");
+  assert.deepEqual(second[0]!.contentHashes, {
+    original: "same-original",
+    masked: "masked-by-b",
+  });
 });
 
 test("unchanged-hash merge still confirms pending assistant responses", () => {
   const message = { role: "assistant", timestamp: 2, content: [{ type: "text", text: "hi" }] };
   const pending = mergePendingAssistant([], message, message, 5);
-  pending[0]!.hash = "hash-pending";
+  pending[0]!.contentHashes = { original: "hash-pending", masked: "hash-pending" };
 
-  const confirmed = mergeTranscript(pending, [message], [message], 9, ["hash-pending"]);
+  const confirmed = mergeTranscript(pending, [message], [message], 9, [
+    { original: "hash-pending", masked: "hash-pending" },
+  ]);
   assert.equal(confirmed.length, 1);
   assert.equal(confirmed[0]!.pending, false);
   assert.ok(confirmed[0]!.original === pending[0]!.original);

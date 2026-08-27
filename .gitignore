@@ -2,3 +2,4 @@ node_modules/
 *.tgz
 .pi/pi-data-masking/masking.config.json
 CONFIGURATION_REQUIREMENTS.md
+docs/
