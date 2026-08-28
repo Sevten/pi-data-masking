@@ -120,10 +120,13 @@ that actually crossed an outbound boundary while that version was active; it
 does not apply old or current rules hypothetically to other messages. Empty,
 unused versions are hidden.
 
-Within a version, the viewer opens at the newest messages. It highlights
-replacements, uses `N`/`P` to visit every masked occurrence (including repeated
-uses of the same mapping), and switches among the local original, the exact
-stored model-facing representation, and a comparison view. Wide terminals show
+Within a version, the viewer opens at the newest messages. Underlining marks
+all replacements; reverse-video `⟦brackets⟧` identify only the current
+navigation target. `N` moves to the next masked occurrence and `P` to the
+previous one, visiting every occurrence (including repeated uses of the same
+mapping). The
+viewer also switches among the local original, the exact stored model-facing
+representation, and a comparison view. Wide terminals show
 the comparison side by side; narrow terminals stack both versions. The header
 includes the activation source, secret-free change summary, and behavior
 fingerprint so similar rule versions remain distinguishable.

@@ -196,6 +196,48 @@ test("configuration home toggles and reorders in place while retaining selection
   }
 });
 
+test("adding a rule keeps the type picker and builder on clean full-screen pages", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(projectPath, JSON.stringify({ rules: [] }));
+
+  const assertFullScreen = (component: Component, title: string) => {
+    const lines = component.render(100);
+    assert.equal(lines.length >= 50, true, `${title} must paint the complete terminal viewport`);
+    assert.equal(lines.some((line) => line.includes(title)), true);
+  };
+  const harness = await createHarness(dir, [
+    async (component) => {
+      assertFullScreen(component, "Masking configuration");
+      component.handleInput("a");
+      assert.ok(component.render(100)[0]?.includes("Opening rule builder"));
+      await waitFor(() => !component.render(100)[0]?.includes("Opening"));
+      // The same mounted home component is restored after the child overlays.
+      assertFullScreen(component, "Masking configuration");
+      component.handleInput(INPUT.escape);
+    },
+    async (component) => {
+      assertFullScreen(component, "Rule type");
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.enter);
+    },
+    async (component) => {
+      assertFullScreen(component, "New masking rule");
+      component.handleInput(INPUT.escape);
+    },
+  ]);
+
+  try {
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    assert.equal(configRules(projectPath).length, 0);
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("Rule Builder retains a dirty draft after save failure and confirms discard", async () => {
   const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
   const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
@@ -205,8 +247,14 @@ test("Rule Builder retains a dirty draft after save failure and confirms discard
   ] }));
 
   const harness = await createHarness(dir, [
-    async (component) => component.handleInput(INPUT.enter),
     async (component) => {
+      component.handleInput(INPUT.enter);
+      assert.ok(component.render(100)[0]?.includes("Opening rule"));
+      await waitFor(() => !component.render(100)[0]?.includes("Opening"), 5000);
+      component.handleInput(INPUT.escape);
+    },
+    async (component) => {
+      assert.ok(component.render(100).some((line) => line.includes("Edit masking rule")));
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.down);
       component.handleInput("X");
@@ -221,7 +269,6 @@ test("Rule Builder retains a dirty draft after save failure and confirms discard
       assert.ok(component.render(100).some((line) => line.includes("Discard unsaved changes?")));
       component.handleInput(INPUT.enter);
     },
-    async (component) => component.handleInput(INPUT.escape),
   ]);
 
   try {

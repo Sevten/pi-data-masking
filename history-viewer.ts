@@ -54,8 +54,17 @@ export interface DiffSegment {
 interface Replacement {
   original: string;
   masked: string;
-  /** First visible transcript entry containing this factual replacement. */
-  entryIndex?: number;
+  /** Visible transcript entry containing this factual occurrence. */
+  entryIndex: number;
+  /** Changed span index in that entry's rendered text. */
+  entryOccurrenceIndex: number;
+  /** Full tool output is needed to preserve and reveal this rendered location. */
+  requiresToolsExpanded?: boolean;
+}
+
+interface RenderSelection {
+  targetOccurrence?: number;
+  nextOccurrence: number;
 }
 
 interface HistoryTui {
@@ -269,32 +278,83 @@ function isContextAnchor(text: string, start: number): boolean {
   return !WORD_CHARACTER.test(text[start - 1] ?? "") || !WORD_CHARACTER.test(text[start] ?? "");
 }
 
-function collectReplacements(
-  original: unknown,
-  masked: unknown,
+function collectTextReplacements(
+  original: string,
+  masked: string,
   target: Replacement[],
-  entryIndex?: number,
+  entryIndex: number,
+  occurrence: { next: number },
+  requiresToolsExpanded = false,
 ): void {
-  if (typeof original === "string" && typeof masked === "string") {
-    for (const segment of diffText(original, masked)) {
-      if (!segment.changed || segment.original === segment.masked) continue;
-      // Keep every factual occurrence. Repeated uses of the same mapping are
-      // separate audit locations and should each be reachable with N/P.
-      target.push({ original: segment.original, masked: segment.masked, entryIndex });
-    }
+  for (const segment of diffText(original, masked)) {
+    if (!segment.changed || segment.original === segment.masked) continue;
+    target.push({
+      original: segment.original,
+      masked: segment.masked,
+      entryIndex,
+      entryOccurrenceIndex: occurrence.next++,
+      requiresToolsExpanded,
+    });
+  }
+}
+
+/** Collect only spans represented by the viewer, in the same order it renders them. */
+function collectEntryReplacements(
+  entry: TranscriptEntry,
+  entryIndex: number,
+  toolResults: ReadonlyMap<string, TranscriptEntry>,
+  target: Replacement[],
+): void {
+  const occurrence = { next: 0 };
+  let requiresToolsExpanded = false;
+  const collect = (original: string, masked: string, toolOutput = requiresToolsExpanded) => {
+    collectTextReplacements(original, masked, target, entryIndex, occurrence, toolOutput);
+  };
+  if (entry.original.role === "user") {
+    collect(contentText(entry.original.content), contentText(entry.masked.content));
     return;
   }
-  if (Array.isArray(original) && Array.isArray(masked)) {
-    for (let index = 0; index < Math.max(original.length, masked.length); index++) {
-      collectReplacements(original[index], masked[index], target, entryIndex);
+  if (entry.original.role !== "assistant") return;
+
+  const originalContent = Array.isArray(entry.original.content) ? entry.original.content : [];
+  const maskedContent = Array.isArray(entry.masked.content) ? entry.masked.content : [];
+  let thinkingRun: Array<[JsonRecord, JsonRecord]> = [];
+  const flushThinking = () => {
+    if (thinkingRun.length === 0) return;
+    collect(
+      thinkingRun.map(([block]) => String(block.thinking ?? "")).join("\n"),
+      thinkingRun.map(([, block]) => String(block.thinking ?? "")).join("\n"),
+    );
+    thinkingRun = [];
+  };
+
+  for (let index = 0; index < originalContent.length; index++) {
+    const original = originalContent[index];
+    if (!isRecord(original)) continue;
+    const masked = isRecord(maskedContent[index]) ? maskedContent[index] as JsonRecord : original;
+    if (original.type === "thinking") {
+      thinkingRun.push([original, masked]);
+      continue;
     }
-    return;
-  }
-  if (isRecord(original) && isRecord(masked)) {
-    for (const key of new Set([...Object.keys(original), ...Object.keys(masked)])) {
-      collectReplacements(original[key], masked[key], target, entryIndex);
+    flushThinking();
+    if (original.type === "text") {
+      collect(String(original.text ?? ""), String(masked.text ?? ""));
+    } else if (original.type === "toolCall") {
+      collect(
+        JSON.stringify(original.arguments ?? {}, null, 2),
+        JSON.stringify(masked.arguments ?? {}, null, 2),
+      );
+      const id = typeof original.id === "string" ? original.id : "";
+      const result = toolResults.get(`tool:${id}`);
+      if (result) {
+        collect(contentText(result.original.content), contentText(result.masked.content), true);
+        // When collapsed, omitted tool-result spans would shift the occurrence
+        // ordinals of any content rendered after this card.
+        requiresToolsExpanded = true;
+      }
     }
   }
+  flushThinking();
 }
 
 function markdownTheme(theme: HistoryTheme) {
@@ -321,49 +381,50 @@ function highlightSegment(
   side: "original" | "model",
   theme: HistoryTheme,
   baseColor: string,
-  selected: Replacement | undefined,
+  selected: boolean,
 ): string {
   const value = side === "original" ? segment.original : segment.masked;
   if (!segment.changed) return theme.fg(baseColor, value);
-  const isSelected = selected?.original === segment.original && selected.masked === segment.masked;
+  if (selected) {
+    // Brackets are display-only navigation markers. They remain unmistakable
+    // even in themes or terminals where underline and inverse look similar.
+    const marked = theme.bold(theme.fg("accent", `⟦${value}⟧`));
+    return theme.inverse?.(marked) ?? marked;
+  }
   const colored = side === "original"
     ? theme.fg("warning", value)
     : theme.fg("success", value);
-  if (isSelected) {
-    const emphasized = theme.bold(theme.underline?.(colored) ?? colored);
-    return theme.inverse?.(emphasized) ?? emphasized;
-  }
   return theme.underline?.(colored) ?? colored;
 }
 
 function styledSide(
-  original: string,
-  masked: string,
+  segments: readonly DiffSegment[],
   side: "original" | "model",
   theme: HistoryTheme,
   baseColor: string,
-  selected: Replacement | undefined,
+  selectedChangedIndex: number | undefined,
   italic: boolean,
 ): string {
-  const rendered = diffText(original, masked)
-    .map((segment) => highlightSegment(segment, side, theme, baseColor, selected))
-    .join("");
+  let changedIndex = 0;
+  const rendered = segments.map((segment) => {
+    const selected = segment.changed && changedIndex++ === selectedChangedIndex;
+    return highlightSegment(segment, side, theme, baseColor, selected);
+  }).join("");
   return italic ? theme.italic(rendered) : rendered;
 }
 
 function comparisonText(
-  original: string,
-  masked: string,
+  segments: readonly DiffSegment[],
   theme: HistoryTheme,
   baseColor: string,
-  selected: Replacement | undefined,
+  selectedChangedIndex: number | undefined,
   italic: boolean,
 ): Component {
   return {
     invalidate: () => undefined,
     render: (width) => {
-      const local = styledSide(original, masked, "original", theme, baseColor, selected, italic);
-      const model = styledSide(original, masked, "model", theme, baseColor, selected, italic);
+      const local = styledSide(segments, "original", theme, baseColor, selectedChangedIndex, italic);
+      const model = styledSide(segments, "model", theme, baseColor, selectedChangedIndex, italic);
       if (width < 90) {
         return [
           theme.fg("muted", "LOCAL ORIGINAL"),
@@ -395,12 +456,22 @@ function addMessageText(
   theme: HistoryTheme,
   style: "user" | "assistant" | "thinking",
   mode: ViewMode,
-  selected: Replacement | undefined,
+  selection: RenderSelection,
 ) {
   const baseColor = style === "user" ? "userMessageText" : style === "thinking" ? "thinkingText" : "text";
   const italic = style === "thinking";
+  const segments = diffText(original, masked);
+  const changedCount = segments.filter((segment) => segment.changed).length;
+  const selectedChangedIndex = selection.targetOccurrence === undefined
+    ? undefined
+    : selection.targetOccurrence - selection.nextOccurrence;
+  selection.nextOccurrence += changedCount;
+  const selectedInThisText = selectedChangedIndex !== undefined &&
+    selectedChangedIndex >= 0 && selectedChangedIndex < changedCount
+    ? selectedChangedIndex
+    : undefined;
   if (mode === "compare") {
-    container.addChild(comparisonText(original, masked, theme, baseColor, selected, italic));
+    container.addChild(comparisonText(segments, theme, baseColor, selectedInThisText, italic));
     return;
   }
   if (original === masked && !italic) {
@@ -411,7 +482,7 @@ function addMessageText(
     return;
   }
   container.addChild(new Text(
-    styledSide(original, masked, mode, theme, baseColor, selected, italic),
+    styledSide(segments, mode, theme, baseColor, selectedInThisText, italic),
     1,
     0,
   ));
@@ -425,20 +496,20 @@ function addToolCard(
   expanded: boolean,
   theme: HistoryTheme,
   mode: ViewMode,
-  selected: Replacement | undefined,
+  selection: RenderSelection,
 ) {
   const originalArguments = JSON.stringify(call.arguments ?? {}, null, 2);
   const maskedArguments = JSON.stringify(maskedCall.arguments ?? {}, null, 2);
   const card = new Box(1, 0, (text) => theme.bg("toolSuccessBg", text));
   const name = typeof call.name === "string" ? call.name : "tool";
   card.addChild(new Text(theme.fg("toolTitle", theme.bold(`▸ ${name}`))));
-  addMessageText(card, originalArguments, maskedArguments, theme, "assistant", mode, selected);
+  addMessageText(card, originalArguments, maskedArguments, theme, "assistant", mode, selection);
   if (result) {
     const original = contentText(result.original.content);
     const masked = contentText(result.masked.content);
     const preview = expanded ? original : original.split("\n").slice(0, 10).join("\n");
     const previewMasked = expanded ? masked : masked.split("\n").slice(0, 10).join("\n");
-    addMessageText(card, preview, previewMasked, theme, "assistant", mode, selected);
+    addMessageText(card, preview, previewMasked, theme, "assistant", mode, selection);
     const totalLines = Math.max(original.split("\n").length, masked.split("\n").length);
     if (!expanded && totalLines > 10) {
       card.addChild(new Text(theme.fg("dim", `… (${totalLines - 10} more lines, Ctrl+O to expand)`), 1, 0));
@@ -458,18 +529,21 @@ function addAssistant(
   thinkingVisible: boolean,
   theme: HistoryTheme,
   mode: ViewMode,
-  selected: Replacement | undefined,
+  selection: RenderSelection,
 ) {
   const originalContent = Array.isArray(entry.original.content) ? entry.original.content : [];
   const maskedContent = Array.isArray(entry.masked.content) ? entry.masked.content : [];
   let thinkingRun: Array<[JsonRecord, JsonRecord]> = [];
   const flushThinking = () => {
     if (thinkingRun.length === 0) return;
+    const original = thinkingRun.map(([block]) => String(block.thinking ?? "")).join("\n");
+    const masked = thinkingRun.map(([, block]) => String(block.thinking ?? "")).join("\n");
     if (thinkingVisible) {
-      const original = thinkingRun.map(([block]) => String(block.thinking ?? "")).join("\n");
-      const masked = thinkingRun.map(([, block]) => String(block.thinking ?? "")).join("\n");
-      addMessageText(container, original, masked, theme, "thinking", mode, selected);
+      addMessageText(container, original, masked, theme, "thinking", mode, selection);
     } else {
+      // Hidden thinking still occupies factual occurrence ordinals so a later
+      // selected span in the same assistant message stays aligned.
+      selection.nextOccurrence += diffText(original, masked).filter((segment) => segment.changed).length;
       container.addChild(new Text(theme.fg("thinkingText", theme.italic("Thinking...")), 1, 0));
     }
     thinkingRun = [];
@@ -486,10 +560,10 @@ function addAssistant(
     }
     flushThinking();
     if (original.type === "text") {
-      addMessageText(container, String(original.text ?? ""), String(maskedBlock.text ?? ""), theme, "assistant", mode, selected);
+      addMessageText(container, String(original.text ?? ""), String(maskedBlock.text ?? ""), theme, "assistant", mode, selection);
     } else if (original.type === "toolCall") {
       const id = typeof original.id === "string" ? original.id : "";
-      addToolCard(container, original, maskedBlock, toolResults.get(`tool:${id}`), expanded, theme, mode, selected);
+      addToolCard(container, original, maskedBlock, toolResults.get(`tool:${id}`), expanded, theme, mode, selection);
     }
   }
   flushThinking();
@@ -505,16 +579,20 @@ function renderTranscriptEntry(
   selected: Replacement | undefined,
 ): Component {
   const container = new Container();
+  const selection: RenderSelection = {
+    targetOccurrence: selected?.entryOccurrenceIndex,
+    nextOccurrence: 0,
+  };
   const role = entry.original.role;
   container.addChild(new Spacer(1));
   if (role === "user") {
     const box = new Box(0, 0, (text) => theme.bg("userMessageBg", text));
     box.addChild(new Text(theme.fg("muted", "You"), 1, 0));
-    addMessageText(box, contentText(entry.original.content), contentText(entry.masked.content), theme, "user", mode, selected);
+    addMessageText(box, contentText(entry.original.content), contentText(entry.masked.content), theme, "user", mode, selection);
     container.addChild(box);
   } else if (role === "assistant") {
     container.addChild(new Text(theme.fg("accent", "Assistant"), 1, 0));
-    addAssistant(container, entry, toolResults, expanded, thinkingVisible, theme, mode, selected);
+    addAssistant(container, entry, toolResults, expanded, thinkingVisible, theme, mode, selection);
     if (entry.pending) container.addChild(new Text(theme.fg("dim", "Not yet included in a subsequent model request."), 1, 0));
   } else {
     container.addChild(new Text(theme.fg("muted", `Unsupported message type: ${String(role)}`), 1, 0));
@@ -547,6 +625,7 @@ export function createHistoryViewer(
   let replacementIndex = 0;
   let lastWidth = 80;
   let cacheVersion = 0;
+  let revealSelectedOccurrence = false;
 
   const toolResults = new Map(entries
     .filter((entry) => entry.original.role === "toolResult")
@@ -559,34 +638,23 @@ export function createHistoryViewer(
 
   const replacements: Replacement[] = [];
   for (let index = 0; index < displayEntries.length; index++) {
-    const entry = displayEntries[index]!;
-    collectReplacements(entry.original, entry.masked, replacements, index);
-  }
-  const toolOwners = new Map<string, number>();
-  for (let index = 0; index < displayEntries.length; index++) {
-    const content = displayEntries[index]!.original.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (isRecord(block) && block.type === "toolCall" && typeof block.id === "string") {
-        toolOwners.set(block.id, index);
-      }
-    }
-  }
-  for (const entry of entries) {
-    if (entry.original.role !== "toolResult") continue;
-    const toolCallId = typeof entry.original.toolCallId === "string" ? entry.original.toolCallId : "";
-    collectReplacements(entry.original, entry.masked, replacements, toolOwners.get(toolCallId));
+    collectEntryReplacements(displayEntries[index]!, index, toolResults, replacements);
   }
   // The inspector starts at the most recent masked occurrence, matching the
   // initial viewport. N wraps forward; P walks backward through occurrences.
   replacementIndex = Math.max(0, replacements.length - 1);
   const selectedReplacement = () => replacements[replacementIndex];
+  if (selectedReplacement()?.requiresToolsExpanded) toolsExpanded = true;
 
   const selectReplacement = (delta: number) => {
     if (replacements.length < 2) return;
     replacementIndex = (replacementIndex + delta + replacements.length) % replacements.length;
     const selected = selectedReplacement();
-    if (selected?.entryIndex !== undefined) position = { entry: selected.entryIndex, line: 0 };
+    if (selected) {
+      position = { entry: selected.entryIndex, line: 0 };
+      if (selected.requiresToolsExpanded) toolsExpanded = true;
+      revealSelectedOccurrence = true;
+    }
     cacheVersion++;
   };
 
@@ -603,7 +671,7 @@ export function createHistoryViewer(
       thinkingVisible,
       theme,
       viewMode,
-      selectedReplacement(),
+      selectedReplacement()?.entryIndex === index ? selectedReplacement() : undefined,
     ).render(width);
     entryCache.set(index, { width, version: cacheVersion, lines });
     return lines;
@@ -662,6 +730,16 @@ export function createHistoryViewer(
   };
 
   const visiblePage = (width: number) => {
+    if (revealSelectedOccurrence) {
+      const selected = selectedReplacement();
+      if (selected) {
+        const markerLine = entryLines(selected.entryIndex, width)
+          .findIndex((line) => line.includes("⟦"));
+        if (markerLine >= 0) position = { entry: selected.entryIndex, line: Math.max(0, markerLine - 1) };
+      }
+      revealSelectedOccurrence = false;
+    }
+
     const renderFromPosition = () => {
       while (position.entry < displayEntries.length) {
         const lines = entryLines(position.entry, width);
@@ -705,16 +783,16 @@ export function createHistoryViewer(
         : "";
       const selected = selectedReplacement();
       const inspector = selected
-        ? `Masked occurrence ${replacementIndex + 1}/${replacements.length}${replacements.length === 1 ? " (only)" : " (selected)"}  LOCAL: ${selected.original}  →  MODEL: ${selected.masked}`
-        : "No masking replacements in this session";
+        ? `Current masked occurrence ${replacementIndex + 1}/${replacements.length}${replacements.length === 1 ? " (only)" : ""}  LOCAL: ${selected.original}  →  MODEL: ${selected.masked}`
+        : "No masked text in this session";
       const legend = viewMode === "original"
-        ? "Highlighted text is sensitive local content replaced before the model request"
+        ? "Underlined: local text changed by masking · ⟦brackets⟧: current N/P target (display-only)"
         : viewMode === "model"
-          ? "Highlighted text is the replacement sent to the model"
-          : "Left: local original · Right: model input · highlighted spans differ";
+          ? "Underlined: masking replacement · ⟦brackets⟧: current N/P target (display-only)"
+          : "Left: local original · Right: model input · ⟦brackets⟧ mark current N/P target";
       const footerPrefix = options.footerPrefix ? `${options.footerPrefix} · ` : "";
-      const occurrenceControl = replacements.length > 1 ? " · N/P masked text" : "";
-      const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll · M original/masked · C side-by-side compare${occurrenceControl} · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
+      const occurrenceControl = replacements.length > 1 ? " · N/P next/previous masked text" : "";
+      const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll${occurrenceControl} · M original/masked · C side-by-side compare · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
       const lines = [
         truncateToWidth(header, width),
         ...(options.subtitle ? [theme.fg("muted", truncateToWidth(options.subtitle, width))] : []),

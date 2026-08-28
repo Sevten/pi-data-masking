@@ -40,7 +40,7 @@
  */
 
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Editor, Key, decodeKittyPrintable, matchesKey, sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Editor, Key, decodeKittyPrintable, matchesKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { EditorTheme } from "@earendil-works/pi-tui";
 import { existsSync } from "node:fs";
 import { createHmac } from "node:crypto";
@@ -1048,6 +1048,108 @@ export default async function (pi: ExtensionAPI) {
 
   // ── Command: /masking ────────────────────────────────────────────────────
 
+  const MASKING_SCREEN_OPTIONS = {
+    overlay: true,
+    overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
+  } as const;
+
+  /**
+   * A full-width overlay still exposes the transcript on rows the component
+   * does not render. Every /masking screen therefore paints at least one full
+   * terminal viewport, including short pickers and confirmation prompts.
+   */
+  function fillMaskingScreen(lines: string[], width: number, rows: number): string[] {
+    const clipped = lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+    return [...clipped, ...Array(Math.max(0, rows - clipped.length)).fill("")];
+  }
+
+  function wrappedMaskingText(text: string, width: number): string[] {
+    return text.split("\n").flatMap((line) => line ? wrapTextWithAnsi(line, Math.max(1, width)) : [""]);
+  }
+
+  async function selectMaskingOption(
+    ctx: ExtensionContext,
+    title: string,
+    options: readonly string[],
+    message?: string,
+  ): Promise<string | undefined> {
+    if (options.length === 0) return undefined;
+    return ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
+      let selectedIndex = 0;
+      return {
+        render: (width) => {
+          const lines = [theme.fg("accent", theme.bold(title)), ""];
+          if (message) lines.push(...wrappedMaskingText(message, width), "");
+          for (let index = 0; index < options.length; index++) {
+            const row = `${index === selectedIndex ? "▶" : " "} ${options[index]}`;
+            lines.push(index === selectedIndex ? theme.fg("accent", row) : theme.fg("muted", row));
+          }
+          lines.push("", theme.fg("dim", "↑↓ select · Enter confirm · Esc cancel"));
+          return fillMaskingScreen(lines, width, tui.terminal.rows);
+        },
+        invalidate: () => {},
+        handleInput: (data) => {
+          if (keybindings.matches(data, "tui.select.up")) {
+            selectedIndex = (selectedIndex - 1 + options.length) % options.length;
+            tui.requestRender();
+          } else if (keybindings.matches(data, "tui.select.down")) {
+            selectedIndex = (selectedIndex + 1) % options.length;
+            tui.requestRender();
+          } else if (keybindings.matches(data, "tui.select.confirm")) {
+            done(options[selectedIndex]);
+          } else if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
+            done(undefined);
+          }
+        },
+      };
+    }, MASKING_SCREEN_OPTIONS);
+  }
+
+  async function confirmMaskingAction(ctx: ExtensionContext, title: string, message: string): Promise<boolean> {
+    return await selectMaskingOption(ctx, title, ["Yes", "No"], message) === "Yes";
+  }
+
+  async function inputMaskingValue(
+    ctx: ExtensionContext,
+    title: string,
+    placeholder: string,
+  ): Promise<string | undefined> {
+    return ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
+      const editorTheme: EditorTheme = {
+        borderColor: (text) => theme.fg("accent", text),
+        selectList: {
+          selectedPrefix: (text) => theme.fg("accent", text),
+          selectedText: (text) => theme.fg("accent", text),
+          description: (text) => theme.fg("muted", text),
+          scrollInfo: (text) => theme.fg("dim", text),
+          noMatch: (text) => theme.fg("warning", text),
+        },
+      };
+      const editor = new Editor(tui, editorTheme);
+      editor.focused = true;
+      editor.onChange = () => tui.requestRender();
+      editor.onSubmit = (value) => done(value);
+      return {
+        render: (width) => fillMaskingScreen([
+          theme.fg("accent", theme.bold(title)),
+          theme.fg("muted", `Example: ${placeholder}`),
+          "",
+          ...editor.render(width),
+          "",
+          theme.fg("dim", "Enter confirm · Esc cancel"),
+        ], width, tui.terminal.rows),
+        invalidate: () => editor.invalidate(),
+        handleInput: (data) => {
+          if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
+            done(undefined);
+          } else {
+            editor.handleInput(data);
+          }
+        },
+      };
+    }, MASKING_SCREEN_OPTIONS);
+  }
+
   async function chooseExistingSource(
     ctx: ExtensionContext,
     title: string,
@@ -1060,8 +1162,8 @@ export default async function (pi: ExtensionAPI) {
       ctx.ui.notify("Add a rule first to create a project or global config", "warning");
       return undefined;
     }
-    const selected = await ctx.ui.select(title, [...choices.map(({ label }) => label), "Cancel"]);
-    if (!selected || selected === "Cancel") return undefined;
+    const selected = await selectMaskingOption(ctx, title, choices.map(({ label }) => label));
+    if (!selected) return undefined;
     return choices.find(({ label }) => label === selected);
   }
 
@@ -1280,7 +1382,7 @@ export default async function (pi: ExtensionAPI) {
           if (literalValue !== undefined) hints.push(`Ctrl+R ${literalHidden ? "reveal" : "hide"} exact value`);
           lines.push(theme.fg("dim", hints.join(" · ")));
           if (toggleError) lines.push(theme.fg("warning", toggleError));
-          return lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+          return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => {
           ruleEditor.invalidate();
@@ -1299,10 +1401,7 @@ export default async function (pi: ExtensionAPI) {
           }
         },
       };
-    }, {
-      overlay: true,
-      overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
-    });
+    }, MASKING_SCREEN_OPTIONS);
   }
 
   async function addConfigRule(
@@ -1344,8 +1443,8 @@ export default async function (pi: ExtensionAPI) {
           : "Exact literal value";
     } else {
       selectedSource = sources.find((source) => existsSync(source.path)) ?? sources[0];
-      const selectedTypeOption = await ctx.ui.select("Rule type", [...builderTypes, "Cancel"]);
-      if (!selectedTypeOption || selectedTypeOption === "Cancel") return;
+      const selectedTypeOption = await selectMaskingOption(ctx, "Rule type", builderTypes);
+      if (!selectedTypeOption) return;
       selectedType = selectedTypeOption as BuilderType;
     }
     if (!selectedType) return;
@@ -1366,7 +1465,7 @@ export default async function (pi: ExtensionAPI) {
             lines.push(theme.fg("dim", `Description: ${selected.description}`));
             lines.push(theme.fg("dim", `Example: ${selected.example}`));
             lines.push("", theme.fg("dim", "↑↓ select · Enter continue · Esc cancel"));
-            return lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+            return fillMaskingScreen(lines, width, tui.terminal.rows);
           },
           invalidate: () => {},
           handleInput: (data) => {
@@ -1383,10 +1482,7 @@ export default async function (pi: ExtensionAPI) {
             }
           },
         };
-      }, {
-        overlay: true,
-        overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
-      });
+      }, MASKING_SCREEN_OPTIONS);
       if (!selectedPreset) return;
     }
 
@@ -1862,7 +1958,7 @@ export default async function (pi: ExtensionAPI) {
           for (const warning of preview.warnings.slice(0, 3)) lines.push(theme.fg("warning", `Warning: ${warning}`));
           if (saveMessage) lines.push(theme.fg(saveMessage.startsWith("Cannot") ? "warning" : "accent", saveMessage));
           lines.push("", theme.fg("dim", "↑↓ fields · Tab form/test · ←→ or Space change selection · F2 form/JSON · Enter save · Esc cancel"));
-          return lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+          return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => Object.values(editors).forEach((editor) => editor.invalidate()),
         handleInput: (data) => {
@@ -1949,10 +2045,7 @@ export default async function (pi: ExtensionAPI) {
           editorForField(field)?.handleInput(data);
         },
       };
-    }, {
-      overlay: true,
-      overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
-    });
+    }, MASKING_SCREEN_OPTIONS);
 
     if (!built) return;
     const id = String(built.rule.id);
@@ -1964,7 +2057,8 @@ export default async function (pi: ExtensionAPI) {
         built.source.scope === "project" ? "warning" : "info",
       );
       if (built.source.scope === "project") {
-        const addIgnore = await ctx.ui.confirm(
+        const addIgnore = await confirmMaskingAction(
+          ctx,
           "Exclude project masking config from Git?",
           `Add .pi/pi-data-masking/masking.config.json to ${ctx.cwd}/.gitignore?\n\nChoose Yes if this config may contain exact literal values.`,
         );
@@ -1998,7 +2092,8 @@ export default async function (pi: ExtensionAPI) {
   }
 
   async function deleteConfigRule(ctx: ExtensionContext, configured: ConfiguredMaskingRule): Promise<void> {
-    if (!await ctx.ui.confirm(
+    if (!await confirmMaskingAction(
+      ctx,
       "Delete masking rule?",
       `Delete "${configuredRuleDisplayName(configured)}" [${configured.rule.id}] from the ${configured.scope} config?\nThis may expose matching values in future requests and cannot retract earlier model context.`,
     )) return;
@@ -2036,7 +2131,7 @@ export default async function (pi: ExtensionAPI) {
           "",
           theme.fg("dim", "Enter / Esc / H close help"),
         ];
-        return lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+        return fillMaskingScreen(lines, width, tui.terminal.rows);
       },
       invalidate: () => {},
       handleInput: (data) => {
@@ -2047,10 +2142,7 @@ export default async function (pi: ExtensionAPI) {
           || matchesKey(data, "h")
         ) done();
       },
-    }), {
-      overlay: true,
-      overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
-    });
+    }), MASKING_SCREEN_OPTIONS);
   }
 
   async function moveConfigRule(
@@ -2113,7 +2205,8 @@ export default async function (pi: ExtensionAPI) {
   async function applyBatchRuleState(ctx: ExtensionContext, changes: RuleEnabledChange[]): Promise<void> {
     if (changes.length === 0) return;
     const disabling = changes.filter((change) => !change.enabled).length;
-    if (!await ctx.ui.confirm(
+    if (!await confirmMaskingAction(
+      ctx,
       "Apply batch rule changes?",
       `${changes.length - disabling} rule(s) will be enabled and ${disabling} disabled.\nDisabled rules may expose matching values in future requests. Earlier context cannot be retracted.`,
     )) return;
@@ -2127,7 +2220,7 @@ export default async function (pi: ExtensionAPI) {
   }
 
   async function importConfigRules(ctx: ExtensionContext): Promise<void> {
-    const sourceInput = (await ctx.ui.input("Import rules from JSON file", "path/to/masking.config.json"))?.trim();
+    const sourceInput = (await inputMaskingValue(ctx, "Import rules from JSON file", "path/to/masking.config.json"))?.trim();
     if (!sourceInput) return;
     const importPath = resolve(ctx.cwd, sourceInput);
     const target = await chooseExistingSource(ctx, "Import into which config?");
@@ -2142,7 +2235,8 @@ export default async function (pi: ExtensionAPI) {
       const ids = imported.rules.map((rule) => typeof rule?.id === "string" ? rule.id : "<invalid>");
       const literalCount = imported.rules.filter((rule) => typeof rule?.real === "string").length;
       const riskWarnings = imported.rules.flatMap((rule) => validateRawConfigRule(rule));
-      if (!await ctx.ui.confirm(
+      if (!await confirmMaskingAction(
+        ctx,
         "Import masking rules?",
         [`Source: ${importPath}`, `Target: ${target.path}`, `Rules (${ids.length}): ${ids.join(", ")}`, `${literalCount} direct literal value(s) will be copied without being displayed.`, ...riskWarnings.map((warning) => `Warning: ${warning}`)].join("\n"),
       )) return;
@@ -2156,12 +2250,13 @@ export default async function (pi: ExtensionAPI) {
   async function exportConfigRules(ctx: ExtensionContext): Promise<void> {
     const source = await chooseExistingSource(ctx, "Export which config?");
     if (!source) return;
-    const destinationInput = (await ctx.ui.input("Redacted export destination", "masking.config.redacted.json"))?.trim();
+    const destinationInput = (await inputMaskingValue(ctx, "Redacted export destination", "masking.config.redacted.json"))?.trim();
     if (!destinationInput) return;
     const destination = resolve(ctx.cwd, destinationInput);
     try {
       const redacted = redactRawConfigFile(await readRawConfigFile(source.path));
-      if (!await ctx.ui.confirm(
+      if (!await confirmMaskingAction(
+        ctx,
         "Create redacted export?",
         `Destination: ${destination}\nDirect literal values will be replaced. The export cannot be imported as a runnable configuration and will not overwrite an existing file.`,
       )) return;
@@ -2180,15 +2275,13 @@ export default async function (pi: ExtensionAPI) {
     let revealedRuleKey: string | undefined;
     let homeTestText = "";
     let homeFocus: "rules" | "test" = "rules";
-    for (;;) {
-    const configuredRules = config.configuredRules;
     type ScreenAction =
       | { kind: "batch"; changes: RuleEnabledChange[] }
       | { kind: "edit"; rule: ConfiguredMaskingRule }
       | { kind: "delete"; rule: ConfiguredMaskingRule }
       | { kind: "add" | "import" | "export" | "help" };
-    const result = await ctx.ui.custom<ScreenAction | undefined>((tui, theme, keybindings, done) => {
-      let screenRules = configuredRules;
+    await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
+      let screenRules = config.configuredRules;
       let selectedIndex = 0;
       let scrollOffset = 0;
       let searchMode = false;
@@ -2300,6 +2393,36 @@ export default async function (pi: ExtensionAPI) {
         refresh();
       }
 
+      /** Keep the home overlay mounted while a child screen is open. Stacked
+       * overlays transition in one render frame and restore focus to this
+       * component, avoiding a transcript/blank-frame flash between pages. */
+      async function runScreenAction(action: ScreenAction): Promise<void> {
+        if (mutationInProgress) return;
+        mutationInProgress = true;
+        mutationMessage = action.kind === "edit" ? "Opening rule…"
+          : action.kind === "add" ? "Opening rule builder…"
+          : action.kind === "delete" ? "Opening confirmation…"
+          : action.kind === "help" ? "Opening help…"
+          : action.kind === "import" ? "Opening import…"
+          : action.kind === "export" ? "Opening export…"
+          : "Opening batch confirmation…";
+        tui.requestRender();
+        try {
+          if (action.kind === "batch") await applyBatchRuleState(ctx, action.changes);
+          else if (action.kind === "edit") await editConfigRule(ctx, action.rule);
+          else if (action.kind === "delete") await deleteConfigRule(ctx, action.rule);
+          else if (action.kind === "add") await addConfigRule(ctx);
+          else if (action.kind === "help") await showRuleConfigurationHelp(ctx);
+          else if (action.kind === "import") await importConfigRules(ctx);
+          else await exportConfigRules(ctx);
+        } finally {
+          screenRules = config.configuredRules;
+          mutationInProgress = false;
+          mutationMessage = "";
+          refresh();
+        }
+      }
+
       return {
         render: (width) => {
           const visibleRulesNow = visibleRules();
@@ -2403,7 +2526,7 @@ export default async function (pi: ExtensionAPI) {
             lines.push(theme.fg("dim", "↑↓ browse · Space immediate toggle · Enter edit/add · A add · D / Delete remove · Ctrl+↑↓ reorder"));
             lines.push(theme.fg("dim", "Tab switch area · R reveal value · F filter · / search · B batch · H help · I import · X export · Esc close"));
           }
-          return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
+          return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => {},
         handleInput: (data) => {
@@ -2475,25 +2598,25 @@ export default async function (pi: ExtensionAPI) {
             return;
           }
           if (keybindings.matches(data, "tui.select.confirm")) {
-            done(selected ? { kind: "edit", rule: selected } : { kind: "add" });
+            void runScreenAction(selected ? { kind: "edit", rule: selected } : { kind: "add" });
             return;
           }
           if ((matchesKey(data, "d") || matchesKey(data, Key.delete)) && selected) {
             const retained = visible[selectedIndex + 1] ?? visible[selectedIndex - 1];
             selectedRuleKey = retained ? configuredRuleStableKey(retained) : undefined;
-            done({ kind: "delete", rule: selected });
+            void runScreenAction({ kind: "delete", rule: selected });
             return;
           }
-          if (matchesKey(data, "a")) return void done({ kind: "add" });
+          if (matchesKey(data, "a")) return void runScreenAction({ kind: "add" });
           if (matchesKey(data, "r") && selected && configuredRuleKind(selected) !== "regex") {
             const key = configuredRuleStableKey(selected);
             revealedRuleKey = revealedRuleKey === key ? undefined : key;
             refresh();
             return;
           }
-          if (matchesKey(data, "i")) return void done({ kind: "import" });
-          if (matchesKey(data, "x")) return void done({ kind: "export" });
-          if (matchesKey(data, "h")) return void done({ kind: "help" });
+          if (matchesKey(data, "i")) return void runScreenAction({ kind: "import" });
+          if (matchesKey(data, "x")) return void runScreenAction({ kind: "export" });
+          if (matchesKey(data, "h")) return void runScreenAction({ kind: "help" });
           if (matchesKey(data, "f")) {
             filterIndex = (filterIndex + 1) % filters.length;
             selectedIndex = 0;
@@ -2514,7 +2637,7 @@ export default async function (pi: ExtensionAPI) {
               id: configured.rule.id,
               enabled,
             }));
-            done({ kind: "batch", changes });
+            void runScreenAction({ kind: "batch", changes });
             return;
           }
           if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
@@ -2522,20 +2645,7 @@ export default async function (pi: ExtensionAPI) {
           }
         },
       };
-    }, {
-      overlay: true,
-      overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
-    });
-
-    if (!result) return;
-    if (result.kind === "batch") await applyBatchRuleState(ctx, result.changes);
-    else if (result.kind === "edit") await editConfigRule(ctx, result.rule);
-    else if (result.kind === "delete") await deleteConfigRule(ctx, result.rule);
-    else if (result.kind === "add") await addConfigRule(ctx);
-    else if (result.kind === "help") await showRuleConfigurationHelp(ctx);
-    else if (result.kind === "import") await importConfigRules(ctx);
-    else await exportConfigRules(ctx);
-    }
+    }, MASKING_SCREEN_OPTIONS);
   }
 
   pi.registerCommand("masking", {

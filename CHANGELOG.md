@@ -8,6 +8,11 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ### Fixed
 
+- Keep every `/masking` workflow on a clean full-screen surface. Adding a rule,
+  selecting a preset or config source, importing/exporting, and confirmation
+  prompts no longer reveal conversation history behind short-lived UI panels.
+  The configuration home now stays mounted beneath child pages so add/edit
+  transitions no longer flash through the transcript or a blank intermediate screen.
 - Refresh `/masking-history` when an unchanged source message gets a different
   masked representation after rules, case sensitivity, or masking state change.
   Transcript clone-skipping now requires both original and masked fingerprints

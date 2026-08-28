@@ -72,8 +72,8 @@ test("N/P navigates every masked occurrence, including repeated mappings", () =>
     () => undefined,
   );
   const singleRender = single.render(120).join("\n");
-  assert.match(singleRender, /Masked occurrence 1\/1 \(only\).*LOCAL: mysecret.*MODEL: maskedsecret/);
-  assert.doesNotMatch(singleRender, /N\/P masked text/);
+  assert.match(singleRender, /Current masked occurrence 1\/1 \(only\).*LOCAL: mysecret.*MODEL: maskedsecret/);
+  assert.doesNotMatch(singleRender, /N\/P next\/previous masked text/);
   single.handleInput?.("n");
   assert.equal(renderRequests, 0);
 
@@ -89,16 +89,46 @@ test("N/P navigates every masked occurrence, including repeated mappings", () =>
     () => undefined,
   );
   const latest = multiple.render(120).join("\n");
-  assert.match(latest, /N\/P masked text/);
-  assert.match(latest, /Masked occurrence 2\/2 \(selected\)/);
+  assert.match(latest, /N\/P next\/previous masked text/);
+  assert.match(latest, /Current masked occurrence 2\/2/);
   assert.match(latest, /latest same-/);
   assert.doesNotMatch(latest, /old same-/);
 
   multiple.handleInput?.("n");
   const wrapped = multiple.render(120).join("\n");
-  assert.match(wrapped, /Masked occurrence 1\/2 \(selected\)/);
+  assert.match(wrapped, /Current masked occurrence 1\/2/);
   assert.match(wrapped, /old same-/);
   assert.doesNotMatch(wrapped, /latest same-/);
+});
+
+test("only the current N/P target gets navigation markers within one message", () => {
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (_color: unknown, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    inverse: (text: string) => `<current>${text}</current>`,
+    underline: (text: string) => `<masked>${text}</masked>`,
+  };
+  const viewer = createHistoryViewer(
+    { terminal: { rows: 12 }, requestRender: () => undefined },
+    theme,
+    { matches: () => false },
+    [{
+      key: "user:1",
+      original: { role: "user", content: "secret keep secret" },
+      masked: { role: "user", content: "masked keep masked" },
+      capturedAt: 1,
+    }],
+    () => undefined,
+  );
+
+  const latest = viewer.render(120).join("\n");
+  assert.match(latest, /<masked>secret<\/masked> keep <current>⟦secret⟧<\/current>/);
+
+  viewer.handleInput?.("n");
+  const first = viewer.render(120).join("\n");
+  assert.match(first, /<current>⟦secret⟧<\/current> keep <masked>secret<\/masked>/);
 });
 
 test("M toggles original and masked views while Ctrl+M is not captured", () => {
@@ -171,7 +201,7 @@ test("selected replacement styling does not reset the surrounding message backgr
   );
 
   const rendered = viewer.render(120).join("\n");
-  assert.match(rendered, /<inverse>mysecret<\/inverse>/);
+  assert.match(rendered, /<inverse>⟦mysecret⟧<\/inverse>/);
   assert.deepEqual(new Set(calls), new Set(["userMessageBg"]));
 });
 
