@@ -91,8 +91,9 @@ test("N/P navigates every masked occurrence, including repeated mappings", () =>
     () => undefined,
   );
   const singleRender = single.render(120).join("\n");
-  assert.match(singleRender, /Current masked occurrence 1\/1 \(only\).*LOCAL: mysecret.*MODEL: maskedsecret/);
-  assert.doesNotMatch(singleRender, /N\/P next\/previous masked text/);
+  assert.match(singleRender, /Selected masked occurrence 1\/1.*LOCAL: mysecret.*MODEL: maskedsecret/);
+  assert.doesNotMatch(singleRender, /N\/P next\/previous occurrence/);
+  assert.doesNotMatch(singleRender, /messages 1–1 of 1/);
   single.handleInput?.("n");
   assert.equal(renderRequests, 0);
 
@@ -108,14 +109,14 @@ test("N/P navigates every masked occurrence, including repeated mappings", () =>
     () => undefined,
   );
   const latest = multiple.render(120).join("\n");
-  assert.match(latest, /N\/P next\/previous masked text/);
-  assert.match(latest, /Current masked occurrence 2\/2/);
+  assert.match(latest, /N\/P next\/previous occurrence/);
+  assert.match(latest, /Selected masked occurrence 2\/2/);
   assert.match(latest, /latest same-/);
   assert.doesNotMatch(latest, /old same-/);
 
   multiple.handleInput?.("n");
   const wrapped = multiple.render(120).join("\n");
-  assert.match(wrapped, /Current masked occurrence 1\/2/);
+  assert.match(wrapped, /Selected masked occurrence 1\/2/);
   assert.match(wrapped, /old same-/);
   assert.doesNotMatch(wrapped, /latest same-/);
 });
@@ -359,6 +360,7 @@ test("history scrolling renders only the visible transcript window", () => {
   const initial = viewer.render(100).join("\n");
   const firstPageRenders = backgroundRenders;
   assert.match(initial, /message 999/);
+  assert.match(initial, /messages \d+–1000 of 1000/);
   assert.doesNotMatch(initial, /message 0(?:\D|$)/);
   assert.ok(firstPageRenders > 0);
   assert.ok(firstPageRenders < 20, `first page rendered ${firstPageRenders} message backgrounds`);
@@ -428,21 +430,123 @@ test("epoch history defaults to the latest factual version and switches without 
   );
 
   const latest = viewer.render(120).join("\n");
-  assert.match(latest, /Version 2\/2/);
-  assert.match(latest, /Changes from previous version: Service token updated/);
+  assert.match(latest, /Rule version 2\/2 · 1 active rule/);
+  assert.match(latest, /R view version rules/);
+  assert.doesNotMatch(latest, /factual messages|Initial factual version|Changes from previous version/);
   assert.doesNotMatch(latest, /fingerprint|epoch E3|Masking history · E3/);
   assert.match(latest, /only factual in E3/);
   assert.doesNotMatch(latest, /only factual in E1/);
 
   viewer.handleInput?.("C");
   assert.match(viewer.render(120).join("\n"), /SIDE-BY-SIDE COMPARE/);
+  viewer.handleInput?.("R");
+  const latestRules = viewer.render(120).join("\n");
+  assert.match(latestRules, /Rules for history version 2\/2/);
+  assert.match(latestRules, /STATE\s+ORDER\s+SCOPE\s+TYPE\s+NAME\s+CHANGE/);
+  assert.match(latestRules, /Service token\s+UPDATED/);
+  assert.doesNotMatch(latestRules, /only factual in E3/);
+
   viewer.handleInput?.("[");
+  const previousRules = viewer.render(120).join("\n");
+  assert.match(previousRules, /Rules for history version 1\/2/);
+  assert.match(previousRules, /Service token\s+—/);
+  viewer.handleInput?.("tui.select.cancel");
+
   const previous = viewer.render(120).join("\n");
-  assert.match(previous, /Version 1\/2/);
-  assert.match(previous, /Initial factual version · 1 active masking rule/);
-  assert.doesNotMatch(previous, /fingerprint|epoch E1|Masking history · E1/);
+  assert.match(previous, /Rule version 1\/2 · 1 active rule/);
+  assert.doesNotMatch(previous, /Initial factual version|fingerprint|epoch E1|Masking history · E1/);
   assert.match(previous, /only factual in E1/);
   assert.doesNotMatch(previous, /only factual in E3/);
   assert.match(previous, /SIDE-BY-SIDE COMPARE/);
-  assert.equal(renderRequests, 2);
+  assert.equal(renderRequests, 4);
+});
+
+test("version rules show read-only rule metadata and net changes", () => {
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (_color: unknown, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    underline: (text: string) => text,
+  };
+  const keybindings = { matches: (data: string, keybinding: string) => data === keybinding };
+  const epoch = (epochId: number, rules: RuleEpoch["rules"], options?: Partial<RuleEpoch>): RuleEpoch => ({
+    version: 1,
+    epochId,
+    parentEpochId: epochId > 1 ? epochId - 1 : undefined,
+    activatedAt: epochId,
+    behaviorFingerprint: `epoch-${epochId}`,
+    enabled: true,
+    caseSensitive: epochId > 1,
+    systemPromptGuidance: false,
+    reason: epochId === 1 ? "session_start" : "ui_edit",
+    rules,
+    changes: [],
+    ...options,
+  });
+  const rule = (
+    key: string,
+    name: string,
+    order: number,
+    options?: Partial<RuleEpoch["rules"][number]>,
+  ): RuleEpoch["rules"][number] => ({
+    key,
+    id: key,
+    name,
+    scope: "project",
+    sourceKind: "literal",
+    enabled: true,
+    available: true,
+    order,
+    behaviorFingerprint: `${key}-v1`,
+    ...options,
+  });
+  const entry = (key: string) => ({
+    key,
+    original: { role: "user", content: key },
+    masked: { role: "user", content: key },
+    capturedAt: 1,
+  });
+  const viewer = createEpochHistoryViewer(
+    { terminal: { rows: 20 }, requestRender: () => undefined },
+    theme,
+    keybindings,
+    [
+      {
+        epoch: epoch(1, [
+          rule("service", "Service token", 0),
+          rule("legacy", "Legacy token", 1),
+        ]),
+        entries: [entry("v1")],
+      },
+      {
+        epoch: epoch(2, [
+          rule("host", "Private host", 0, { sourceKind: "preset", scope: "global" }),
+          rule("service", "Service token", 1, { enabled: false, behaviorFingerprint: "service-v2" }),
+        ]),
+        entries: [entry("v2")],
+      },
+    ],
+    () => undefined,
+  );
+
+  const history = viewer.render(120).join("\n");
+  assert.match(history, /Rule version 2\/2 · 1 active rule/);
+  assert.doesNotMatch(history, /Legacy token|Case-sensitive/);
+
+  viewer.handleInput?.("r");
+  const rules = viewer.render(120).join("\n");
+  assert.match(rules, /Private host\s+ADDED/);
+  assert.match(rules, /Service token\s+DISABLED, MOVED 1→2, UPDATED/);
+  assert.match(rules, /Removed since previous version:\n- Legacy token/);
+  assert.match(rules, /Other changes:\n- Case-sensitive matching enabled/);
+  assert.doesNotMatch(rules, /Add new rule|Enter edit|reveal value|TEST ACTIVE RULES/);
+
+  const narrowLines = viewer.render(42);
+  const narrow = narrowLines.join("\n");
+  assert.match(narrow, /change: ADDED/);
+  assert.match(narrow, /DISABLED/);
+  assert.match(narrow, /MOVED 1→2/);
+  assert.match(narrow, /UPDATED/);
+  assert.ok(narrowLines.every((line) => visibleWidth(line) <= 42));
 });

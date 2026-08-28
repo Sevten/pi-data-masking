@@ -838,47 +838,65 @@ export function createHistoryViewer(
       const safeWidth = Math.max(1, width);
       const wrapStyled = (text: string) => wrapTextWithAnsi(text, safeWidth);
       const modeLabel = viewMode === "original" ? "LOCAL ORIGINAL" : viewMode === "model" ? "MODEL INPUT" : "SIDE-BY-SIDE COMPARE";
-      const title = options.title ?? `Masking history · ${entries.length} messages`;
+      const title = options.title ?? "Masking history";
       const header = theme.fg("accent", theme.bold(`${title} · ${modeLabel}`));
       const selected = selectedReplacement();
       const inspector = selected
-        ? `Current masked occurrence ${replacementIndex + 1}/${replacements.length}${replacements.length === 1 ? " (only)" : ""}  LOCAL: ${selected.original}  →  MODEL: ${selected.masked}`
-        : "No masked text in this session";
+        ? `Selected masked occurrence ${replacementIndex + 1}/${replacements.length}  LOCAL: ${selected.original}  →  MODEL: ${selected.masked}`
+        : "No masked text in this version";
       const legend = viewMode === "original"
-        ? "Underlined: local text changed by masking · Reverse video: current N/P target"
+        ? "Underlined: local text changed by masking · Inverse highlight: selected occurrence"
         : viewMode === "model"
-          ? "Underlined: masking replacement · Reverse video: current N/P target"
-          : "Left: local original · Right: model input · Reverse video: current N/P target";
+          ? "Underlined: masked text · Inverse highlight: selected occurrence"
+          : "Left: local original · Right: model input · Inverse highlight: selected occurrence";
       const footerPrefix = options.footerPrefix ? `${options.footerPrefix} · ` : "";
-      const occurrenceControl = replacements.length > 1 ? " · N/P next/previous masked text" : "";
-      const footerText = (progress: string) => `${footerPrefix}↑↓/PgUp/PgDn scroll${occurrenceControl} · M original/masked · C side-by-side compare · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
-      const headerLines = [truncateToWidth(header, safeWidth)];
+      const occurrenceControl = replacements.length > 1 ? " · N/P next/previous occurrence" : "";
+      const footerText = `${footerPrefix}↑↓/PgUp/PgDn scroll${occurrenceControl} · M original/masked · C side-by-side compare · Ctrl+O tools · Ctrl+T thinking · Esc close`;
+      const headerLines = wrapStyled(header);
       const subtitleLines = options.subtitle ? wrapStyled(theme.fg("muted", options.subtitle)) : [];
-      const legendLines = wrapStyled(theme.fg("dim", legend));
       const inspectorLines = [theme.fg("muted", truncateToWidth(inspector, safeWidth))];
-      const maximumProgress = displayEntries.length > 0
-        ? ` · messages ${displayEntries.length}-${displayEntries.length}/${displayEntries.length}`
-        : "";
-      let footerLines = wrapStyled(theme.fg("dim", footerText(maximumProgress)));
-      chromeRows = headerLines.length + subtitleLines.length + legendLines.length + inspectorLines.length + footerLines.length;
+      const legendLines = wrapStyled(theme.fg("dim", legend));
 
+      // Start without progress. If the complete transcript fits, a message
+      // range such as "messages 1–3 of 3" adds no useful information.
+      const controlFooterLines = wrapStyled(theme.fg("dim", footerText));
+      let footerLines = controlFooterLines;
+      chromeRows = headerLines.length + subtitleLines.length + inspectorLines.length + legendLines.length + footerLines.length;
       let page = visiblePage(safeWidth);
-      const progressFor = (cursor: typeof page.cursor) => displayEntries.length > 0
-        ? ` · messages ${Math.min(position.entry + 1, displayEntries.length)}-${Math.min(cursor.entry + (cursor.line > 0 ? 1 : 0), displayEntries.length)}/${displayEntries.length}`
-        : "";
-      let actualFooterLines = wrapStyled(theme.fg("dim", footerText(progressFor(page.cursor))));
-      if (actualFooterLines.length !== footerLines.length) {
-        chromeRows += actualFooterLines.length - footerLines.length;
+      const atLiveEdge = page.cursor.entry === displayEntries.length;
+      const allMessagesVisible = displayEntries.length === 0 || (
+        position.entry === 0 && position.line === 0 && atLiveEdge
+      );
+
+      if (!allMessagesVisible) {
+        const maximumProgress = `messages ${displayEntries.length}–${displayEntries.length} of ${displayEntries.length}`;
+        const maximumProgressLines = wrapStyled(theme.fg("dim", maximumProgress));
+        footerLines = [...controlFooterLines, ...maximumProgressLines];
+        chromeRows = headerLines.length + subtitleLines.length + inspectorLines.length + legendLines.length + footerLines.length;
+        // Adding the progress row shrinks the transcript. Preserve the live-edge
+        // anchor instead of dropping the final message from the first render.
+        if (atLiveEdge) position = { entry: displayEntries.length, line: 0 };
         page = visiblePage(safeWidth);
-        actualFooterLines = wrapStyled(theme.fg("dim", footerText(progressFor(page.cursor))));
+        const progressFor = (cursor: typeof page.cursor) => {
+          const first = Math.min(position.entry + 1, displayEntries.length);
+          const last = Math.min(cursor.entry + (cursor.line > 0 ? 1 : 0), displayEntries.length);
+          return `messages ${first}–${last} of ${displayEntries.length}`;
+        };
+        let actualProgressLines = wrapStyled(theme.fg("dim", progressFor(page.cursor)));
+        if (actualProgressLines.length !== maximumProgressLines.length) {
+          chromeRows += actualProgressLines.length - maximumProgressLines.length;
+          page = visiblePage(safeWidth);
+          actualProgressLines = wrapStyled(theme.fg("dim", progressFor(page.cursor)));
+        }
+        footerLines = [...controlFooterLines, ...actualProgressLines];
       }
-      footerLines = actualFooterLines;
+
       const lines = [
         ...headerLines,
         ...subtitleLines,
+        ...inspectorLines,
         ...legendLines,
         ...page.visible,
-        ...inspectorLines,
         ...footerLines,
       ];
       return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
@@ -911,42 +929,166 @@ export function createHistoryViewer(
   };
 }
 
-function epochChangeLabel(change: RuleEpochChange): string {
-  const rule = change.ruleName ?? change.ruleId ?? "rule";
-  switch (change.kind) {
-    case "initialized": return "session start";
-    case "masking_enabled": return "masking enabled";
-    case "masking_disabled": return "masking disabled";
-    case "option_changed": return `${change.option ?? "option"} changed`;
-    case "rule_added": return `${rule} added`;
-    case "rule_removed": return `${rule} removed`;
-    case "rule_enabled": return `${rule} enabled`;
-    case "rule_disabled": return `${rule} disabled`;
-    case "rule_moved": return `${rule} reordered`;
-    case "rule_updated": return `${rule} updated`;
-    case "configuration_changed": return "configuration changed";
-  }
+function activeRuleCount(view: EpochHistoryView): number {
+  if (!view.epoch.enabled) return 0;
+  return view.epoch.rules.filter((rule) => rule.enabled && rule.available).length;
 }
 
 function epochLabel(view: EpochHistoryView, index: number, total: number): string {
-  return `Masking history · Version ${index + 1}/${total} · ${view.entries.length} factual messages`;
+  const ruleState = view.epoch.enabled
+    ? `${activeRuleCount(view)} active rule${activeRuleCount(view) === 1 ? "" : "s"}`
+    : "Masking off";
+  return `Masking history · Rule version ${index + 1}/${total} · ${ruleState}`;
 }
 
-function epochDetails(view: EpochHistoryView, previous: EpochHistoryView | undefined): string {
-  if (!previous) {
-    const active = view.epoch.enabled
-      ? view.epoch.rules.filter((rule) => rule.enabled && rule.available).length
-      : 0;
-    return `Initial factual version · ${active} active masking rule${active === 1 ? "" : "s"}`;
+function changeLabelsByRule(changes: readonly RuleEpochChange[]): Map<string, string[]> {
+  const labels = new Map<string, string[]>();
+  for (const change of changes) {
+    if (!change.ruleKey || change.kind === "rule_removed") continue;
+    let label: string | undefined;
+    switch (change.kind) {
+      case "rule_added": label = "ADDED"; break;
+      case "rule_updated": label = "UPDATED"; break;
+      case "rule_enabled": label = "ENABLED"; break;
+      case "rule_disabled": label = "DISABLED"; break;
+      case "rule_moved": {
+        const from = change.fromOrder === undefined ? "?" : String(change.fromOrder + 1);
+        const to = change.toOrder === undefined ? "?" : String(change.toOrder + 1);
+        label = `MOVED ${from}→${to}`;
+        break;
+      }
+    }
+    if (!label) continue;
+    const ruleLabels = labels.get(change.ruleKey) ?? [];
+    ruleLabels.push(label);
+    labels.set(change.ruleKey, ruleLabels);
   }
-  const changes = summarizeEpochNetChanges(previous.epoch, view.epoch);
-  if (changes.length === 0) return "No net masking changes from previous version";
-  return `Changes from previous version: ${changes.map(epochChangeLabel).join("; ")}`;
+  return labels;
+}
+
+function otherEpochChanges(
+  previous: EpochHistoryView | undefined,
+  view: EpochHistoryView,
+  changes: readonly RuleEpochChange[],
+): string[] {
+  if (!previous) return [];
+  const labels: string[] = [];
+  for (const change of changes) {
+    if (change.kind === "masking_enabled") labels.push("Global masking enabled");
+    else if (change.kind === "masking_disabled") labels.push("Global masking disabled");
+    else if (change.kind === "configuration_changed") labels.push("Configuration changed");
+    else if (change.kind === "option_changed" && change.option === "caseSensitive") {
+      labels.push(`Case-sensitive matching ${view.epoch.caseSensitive ? "enabled" : "disabled"}`);
+    } else if (change.kind === "option_changed" && change.option === "systemPromptGuidance") {
+      labels.push(`System-prompt guidance ${view.epoch.systemPromptGuidance ? "enabled" : "disabled"}`);
+    }
+  }
+  return labels;
+}
+
+function createVersionRulesViewer(
+  tui: HistoryTui,
+  theme: HistoryTheme,
+  keybindings: HistoryKeybindings,
+  view: EpochHistoryView,
+  previous: EpochHistoryView | undefined,
+  index: number,
+  total: number,
+  back: () => void,
+  done: () => void,
+): Component {
+  let scrollOffset = 0;
+  let pageSize = 1;
+  const changes = previous ? summarizeEpochNetChanges(previous.epoch, view.epoch) : [];
+  const labelsByRule = changeLabelsByRule(changes);
+  const removed = changes
+    .filter((change) => change.kind === "rule_removed")
+    .map((change) => change.ruleName ?? change.ruleId ?? "Unnamed rule");
+  const otherChanges = otherEpochChanges(previous, view, changes);
+  const rules = [...view.epoch.rules].sort((left, right) => left.order - right.order);
+
+  const bodyLines = (width: number): string[] => {
+    const lines: string[] = [];
+    if (width >= 80) {
+      // Reserve enough space for combined labels such as
+      // "DISABLED, MOVED 1→2, UPDATED" instead of giving all spare width to NAME.
+      const nameWidth = Math.max(12, width - 72);
+      const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  ${"NAME".padEnd(nameWidth)}  CHANGE`;
+      lines.push(theme.fg("dim", truncateToWidth(header, width)));
+      for (const rule of rules) {
+        const stateLabel = !rule.enabled ? "OFF" : rule.available ? "ON" : "WAIT";
+        const state = `[${stateLabel.padEnd(4)}]`;
+        const labels = previous ? labelsByRule.get(rule.key)?.join(", ") ?? "—" : "—";
+        const clippedName = truncateToWidth(rule.name, nameWidth);
+        const paddedName = `${clippedName}${" ".repeat(Math.max(0, nameWidth - visibleWidth(clippedName)))}`;
+        const row = `  ${state} ${String(rule.order + 1).padStart(5)}  ${rule.scope.padEnd(7)}  ${rule.sourceKind.padEnd(7)}  ${paddedName}  ${labels}`;
+        lines.push(rule.enabled ? truncateToWidth(row, width) : theme.fg("dim", truncateToWidth(row, width)));
+      }
+    } else {
+      for (const rule of rules) {
+        const stateLabel = !rule.enabled ? "OFF" : rule.available ? "ON" : "WAIT";
+        const labels = previous ? labelsByRule.get(rule.key)?.join(", ") ?? "—" : "—";
+        const summary = `[${stateLabel}] ${rule.order + 1} · ${rule.name}`;
+        const styledSummary = rule.enabled ? summary : theme.fg("dim", summary);
+        lines.push(...wrapTextWithAnsi(styledSummary, Math.max(1, width)));
+        lines.push(...wrapTextWithAnsi(theme.fg("muted", `  ${rule.scope} · ${rule.sourceKind} · change: ${labels}`), Math.max(1, width)));
+      }
+    }
+
+    if (rules.length === 0) lines.push(theme.fg("muted", "No rules were configured in this version."));
+    if (removed.length > 0) {
+      lines.push("", theme.fg("muted", "Removed since previous version:"));
+      for (const name of removed) lines.push(...wrapTextWithAnsi(`- ${name}`, Math.max(1, width)));
+    }
+    if (otherChanges.length > 0) {
+      lines.push("", theme.fg("muted", "Other changes:"));
+      for (const change of otherChanges) lines.push(...wrapTextWithAnsi(`- ${change}`, Math.max(1, width)));
+    }
+    return lines;
+  };
+
+  return {
+    invalidate: () => {},
+    render: (width) => {
+      const safeWidth = Math.max(1, width);
+      const active = activeRuleCount(view);
+      const header = [
+        ...wrapTextWithAnsi(theme.fg("accent", theme.bold(`Rules for history version ${index + 1}/${total}`)), safeWidth),
+        ...wrapTextWithAnsi(theme.fg(view.epoch.enabled ? "success" : "warning", `GLOBAL MASKING [${view.epoch.enabled ? "ON" : "OFF"}] · ${active} active / ${rules.length} configured`), safeWidth),
+        "",
+      ];
+      const footerText = `${total > 1 ? "[/] rule version · " : ""}↑↓/PgUp/PgDn scroll · Esc back`;
+      const footer = wrapTextWithAnsi(theme.fg("dim", footerText), safeWidth);
+      const body = bodyLines(safeWidth);
+      pageSize = Math.max(1, tui.terminal.rows - header.length - footer.length);
+      scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, body.length - pageSize)));
+      const lines = [...header, ...body.slice(scrollOffset, scrollOffset + pageSize), ...footer];
+      return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
+    },
+    handleInput: (data) => {
+      if (keybindings.matches(data, "tui.select.up")) scrollOffset--;
+      else if (keybindings.matches(data, "tui.select.down")) scrollOffset++;
+      else if (keybindings.matches(data, "tui.select.pageUp")) scrollOffset -= pageSize;
+      else if (keybindings.matches(data, "tui.select.pageDown")) scrollOffset += pageSize;
+      else if (data === "\x1b[H" || data === "\x1bOH") scrollOffset = 0;
+      else if (data === "\x1b[F" || data === "\x1bOF") scrollOffset = Number.MAX_SAFE_INTEGER;
+      else if (keybindings.matches(data, "tui.select.cancel")) {
+        back();
+        return;
+      } else if (keybindings.matches(data, "app.interrupt")) {
+        done();
+        return;
+      } else return;
+      scrollOffset = Math.max(0, scrollOffset);
+      tui.requestRender();
+    },
+  };
 }
 
 /**
- * Epoch selector around the transcript viewer. Empty/unused epochs are hidden;
- * the newest epoch with factual outbound observations is selected by default.
+ * Epoch selector around the transcript and read-only rule-version viewers.
+ * Empty/unused epochs are hidden; the newest epoch with factual outbound
+ * observations is selected by default.
  */
 export function createEpochHistoryViewer(
   tui: HistoryTui,
@@ -957,9 +1099,32 @@ export function createEpochHistoryViewer(
 ): Component {
   const views = epochViews.filter((view) => view.entries.length > 0);
   let selectedIndex = Math.max(0, views.length - 1);
+  let screen: "history" | "rules" = "history";
   const viewState: HistoryViewState = { mode: "original", modeBeforeCompare: "original" };
+
   const createSelected = (): Component => {
     const view = views[selectedIndex];
+    if (screen === "rules" && view) {
+      return createVersionRulesViewer(
+        tui,
+        theme,
+        keybindings,
+        view,
+        views[selectedIndex - 1],
+        selectedIndex,
+        views.length,
+        () => {
+          screen = "history";
+          selected = createSelected();
+          tui.requestRender();
+        },
+        done,
+      );
+    }
+    const footerActions = [
+      ...(views.length > 1 ? ["[/] rule version"] : []),
+      ...(view ? ["R view version rules"] : []),
+    ];
     return createHistoryViewer(
       tui,
       theme,
@@ -969,9 +1134,8 @@ export function createEpochHistoryViewer(
       {
         title: view
           ? epochLabel(view, selectedIndex, views.length)
-          : "Masking history · no factual epochs",
-        subtitle: view ? epochDetails(view, views[selectedIndex - 1]) : undefined,
-        footerPrefix: views.length > 1 ? "[/] rule version" : undefined,
+          : "Masking history · no recorded versions",
+        footerPrefix: footerActions.join(" · ") || undefined,
         viewState,
       },
     );
@@ -983,15 +1147,21 @@ export function createEpochHistoryViewer(
     render: (width) => selected.render(width),
     handleInput: (data) => {
       const delta = data === "[" ? -1 : data === "]" ? 1 : 0;
-      if (delta === 0 || views.length < 2) {
-        selected.handleInput?.(data);
+      if (delta !== 0 && views.length > 1) {
+        const next = Math.max(0, Math.min(views.length - 1, selectedIndex + delta));
+        if (next === selectedIndex) return;
+        selectedIndex = next;
+        selected = createSelected();
+        tui.requestRender();
         return;
       }
-      const next = Math.max(0, Math.min(views.length - 1, selectedIndex + delta));
-      if (next === selectedIndex) return;
-      selectedIndex = next;
-      selected = createSelected();
-      tui.requestRender();
+      if (screen === "history" && (data === "r" || data === "R") && views[selectedIndex]) {
+        screen = "rules";
+        selected = createSelected();
+        tui.requestRender();
+        return;
+      }
+      selected.handleInput?.(data);
     },
   };
 }

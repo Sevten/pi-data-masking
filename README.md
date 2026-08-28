@@ -124,15 +124,15 @@ unused internal epochs are omitted without exposing gaps in the displayed
 version numbers.
 
 Within a version, the viewer opens at the newest messages. Underlining marks
-all replacements; reverse-video highlighting identifies only the current
-navigation target without adding display characters. `N` moves to the next
-masked occurrence and `P` to the previous one, visiting every occurrence
-(including repeated uses of the same mapping). The viewer also switches among
-the local original, the exact stored model-facing representation, and a
-comparison view. Wide terminals show
+all replacements; inverse highlighting identifies only the selected occurrence
+without adding display characters. `N` moves to the next masked occurrence and
+`P` to the previous one, visiting every occurrence (including repeated uses of
+the same mapping). The viewer also switches among the local original, the exact
+stored model-facing representation, and a comparison view. Wide terminals show
 the comparison side by side; narrow terminals stack both versions. The header
-shows `Version n/total` and a secret-free net change summary against the previous
-factual version. Intermediate edits that were reverted before any model input
+shows `Rule version n/total` with that version's active-rule count. Press `R` to
+open a read-only version-rule list with net changes against the previous
+recorded version. Intermediate edits that were reverted before any model input
 are not shown. Per-rule behavior fingerprints support this comparison but are
 never displayed.
 
