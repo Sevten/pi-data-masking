@@ -8,6 +8,9 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ### Fixed
 
+- Show the wide side-by-side `LOCAL ORIGINAL` / `MODEL INPUT` heading only
+  once per history message, even when an assistant response contains empty or
+  multiple text, thinking, or tool blocks.
 - Preserve original, masked, or side-by-side comparison mode when switching
   between factual rule versions in `/masking-history`.
 - Wrap history controls, rule-version summaries, configuration shortcuts,

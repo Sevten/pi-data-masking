@@ -205,6 +205,42 @@ test("closing delimiters stay outside history highlighting and the occurrence in
   assert.doesNotMatch(rendered, /LOCAL: wsl90\.top`|MODEL: test\.xyz`/);
 });
 
+test("wide assistant comparisons show one LOCAL/MODEL heading across content blocks", () => {
+  const viewer = createHistoryViewer(
+    { terminal: { rows: 16 }, requestRender: () => undefined },
+    {
+      fg: (_color: unknown, text: string) => text,
+      bg: (_color: unknown, text: string) => text,
+      bold: (text: string) => text,
+      italic: (text: string) => text,
+      underline: (text: string) => text,
+    },
+    { matches: () => false },
+    [{
+      key: "assistant:1",
+      original: { role: "assistant", content: [
+        { type: "text", text: "" },
+        { type: "text", text: "first block" },
+        { type: "text", text: "second private-token-12345" },
+      ] },
+      masked: { role: "assistant", content: [
+        { type: "text", text: "" },
+        { type: "text", text: "first block" },
+        { type: "text", text: "second masked-token-67890" },
+      ] },
+      capturedAt: 1,
+    }],
+    () => undefined,
+  );
+
+  viewer.handleInput?.("C");
+  const rendered = viewer.render(120).join("\n");
+  assert.equal(rendered.match(/LOCAL ORIGINAL/g)?.length, 1);
+  assert.equal(rendered.match(/MODEL INPUT/g)?.length, 1);
+  assert.match(rendered, /first block/);
+  assert.match(rendered, /second private-token-12345/);
+});
+
 test("M toggles original and masked views while Ctrl+M is not captured", () => {
   let renderRequests = 0;
   const theme = {

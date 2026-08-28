@@ -71,6 +71,7 @@ interface Replacement {
 interface RenderSelection {
   targetOccurrence?: number;
   nextOccurrence: number;
+  comparisonHeaderShown?: boolean;
 }
 
 // Internal zero-width anchor used only to locate the selected occurrence after
@@ -453,6 +454,7 @@ function comparisonText(
   baseColor: string,
   selectedChangedIndex: number | undefined,
   italic: boolean,
+  showHeaders: boolean,
 ): Component {
   return {
     invalidate: () => undefined,
@@ -460,6 +462,8 @@ function comparisonText(
       const local = styledSide(segments, "original", theme, baseColor, selectedChangedIndex, italic);
       const model = styledSide(segments, "model", theme, baseColor, selectedChangedIndex, italic);
       if (width < 90) {
+        // Stacked blocks need their own labels because local/model content is
+        // interleaved vertically rather than sharing persistent columns.
         return [
           theme.fg("muted", "LOCAL ORIGINAL"),
           ...new Text(local, 1, 0).render(width),
@@ -470,8 +474,8 @@ function comparisonText(
 
       const gap = 3;
       const columnWidth = Math.max(20, Math.floor((width - gap) / 2));
-      const left = [theme.fg("muted", "LOCAL ORIGINAL"), ...new Text(local, 0, 0).render(columnWidth)];
-      const right = [theme.fg("muted", "MODEL INPUT"), ...new Text(model, 0, 0).render(columnWidth)];
+      const left = [...(showHeaders ? [theme.fg("muted", "LOCAL ORIGINAL")] : []), ...new Text(local, 0, 0).render(columnWidth)];
+      const right = [...(showHeaders ? [theme.fg("muted", "MODEL INPUT")] : []), ...new Text(model, 0, 0).render(columnWidth)];
       const lines: string[] = [];
       for (let index = 0; index < Math.max(left.length, right.length); index++) {
         const leftLine = left[index] ?? "";
@@ -505,7 +509,14 @@ function addMessageText(
     ? selectedChangedIndex
     : undefined;
   if (mode === "compare") {
-    container.addChild(comparisonText(segments, theme, baseColor, selectedInThisText, italic));
+    // Assistant content can contain several text/thinking/tool blocks. Treat
+    // their comparison columns as one message-level view instead of repeating
+    // the same LOCAL/MODEL heading before every block. Empty blocks should not
+    // claim the one heading either.
+    if (original.length === 0 && masked.length === 0) return;
+    const showHeaders = selection.comparisonHeaderShown !== true;
+    selection.comparisonHeaderShown = true;
+    container.addChild(comparisonText(segments, theme, baseColor, selectedInThisText, italic, showHeaders));
     return;
   }
   if (original === masked && !italic) {
