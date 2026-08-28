@@ -88,9 +88,19 @@ The replacement is operationally believable, not semantically equivalent to the 
 
 The same real value maps to the same placeholder throughout a conversation. Reopening a persisted Pi conversation restores the same session key and model-facing history, keeping earlier prefixes stable. A new conversation uses a new key.
 
-When masking behavior changes, the activation notice explains which agent run
-keeps the old rules and confirms that recorded history is not rewritten. It
-does not claim that a provider cache was affected. At the first actual provider
+When masking behavior changes, the extension first performs a side-effect-free
+local preflight against the most recent factual model input. A `/masking` save
+that would change the model-facing system prompt or existing conversation
+messages opens an in-configuration confirmation before writing the candidate
+rules. It reports the earliest affected message and offers **Save anyway** or
+**Back to editing**, so the user can prefer prefix cache reuse without undoing an
+already-published edit. External file reloads and commands outside that screen
+use an immediate notification instead. The estimate clones placeholder and
+provenance state; it does not mutate live mappings or claim that a provider
+cache was affected.
+
+The activation notice also explains which agent run keeps the old rules and
+confirms that recorded history is not rewritten. At the first actual provider
 boundary under the new rule version, the emitted system prompt and provider
 prompt are compared with the most recent factual epoch when their source
 fingerprints match. Shared historical messages follow the same factual rule. A

@@ -196,6 +196,56 @@ test("configuration home toggles and reorders in place while retaining selection
   }
 });
 
+test("history-changing saves confirm inside configuration UI before writing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(projectPath, JSON.stringify({ rules: [
+    { id: "token", name: "Token", real: "secret-service-token", placeholder: "masked-service-token" },
+  ] }));
+
+  let firstCancelled = false;
+  const assertImpactConfirmation = (component: Component) => {
+    const lines = component.render(100);
+    assert.ok(lines.some((line) => line.includes("Save masking changes?")));
+    assert.ok(lines.some((line) => line.includes("1 existing conversation message")));
+    assert.ok(lines.some((line) => line.includes("earliest #1")));
+    assert.equal(configRules(projectPath)[0]?.enabled, undefined, "candidate must not be written before confirmation");
+  };
+  const harness = await createHarness(dir, [
+    async (component) => {
+      component.handleInput(INPUT.space);
+      await waitFor(() => firstCancelled);
+      assert.equal(configRules(projectPath)[0]?.enabled, undefined, "Back to editing must leave the file unchanged");
+      component.handleInput(INPUT.space);
+      await waitFor(() => configRules(projectPath)[0]?.enabled === false);
+      component.handleInput(INPUT.escape);
+    },
+    async (component) => {
+      assertImpactConfirmation(component);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.enter);
+      firstCancelled = true;
+    },
+    async (component) => {
+      assertImpactConfirmation(component);
+      component.handleInput(INPUT.enter);
+    },
+  ]);
+
+  try {
+    await harness.emit("context", {
+      messages: [{ role: "user", content: "use secret-service-token" }],
+    });
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    assert.equal(configRules(projectPath)[0]?.enabled, false);
+    assert.equal(harness.notifications.some((message) => message.includes("Local preflight")), false);
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("adding a rule keeps the type picker and builder on clean full-screen pages", async () => {
   const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
   const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");

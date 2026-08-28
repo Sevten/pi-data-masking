@@ -794,7 +794,36 @@ export async function loadConfigFromPaths(
 
   const globalData = resolveSource(globalResult, "global", previous?.global);
   const projectData = resolveSource(projectResult, "project", previous?.project);
+  return buildLoadResult(globalData, projectData, globalPath, projectPath, sessionKey, env, warnings);
+}
 
+/** Build a candidate runtime config from already-parsed source data without I/O. */
+export function loadConfigFromSnapshot(
+  cwd: string,
+  sessionKey: Buffer,
+  snapshot: ConfigSourceSnapshot,
+  env: NodeJS.ProcessEnv = process.env,
+): LoadResult {
+  return buildLoadResult(
+    snapshot.global,
+    snapshot.project,
+    GLOBAL_CONFIG_PATH,
+    getProjectConfigPath(cwd),
+    sessionKey,
+    env,
+    [],
+  );
+}
+
+function buildLoadResult(
+  globalData: Partial<MaskingConfig> | null,
+  projectData: Partial<MaskingConfig> | null,
+  globalPath: string,
+  projectPath: string,
+  sessionKey: Buffer,
+  env: NodeJS.ProcessEnv,
+  warnings: string[],
+): LoadResult {
   const config = mergeConfigs(globalData, projectData);
   const configuredRules: ConfiguredMaskingRule[] = [];
 
@@ -874,14 +903,13 @@ export async function loadConfigFromPaths(
   };
 }
 
-/**
- * Atomically persist one or more per-rule enabled changes. All targets are
- * parsed and checked before any file is written. A temp file with mode 0600
- * is then renamed over each source config.
- */
-export async function saveRuleEnabledChanges(changes: RuleEnabledChange[]): Promise<void> {
-  if (changes.length === 0) return;
+export interface ConfigChangePreview {
+  warnings: string[];
+  sources: Array<{ path: string; data: RawConfigFile }>;
+}
 
+/** Prepare per-rule enabled changes in memory without writing any file. */
+export async function previewRuleEnabledChanges(changes: RuleEnabledChange[]): Promise<ConfigChangePreview> {
   const byPath = new Map<string, RuleEnabledChange[]>();
   for (const change of changes) {
     const group = byPath.get(change.path) ?? [];
@@ -889,18 +917,9 @@ export async function saveRuleEnabledChanges(changes: RuleEnabledChange[]): Prom
     byPath.set(change.path, group);
   }
 
-  const pending: PendingConfigWrite[] = [];
+  const sources: ConfigChangePreview["sources"] = [];
   for (const [path, pathChanges] of byPath) {
-    const raw = await readFile(path, "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") {
-      throw new Error(`Cannot update ${path}: config root is not an object`);
-    }
-    const data = parsed as { rules?: unknown };
-    if (!Array.isArray(data.rules)) {
-      throw new Error(`Cannot update ${path}: config.rules is not an array`);
-    }
-
+    const data = await readRawConfigFile(path);
     for (const change of pathChanges) {
       const candidate = data.rules[change.sourceIndex];
       if (!candidate || typeof candidate !== "object") {
@@ -912,10 +931,23 @@ export async function saveRuleEnabledChanges(changes: RuleEnabledChange[]): Prom
       }
       (candidate as { enabled?: boolean }).enabled = change.enabled;
     }
-
-    pending.push({ path, content: `${JSON.stringify(data, null, 2)}\n` });
+    sources.push({ path, data });
   }
-  await publishConfigWrites(pending);
+  return { warnings: [], sources };
+}
+
+/**
+ * Atomically persist one or more per-rule enabled changes. All targets are
+ * parsed and checked before any file is written. A temp file with mode 0600
+ * is then renamed over each source config.
+ */
+export async function saveRuleEnabledChanges(changes: RuleEnabledChange[]): Promise<void> {
+  if (changes.length === 0) return;
+  const preview = await previewRuleEnabledChanges(changes);
+  await publishConfigWrites(preview.sources.map(({ path, data }) => ({
+    path,
+    content: `${JSON.stringify(data, null, 2)}\n`,
+  })));
 }
 
 /**
@@ -1044,16 +1076,11 @@ export async function createJsonFileExclusive(path: string, data: unknown): Prom
   }
 }
 
-/**
- * Apply structural rule edits against the latest files. Existing entries are
- * verified by array position and ID so stale TUI actions never hit a different
- * rule. Unknown top-level fields and unrelated invalid legacy entries survive.
- */
-export async function saveConfigRuleMutations(
+/** Prepare structural mutations in memory for impact preflight. */
+export async function previewConfigRuleMutations(
   mutations: readonly ConfigRuleMutation[],
-  hooks: ConfigCommitHooks = {},
-): Promise<{ warnings: string[] }> {
-  if (mutations.length === 0) return { warnings: [] };
+): Promise<ConfigChangePreview> {
+  if (mutations.length === 0) return { warnings: [], sources: [] };
   const byPath = new Map<string, ConfigRuleMutation[]>();
   for (const mutation of mutations) {
     const group = byPath.get(mutation.path) ?? [];
@@ -1061,7 +1088,7 @@ export async function saveConfigRuleMutations(
     byPath.set(mutation.path, group);
   }
 
-  const pending: PendingConfigWrite[] = [];
+  const sources: ConfigChangePreview["sources"] = [];
   const warnings: string[] = [];
   for (const [path, pathMutations] of byPath) {
     const data = await readRawConfigFile(path);
@@ -1099,11 +1126,27 @@ export async function saveConfigRuleMutations(
         data.rules.splice(mutation.targetIndex, 0, moved);
       }
     }
-
-    pending.push({ path, content: `${JSON.stringify(data, null, 2)}\n` });
+    sources.push({ path, data });
   }
-  await publishConfigWrites(pending, hooks);
-  return { warnings };
+  return { warnings, sources };
+}
+
+/**
+ * Apply structural rule edits against the latest files. Existing entries are
+ * verified by array position and ID so stale TUI actions never hit a different
+ * rule. Unknown top-level fields and unrelated invalid legacy entries survive.
+ */
+export async function saveConfigRuleMutations(
+  mutations: readonly ConfigRuleMutation[],
+  hooks: ConfigCommitHooks = {},
+): Promise<{ warnings: string[] }> {
+  if (mutations.length === 0) return { warnings: [] };
+  const preview = await previewConfigRuleMutations(mutations);
+  await publishConfigWrites(preview.sources.map(({ path, data }) => ({
+    path,
+    content: `${JSON.stringify(data, null, 2)}\n`,
+  })), hooks);
+  return { warnings: preview.warnings };
 }
 
 // ─── File watching (hot reload) ────────────────────────────────────────────

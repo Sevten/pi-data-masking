@@ -43,6 +43,13 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ### Added
 
+- Preflight masking behavior changes locally against the latest factual model
+  input. `/masking` now stages candidate rules and opens an in-configuration
+  **Save anyway / Back to editing** confirmation before writing when the system
+  prompt or existing conversation messages are expected to change. External
+  reloads retain an immediate notification. The estimate identifies the
+  earliest affected message and uses cloned placeholder/provenance state
+  without mutating live mappings.
 - Record immutable, sanitized `RuleEpoch` metadata for effective masking
   behavior changes, including monotonic ids, behavior fingerprints, activation
   reasons, and secret-free change summaries.

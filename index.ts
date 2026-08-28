@@ -55,7 +55,10 @@ import {
   generateUniqueRuleId,
   getProjectConfigPath,
   loadConfig,
+  loadConfigFromSnapshot,
   loadPersistentToggle,
+  previewConfigRuleMutations,
+  previewRuleEnabledChanges,
   readRawConfigFile,
   redactRawConfigFile,
   saveConfigRuleMutations,
@@ -266,6 +269,13 @@ export default async function (pi: ExtensionAPI) {
   let prefixImpactHandledEpochIds = new Set<number>();
   let pendingMessagePrefixImpacts = new Map<number, ObservedPrefixImpact>();
   let pendingSystemSourceHash: string | undefined;
+  let pendingSystemSourceText: string | undefined;
+  /** Most recent factual model input, retained only in memory for an immediate
+   *  dry-run when masking behavior changes. */
+  let latestModelInput: Array<{ original: Record<string, unknown>; maskedHash: string }> = [];
+  let latestModelInputFingerprint: string | undefined;
+  let latestSystemPrefix: { source: string; emitted: string; behaviorFingerprint?: string } | undefined;
+  let impactPreviewKeys = new Set<string>();
   let agentRunActive = false;
   let pendingConfigActivation: { config: MaskingConfig; reason: RuleEpochReason } | null = null;
 
@@ -544,7 +554,148 @@ export default async function (pi: ExtensionAPI) {
     return masker.warnings;
   }
 
-  /** Validate now, then activate immediately or coalesce behind the active run. */
+  interface ConfigImpactPreview {
+    systemChanged: boolean;
+    changedMessageCount: number;
+    firstChangedIndex: number;
+  }
+
+  /**
+   * Dry-run a candidate behavior against the most recent factual model input.
+   * Mutable Masker inputs are cloned, so previewing cannot reserve a
+   * placeholder or alter first-seen provenance. Compaction, later extensions,
+   * serialization, and provider policy remain outside this local estimate.
+   */
+  function previewConfigImpact(cfg: MaskingConfig): ConfigImpactPreview | undefined {
+    const activeFingerprint = activeRuleEpoch?.behaviorFingerprint;
+    const comparableMessages = latestModelInputFingerprint === activeFingerprint ? latestModelInput : [];
+    const comparableSystem = latestSystemPrefix?.behaviorFingerprint === activeFingerprint
+      ? latestSystemPrefix
+      : undefined;
+    if (comparableMessages.length === 0 && !comparableSystem) return undefined;
+    const previewMasker = new Masker(
+      cfg.enabled ? cfg.rules : [],
+      cfg.options.caseSensitive,
+      sessionKey,
+      new Map(dynamicPlaceholderMap),
+      new Set(llmInventedValues),
+      new Set(protectedValues),
+    );
+
+    let systemChanged = false;
+    if (comparableSystem) {
+      let emitted = comparableSystem.source;
+      if (cfg.enabled && cfg.rules.length > 0) {
+        emitted = previewMasker.mask(emitted, { discover: true }).text;
+        if (cfg.options.systemPromptGuidance) emitted += "\n\n" + SYSTEM_PROMPT_GUIDANCE;
+      }
+      systemChanged = emitted !== comparableSystem.emitted;
+    }
+
+    let changedMessageCount = 0;
+    let firstChangedIndex = -1;
+    for (let index = 0; index < comparableMessages.length; index++) {
+      const entry = comparableMessages[index]!;
+      const role = (entry.original as { role?: string }).role;
+      const candidate = cfg.enabled && cfg.rules.length > 0
+        ? previewMasker.maskValue(entry.original, maskOptionsForRole(role)).value
+        : entry.original;
+      if (hashMessage(candidate) === entry.maskedHash) continue;
+      changedMessageCount++;
+      if (firstChangedIndex < 0) firstChangedIndex = index;
+    }
+
+    if (!systemChanged && changedMessageCount === 0) return undefined;
+    return { systemChanged, changedMessageCount, firstChangedIndex };
+  }
+
+  function configImpactPreviewKey(cfg: MaskingConfig): string {
+    const currentFingerprint = activeRuleEpoch?.behaviorFingerprint ?? "none";
+    const candidateFingerprint = ruleBehaviorFingerprint(cfg, sessionKey);
+    const factualSignature = hashMessage({
+      system: latestSystemPrefix?.emitted,
+      messages: latestModelInput.map((entry) => entry.maskedHash),
+    });
+    return `${currentFingerprint}:${candidateFingerprint}:${factualSignature}`;
+  }
+
+  function notifyConfigImpactPreview(
+    ctx: ExtensionContext,
+    cfg: MaskingConfig,
+    prediction: ConfigImpactPreview,
+  ): void {
+    const previewKey = configImpactPreviewKey(cfg);
+    if (impactPreviewKeys.has(previewKey)) return;
+    impactPreviewKeys.add(previewKey);
+
+    const history = prediction.changedMessageCount > 0
+      ? `${prediction.changedMessageCount} existing conversation message${prediction.changedMessageCount === 1 ? "" : "s"} (earliest #${prediction.firstChangedIndex + 1})`
+      : "";
+    const target = prediction.systemChanged
+      ? `the provider system prompt${history ? ` and ${history}` : ""}`
+      : history;
+    const activation = agentRunActive
+      ? " The active agent run keeps its current rules; this estimate applies when the pending change activates."
+      : "";
+    ctx.ui.notify(
+      `⚠️ Local preflight: this masking change is expected to change ${target}; provider prefix cache reuse may decrease from the earliest changed component.${activation} No provider request has been sent for this check; review or revert the rule before the next request if cache reuse is more important.`,
+      "warning",
+    );
+  }
+
+  function configImpactMessage(prediction: ConfigImpactPreview): string {
+    const history = prediction.changedMessageCount > 0
+      ? `${prediction.changedMessageCount} existing conversation message${prediction.changedMessageCount === 1 ? "" : "s"} (earliest #${prediction.firstChangedIndex + 1})`
+      : "";
+    const target = prediction.systemChanged
+      ? `the provider system prompt${history ? ` and ${history}` : ""}`
+      : history;
+    const activation = agentRunActive
+      ? "\n\nThe active agent run keeps its current rules; this estimate applies when the pending change activates."
+      : "";
+    return `Local preflight expects this change to alter ${target}. Provider prefix cache reuse may decrease from the earliest changed component.${activation}\n\nNo provider request has been sent for this check.`;
+  }
+
+  async function confirmConfigSave(
+    ctx: ExtensionContext,
+    cfg: MaskingConfig,
+    options: { title?: string; warning?: string; force?: boolean } = {},
+  ): Promise<boolean> {
+    const behaviorChanged = activeRuleEpoch?.behaviorFingerprint !== ruleBehaviorFingerprint(cfg, sessionKey);
+    const prediction = behaviorChanged ? previewConfigImpact(cfg) : undefined;
+    if (!prediction && !options.force) return true;
+    const sections = [options.warning, prediction ? configImpactMessage(prediction) : undefined]
+      .filter((section): section is string => Boolean(section));
+    const choice = await selectMaskingOption(
+      ctx,
+      options.title ?? "Save masking changes?",
+      ["Save anyway", "Back to editing"],
+      sections.join("\n\n"),
+    );
+    if (choice !== "Save anyway") return false;
+    if (prediction) impactPreviewKeys.add(configImpactPreviewKey(cfg));
+    return true;
+  }
+
+  async function candidateConfigFromSources(
+    ctx: ExtensionContext,
+    sources: Array<{ path: string; data: { rules: RawConfigRule[]; [key: string]: unknown } }>,
+  ): Promise<{ config: MaskingConfig; warnings: string[] }> {
+    const snapshot: ConfigSourceSnapshot = structuredClone(configSnapshot ?? { global: null, project: null });
+    const projectPath = getProjectConfigPath(ctx.cwd);
+    for (const source of sources) {
+      if (source.path === projectPath) snapshot.project = source.data as unknown as Partial<MaskingConfig>;
+      else if (source.path === GLOBAL_CONFIG_PATH) snapshot.global = source.data as unknown as Partial<MaskingConfig>;
+    }
+    const loaded = loadConfigFromSnapshot(ctx.cwd, sessionKey, snapshot);
+    const persisted = await applyPersistentToggle(loaded.config);
+    return {
+      config: persisted.config,
+      warnings: [...loaded.warnings, ...persisted.warnings],
+    };
+  }
+
+  /** Validate now, preview factual history impact, then activate immediately or coalesce behind the active run. */
   function acceptConfigChange(
     ctx: ExtensionContext,
     cfg: MaskingConfig,
@@ -553,6 +704,11 @@ export default async function (pi: ExtensionAPI) {
   ): "activated" | "queued" {
     const compileWarnings = buildMasker(cfg).warnings;
     notifyWarnings(ctx, [...warnings, ...compileWarnings]);
+    const candidateFingerprint = ruleBehaviorFingerprint(cfg, sessionKey);
+    if (activeRuleEpoch?.behaviorFingerprint !== candidateFingerprint) {
+      const prediction = previewConfigImpact(cfg);
+      if (prediction) notifyConfigImpactPreview(ctx, cfg, prediction);
+    }
     if (agentRunActive) {
       pendingConfigActivation = { config: cfg, reason };
       updateStatus(ctx);
@@ -723,6 +879,14 @@ export default async function (pi: ExtensionAPI) {
       .map((state) => state.epoch.epochId));
     pendingMessagePrefixImpacts = new Map();
     pendingSystemSourceHash = undefined;
+    pendingSystemSourceText = undefined;
+    latestModelInput = transcript.map((entry) => ({
+      original: structuredClone(entry.original),
+      maskedHash: hashMessage(entry.masked),
+    }));
+    latestModelInputFingerprint = activeRuleEpoch?.behaviorFingerprint;
+    latestSystemPrefix = undefined;
+    impactPreviewKeys = new Set();
     agentRunActive = false;
     pendingConfigActivation = null;
     dynamicPlaceholderMap = new Map();
@@ -786,6 +950,11 @@ export default async function (pi: ExtensionAPI) {
     pendingConfigActivation = null;
     pendingMessagePrefixImpacts.clear();
     pendingSystemSourceHash = undefined;
+    pendingSystemSourceText = undefined;
+    latestModelInput = [];
+    latestModelInputFingerprint = undefined;
+    latestSystemPrefix = undefined;
+    impactPreviewKeys.clear();
   });
 
   // ── Hook 1: context — outbound masking ────────────────────────────────────
@@ -804,6 +973,12 @@ export default async function (pi: ExtensionAPI) {
         disabledPairs.push({ original: hash, masked: hash });
       }
       transcript = mergeTranscript(transcript, originals, originals, capturedAt, disabledPairs);
+      latestModelInput = originals.map((message) => ({
+        original: structuredClone(message),
+        maskedHash: hashMessage(message),
+      }));
+      latestModelInputFingerprint = activeRuleEpoch?.behaviorFingerprint;
+      impactPreviewKeys.clear();
       observeEpochFacts(ctx, epochObservations(originals, originals, disabledPairs), capturedAt);
       persistSnapshots(ctx, originals, originals, disabledPairs);
       return;
@@ -845,6 +1020,12 @@ export default async function (pi: ExtensionAPI) {
       capturedAt,
       contentHashes,
     );
+    latestModelInput = originals.map((message, index) => ({
+      original: structuredClone(message),
+      maskedHash: contentHashes[index]?.masked ?? hashMessage(maskedMessages[index] ?? message),
+    }));
+    latestModelInputFingerprint = activeRuleEpoch?.behaviorFingerprint;
+    impactPreviewKeys.clear();
     observeEpochFacts(ctx, epochObservations(originals, maskedMessages, contentHashes), capturedAt);
     persistSnapshots(ctx, originals, maskedMessages, contentHashes);
     return { messages: maskedMessages as unknown as typeof event.messages };
@@ -912,6 +1093,7 @@ export default async function (pi: ExtensionAPI) {
   pi.on("agent_settled", async () => {
     agentRunActive = false;
     pendingSystemSourceHash = undefined;
+    pendingSystemSourceText = undefined;
   });
 
   // ── Hook 5: before_agent_start — mask the system prompt (default on) ──────
@@ -920,6 +1102,7 @@ export default async function (pi: ExtensionAPI) {
     activatePendingConfig(ctx);
     agentRunActive = true;
     pendingSystemSourceHash = prefixValueFingerprint(event.systemPrompt);
+    pendingSystemSourceText = event.systemPrompt;
     if (!config.enabled || config.rules.length === 0) return;
     // Memoized: the prompt is static per session and is masked again at the
     // provider boundary; fill registers provenance exactly once.
@@ -1014,6 +1197,12 @@ export default async function (pi: ExtensionAPI) {
           intercepted += r.count;
         }
       }
+      const originalSource = pendingSystemSourceText ?? source;
+      latestSystemPrefix = {
+        source: originalSource,
+        emitted: record.system as string,
+        behaviorFingerprint: activeRuleEpoch?.behaviorFingerprint,
+      };
       system = {
         sourceHash: pendingSystemSourceHash ?? prefixValueFingerprint(source),
         emittedHash: prefixValueFingerprint(record.system as string),
@@ -1167,11 +1356,21 @@ export default async function (pi: ExtensionAPI) {
     return choices.find(({ label }) => label === selected);
   }
 
+  interface ConfigSaveConfirmation {
+    title?: string;
+    warning?: string;
+    force?: boolean;
+  }
+
   async function saveStructuralChanges(
     ctx: ExtensionContext,
     mutations: Parameters<typeof saveConfigRuleMutations>[0],
+    confirmation: ConfigSaveConfirmation = {},
   ): Promise<boolean> {
     try {
+      const preview = await previewConfigRuleMutations(mutations);
+      const candidate = await candidateConfigFromSources(ctx, preview.sources);
+      if (!await confirmConfigSave(ctx, candidate.config, confirmation)) return false;
       const saved = await saveConfigRuleMutations(mutations);
       notifyWarnings(ctx, saved.warnings);
       await reloadConfigNow(ctx);
@@ -1180,6 +1379,19 @@ export default async function (pi: ExtensionAPI) {
       ctx.ui.notify(`Failed to update masking config: ${(err as Error).message}`, "error");
       return false;
     }
+  }
+
+  async function saveRuleStateChanges(
+    ctx: ExtensionContext,
+    changes: RuleEnabledChange[],
+    confirmation: ConfigSaveConfirmation = {},
+  ): Promise<boolean> {
+    const preview = await previewRuleEnabledChanges(changes);
+    const candidate = await candidateConfigFromSources(ctx, preview.sources);
+    if (!await confirmConfigSave(ctx, candidate.config, confirmation)) return false;
+    await saveRuleEnabledChanges(changes);
+    await reloadConfigNow(ctx);
+    return true;
   }
 
   interface LocalMaskingPreview {
@@ -1489,7 +1701,7 @@ export default async function (pi: ExtensionAPI) {
     type BuiltRule = { source: typeof sources[number]; rule: RawConfigRule; createdSource: boolean };
     let sourceCreatedDuringBuilder = false;
 
-    async function persistBuilderDraft(source: typeof sources[number], rule: RawConfigRule): Promise<void> {
+    async function persistBuilderDraft(source: typeof sources[number], rule: RawConfigRule): Promise<boolean> {
       if (!existsSync(source.path)) {
         const initial = buildInitialConfig([]);
         try {
@@ -1511,9 +1723,13 @@ export default async function (pi: ExtensionAPI) {
               { kind: "append" as const, path: source.path, rule },
             ]
         : [{ kind: "append" as const, path: source.path, rule }];
+      const preview = await previewConfigRuleMutations(mutations);
+      const candidate = await candidateConfigFromSources(ctx, preview.sources);
+      if (!await confirmConfigSave(ctx, candidate.config)) return false;
       const saved = await saveConfigRuleMutations(mutations);
       notifyWarnings(ctx, saved.warnings);
       await reloadConfigNow(ctx);
+      return true;
     }
 
     const built = await ctx.ui.custom<BuiltRule | undefined>((tui, theme, keybindings, done) => {
@@ -1892,7 +2108,13 @@ export default async function (pi: ExtensionAPI) {
         saveMessage = "Saving…";
         tui.requestRender();
         try {
-          await persistBuilderDraft(currentSource(), draft.rule);
+          const persisted = await persistBuilderDraft(currentSource(), draft.rule);
+          if (!persisted) {
+            saving = false;
+            saveMessage = "Save cancelled · draft retained";
+            tui.requestRender();
+            return;
+          }
           done({ source: currentSource(), rule: draft.rule, createdSource: sourceCreatedDuringBuilder });
         } catch (err) {
           saving = false;
@@ -2092,17 +2314,16 @@ export default async function (pi: ExtensionAPI) {
   }
 
   async function deleteConfigRule(ctx: ExtensionContext, configured: ConfiguredMaskingRule): Promise<void> {
-    if (!await confirmMaskingAction(
-      ctx,
-      "Delete masking rule?",
-      `Delete "${configuredRuleDisplayName(configured)}" [${configured.rule.id}] from the ${configured.scope} config?\nThis may expose matching values in future requests and cannot retract earlier model context.`,
-    )) return;
     if (await saveStructuralChanges(ctx, [{
       kind: "delete",
       path: configured.path,
       sourceIndex: configured.sourceIndex,
       id: configured.rule.id,
-    }])) ctx.ui.notify(`Deleted rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}]`, "info");
+    }], {
+      title: "Delete masking rule?",
+      force: true,
+      warning: `Delete "${configuredRuleDisplayName(configured)}" [${configured.rule.id}] from the ${configured.scope} config?\nThis may expose matching values in future requests and cannot retract earlier model context.`,
+    })) ctx.ui.notify(`Deleted rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}]`, "info");
   }
 
   async function showRuleConfigurationHelp(ctx: ExtensionContext): Promise<void> {
@@ -2179,13 +2400,13 @@ export default async function (pi: ExtensionAPI) {
   ): Promise<boolean> {
     const enabled = !configured.enabled;
     try {
-      await saveRuleEnabledChanges([{
+      const saved = await saveRuleStateChanges(ctx, [{
         path: configured.path,
         sourceIndex: configured.sourceIndex,
         id: configured.rule.id,
         enabled,
       }]);
-      await reloadConfigNow(ctx);
+      if (!saved) return false;
       const state = enabled && !configured.available
         ? `enabled in config but waiting for environment variable ${configured.realFromEnv}`
         : enabled ? "enabled immediately" : "disabled immediately";
@@ -2205,14 +2426,12 @@ export default async function (pi: ExtensionAPI) {
   async function applyBatchRuleState(ctx: ExtensionContext, changes: RuleEnabledChange[]): Promise<void> {
     if (changes.length === 0) return;
     const disabling = changes.filter((change) => !change.enabled).length;
-    if (!await confirmMaskingAction(
-      ctx,
-      "Apply batch rule changes?",
-      `${changes.length - disabling} rule(s) will be enabled and ${disabling} disabled.\nDisabled rules may expose matching values in future requests. Earlier context cannot be retracted.`,
-    )) return;
     try {
-      await saveRuleEnabledChanges(changes);
-      await reloadConfigNow(ctx);
+      if (!await saveRuleStateChanges(ctx, changes, {
+        title: "Apply batch rule changes?",
+        force: true,
+        warning: `${changes.length - disabling} rule(s) will be enabled and ${disabling} disabled.\nDisabled rules may expose matching values in future requests. Earlier context cannot be retracted.`,
+      })) return;
       ctx.ui.notify(`Applied ${changes.length} rule state change(s) immediately`, "info");
     } catch (err) {
       ctx.ui.notify(`Failed to update rules: ${(err as Error).message}`, "error");
@@ -2235,13 +2454,12 @@ export default async function (pi: ExtensionAPI) {
       const ids = imported.rules.map((rule) => typeof rule?.id === "string" ? rule.id : "<invalid>");
       const literalCount = imported.rules.filter((rule) => typeof rule?.real === "string").length;
       const riskWarnings = imported.rules.flatMap((rule) => validateRawConfigRule(rule));
-      if (!await confirmMaskingAction(
-        ctx,
-        "Import masking rules?",
-        [`Source: ${importPath}`, `Target: ${target.path}`, `Rules (${ids.length}): ${ids.join(", ")}`, `${literalCount} direct literal value(s) will be copied without being displayed.`, ...riskWarnings.map((warning) => `Warning: ${warning}`)].join("\n"),
-      )) return;
       const mutations = imported.rules.map((rule) => ({ kind: "append" as const, path: target.path, rule }));
-      if (await saveStructuralChanges(ctx, mutations)) ctx.ui.notify(`Imported ${ids.length} rule(s) into ${target.scope} config`, "info");
+      if (await saveStructuralChanges(ctx, mutations, {
+        title: "Import masking rules?",
+        force: true,
+        warning: [`Source: ${importPath}`, `Target: ${target.path}`, `Rules (${ids.length}): ${ids.join(", ")}`, `${literalCount} direct literal value(s) will be copied without being displayed.`, ...riskWarnings.map((warning) => `Warning: ${warning}`)].join("\n"),
+      })) ctx.ui.notify(`Imported ${ids.length} rule(s) into ${target.scope} config`, "info");
     } catch (err) {
       ctx.ui.notify(`Failed to import rules: ${(err as Error).message}`, "error");
     }

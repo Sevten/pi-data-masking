@@ -18,6 +18,8 @@ import {
   generateUniqueRuleId,
   loadConfigFromPaths,
   loadPersistentToggle,
+  previewConfigRuleMutations,
+  previewRuleEnabledChanges,
   readRawConfigFile,
   redactRawConfigFile,
   saveConfigRuleMutations,
@@ -337,6 +339,37 @@ test("saveRuleEnabledChanges updates exact source entries atomically with mode 0
       /source position now contains/,
     );
     assert.equal(readFileSync(path, "utf8"), beforeMismatch);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("rule change previews stage candidate sources without writing files", async () => {
+  const dir = makeTmp();
+  try {
+    const path = join(dir, "masking.config.json");
+    writeFileSync(path, JSON.stringify({
+      custom: true,
+      rules: [{ id: "token", real: "secret-token-value" }],
+    }));
+    const before = readFileSync(path, "utf8");
+
+    const toggled = await previewRuleEnabledChanges([
+      { path, sourceIndex: 0, id: "token", enabled: false },
+    ]);
+    assert.equal(toggled.sources[0]!.data.rules[0]!.enabled, false);
+    assert.equal(readFileSync(path, "utf8"), before);
+
+    const edited = await previewConfigRuleMutations([{
+      kind: "replace",
+      path,
+      sourceIndex: 0,
+      id: "token",
+      rule: { id: "token", real: "rotated-secret-value" },
+    }]);
+    assert.equal(edited.sources[0]!.data.rules[0]!.real, "rotated-secret-value");
+    assert.equal(edited.sources[0]!.data.custom, true);
+    assert.equal(readFileSync(path, "utf8"), before);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
