@@ -8,6 +8,10 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ### Fixed
 
+- Keep save-impact confirmation active across repeated rule edits made before
+  another provider request. Each candidate now compares with the latest
+  factual model input—the relevant prefix-cache baseline—instead of requiring
+  that input to belong to the newly activated but still-unused rule epoch.
 - Keep every `/masking` workflow on a clean full-screen surface. Adding a rule,
   selecting a preset or config source, importing/exporting, and confirmation
   prompts no longer reveal conversation history behind short-lived UI panels.

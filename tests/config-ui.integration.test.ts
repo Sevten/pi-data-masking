@@ -202,15 +202,18 @@ test("history-changing saves confirm inside configuration UI before writing", as
   mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
   writeFileSync(projectPath, JSON.stringify({ rules: [
     { id: "token", name: "Token", real: "secret-service-token", placeholder: "masked-service-token" },
+    { id: "host", name: "Host", real: "secret-service-host", placeholder: "masked-service-host" },
   ] }));
 
   let firstCancelled = false;
-  const assertImpactConfirmation = (component: Component) => {
+  let confirmationCount = 0;
+  const assertImpactConfirmation = (component: Component, sourceIndex: number) => {
+    confirmationCount++;
     const lines = component.render(100);
     assert.ok(lines.some((line) => line.includes("Save masking changes?")));
     assert.ok(lines.some((line) => line.includes("1 existing conversation message")));
     assert.ok(lines.some((line) => line.includes("earliest #1")));
-    assert.equal(configRules(projectPath)[0]?.enabled, undefined, "candidate must not be written before confirmation");
+    assert.equal(configRules(projectPath)[sourceIndex]?.enabled, undefined, "candidate must not be written before confirmation");
   };
   const harness = await createHarness(dir, [
     async (component) => {
@@ -219,26 +222,35 @@ test("history-changing saves confirm inside configuration UI before writing", as
       assert.equal(configRules(projectPath)[0]?.enabled, undefined, "Back to editing must leave the file unchanged");
       component.handleInput(INPUT.space);
       await waitFor(() => configRules(projectPath)[0]?.enabled === false);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.space);
+      await waitFor(() => configRules(projectPath)[1]?.enabled === false);
       component.handleInput(INPUT.escape);
     },
     async (component) => {
-      assertImpactConfirmation(component);
+      assertImpactConfirmation(component, 0);
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.enter);
       firstCancelled = true;
     },
     async (component) => {
-      assertImpactConfirmation(component);
+      assertImpactConfirmation(component, 0);
+      component.handleInput(INPUT.enter);
+    },
+    async (component) => {
+      assertImpactConfirmation(component, 1);
       component.handleInput(INPUT.enter);
     },
   ]);
 
   try {
     await harness.emit("context", {
-      messages: [{ role: "user", content: "use secret-service-token" }],
+      messages: [{ role: "user", content: "use secret-service-token at secret-service-host" }],
     });
     await harness.commands.get("masking")!.handler("", harness.ctx);
     assert.equal(configRules(projectPath)[0]?.enabled, false);
+    assert.equal(configRules(projectPath)[1]?.enabled, false);
+    assert.equal(confirmationCount, 3, "each impactful repeated edit should confirm against the last factual input");
     assert.equal(harness.notifications.some((message) => message.includes("Local preflight")), false);
   } finally {
     await harness.shutdown();

@@ -273,8 +273,7 @@ export default async function (pi: ExtensionAPI) {
   /** Most recent factual model input, retained only in memory for an immediate
    *  dry-run when masking behavior changes. */
   let latestModelInput: Array<{ original: Record<string, unknown>; maskedHash: string }> = [];
-  let latestModelInputFingerprint: string | undefined;
-  let latestSystemPrefix: { source: string; emitted: string; behaviorFingerprint?: string } | undefined;
+  let latestSystemPrefix: { source: string; emitted: string } | undefined;
   let impactPreviewKeys = new Set<string>();
   let agentRunActive = false;
   let pendingConfigActivation: { config: MaskingConfig; reason: RuleEpochReason } | null = null;
@@ -567,12 +566,11 @@ export default async function (pi: ExtensionAPI) {
    * serialization, and provider policy remain outside this local estimate.
    */
   function previewConfigImpact(cfg: MaskingConfig): ConfigImpactPreview | undefined {
-    const activeFingerprint = activeRuleEpoch?.behaviorFingerprint;
-    const comparableMessages = latestModelInputFingerprint === activeFingerprint ? latestModelInput : [];
-    const comparableSystem = latestSystemPrefix?.behaviorFingerprint === activeFingerprint
-      ? latestSystemPrefix
-      : undefined;
-    if (comparableMessages.length === 0 && !comparableSystem) return undefined;
+    // Compare with the last input that actually crossed the local masking
+    // boundary, even if one or more newly saved epochs have not sent a request
+    // yet. That factual input is still the provider-cache baseline users are
+    // deciding whether to preserve during repeated edits.
+    if (latestModelInput.length === 0 && !latestSystemPrefix) return undefined;
     const previewMasker = new Masker(
       cfg.enabled ? cfg.rules : [],
       cfg.options.caseSensitive,
@@ -583,19 +581,19 @@ export default async function (pi: ExtensionAPI) {
     );
 
     let systemChanged = false;
-    if (comparableSystem) {
-      let emitted = comparableSystem.source;
+    if (latestSystemPrefix) {
+      let emitted = latestSystemPrefix.source;
       if (cfg.enabled && cfg.rules.length > 0) {
         emitted = previewMasker.mask(emitted, { discover: true }).text;
         if (cfg.options.systemPromptGuidance) emitted += "\n\n" + SYSTEM_PROMPT_GUIDANCE;
       }
-      systemChanged = emitted !== comparableSystem.emitted;
+      systemChanged = emitted !== latestSystemPrefix.emitted;
     }
 
     let changedMessageCount = 0;
     let firstChangedIndex = -1;
-    for (let index = 0; index < comparableMessages.length; index++) {
-      const entry = comparableMessages[index]!;
+    for (let index = 0; index < latestModelInput.length; index++) {
+      const entry = latestModelInput[index]!;
       const role = (entry.original as { role?: string }).role;
       const candidate = cfg.enabled && cfg.rules.length > 0
         ? previewMasker.maskValue(entry.original, maskOptionsForRole(role)).value
@@ -884,7 +882,6 @@ export default async function (pi: ExtensionAPI) {
       original: structuredClone(entry.original),
       maskedHash: hashMessage(entry.masked),
     }));
-    latestModelInputFingerprint = activeRuleEpoch?.behaviorFingerprint;
     latestSystemPrefix = undefined;
     impactPreviewKeys = new Set();
     agentRunActive = false;
@@ -952,7 +949,6 @@ export default async function (pi: ExtensionAPI) {
     pendingSystemSourceHash = undefined;
     pendingSystemSourceText = undefined;
     latestModelInput = [];
-    latestModelInputFingerprint = undefined;
     latestSystemPrefix = undefined;
     impactPreviewKeys.clear();
   });
@@ -977,7 +973,6 @@ export default async function (pi: ExtensionAPI) {
         original: structuredClone(message),
         maskedHash: hashMessage(message),
       }));
-      latestModelInputFingerprint = activeRuleEpoch?.behaviorFingerprint;
       impactPreviewKeys.clear();
       observeEpochFacts(ctx, epochObservations(originals, originals, disabledPairs), capturedAt);
       persistSnapshots(ctx, originals, originals, disabledPairs);
@@ -1024,7 +1019,6 @@ export default async function (pi: ExtensionAPI) {
       original: structuredClone(message),
       maskedHash: contentHashes[index]?.masked ?? hashMessage(maskedMessages[index] ?? message),
     }));
-    latestModelInputFingerprint = activeRuleEpoch?.behaviorFingerprint;
     impactPreviewKeys.clear();
     observeEpochFacts(ctx, epochObservations(originals, maskedMessages, contentHashes), capturedAt);
     persistSnapshots(ctx, originals, maskedMessages, contentHashes);
@@ -1198,11 +1192,7 @@ export default async function (pi: ExtensionAPI) {
         }
       }
       const originalSource = pendingSystemSourceText ?? source;
-      latestSystemPrefix = {
-        source: originalSource,
-        emitted: record.system as string,
-        behaviorFingerprint: activeRuleEpoch?.behaviorFingerprint,
-      };
+      latestSystemPrefix = { source: originalSource, emitted: record.system as string };
       system = {
         sourceHash: pendingSystemSourceHash ?? prefixValueFingerprint(source),
         emittedHash: prefixValueFingerprint(record.system as string),
