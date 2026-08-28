@@ -24,6 +24,9 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
   when a real value and placeholder share text, preserve the enclosing message
   background across highlighted spans, and make `N`/`P` navigation visible
   only for multiple mappings while jumping to the selected mapping's message.
+- Highlight the current `/masking-history` navigation target without injecting
+  bracket characters, and exclude unchanged short closing delimiters such as
+  Markdown backticks, so the selected text is exactly the factual masked span.
 - Clarify `/masking-history` controls as `M original/masked` and
   `C side-by-side compare`; stop treating terminal `Ctrl+M`/Enter as a view
   toggle.

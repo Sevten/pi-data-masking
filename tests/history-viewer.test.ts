@@ -46,6 +46,24 @@ test("text diff does not split a replacement at its shared word suffix", () => {
   );
 });
 
+test("text diff excludes short shared closing delimiters from a replacement", () => {
+  assert.deepEqual(
+    diffText("`wsl90.top`", "`test.xyz`"),
+    [
+      { original: "`", masked: "`", changed: false },
+      { original: "wsl90.top", masked: "test.xyz", changed: true },
+      { original: "`", masked: "`", changed: false },
+    ],
+  );
+  assert.deepEqual(
+    diffText("mysecret`", "maskedsecret`"),
+    [
+      { original: "mysecret", masked: "maskedsecret", changed: true },
+      { original: "`", masked: "`", changed: false },
+    ],
+  );
+});
+
 test("N/P navigates every masked occurrence, including repeated mappings", () => {
   let renderRequests = 0;
   const theme = {
@@ -101,7 +119,7 @@ test("N/P navigates every masked occurrence, including repeated mappings", () =>
   assert.doesNotMatch(wrapped, /latest same-/);
 });
 
-test("only the current N/P target gets navigation markers within one message", () => {
+test("only the current N/P target gets selected styling without display markers", () => {
   const theme = {
     fg: (_color: unknown, text: string) => text,
     bg: (_color: unknown, text: string) => text,
@@ -124,11 +142,66 @@ test("only the current N/P target gets navigation markers within one message", (
   );
 
   const latest = viewer.render(120).join("\n");
-  assert.match(latest, /<masked>secret<\/masked> keep <current>⟦secret⟧<\/current>/);
+  assert.match(latest, /<masked>secret<\/masked> keep <current>secret<\/current>/);
+  assert.doesNotMatch(latest, /[⟦⟧]/);
 
   viewer.handleInput?.("n");
   const first = viewer.render(120).join("\n");
-  assert.match(first, /<current>⟦secret⟧<\/current> keep <masked>secret<\/masked>/);
+  assert.match(first, /<current>secret<\/current> keep <masked>secret<\/masked>/);
+  assert.doesNotMatch(first, /[⟦⟧]/);
+});
+
+test("selected styling covers only the factual masking span", () => {
+  const viewer = createHistoryViewer(
+    { terminal: { rows: 12 }, requestRender: () => undefined },
+    {
+      fg: (_color: unknown, text: string) => text,
+      bg: (_color: unknown, text: string) => text,
+      bold: (text: string) => text,
+      italic: (text: string) => text,
+      inverse: (text: string) => `<current>${text}</current>`,
+      underline: (text: string) => text,
+    },
+    { matches: () => false },
+    [{
+      key: "user:1",
+      original: { role: "user", content: "home.test.xyz" },
+      masked: { role: "user", content: "home.example.com" },
+      capturedAt: 1,
+    }],
+    () => undefined,
+  );
+
+  const rendered = viewer.render(120).join("\n");
+  assert.match(rendered, /home\.<current>test\.xyz<\/current>/);
+  assert.doesNotMatch(rendered, /<current>[^<]*[⟦⟧]/);
+});
+
+test("closing delimiters stay outside history highlighting and the occurrence inspector", () => {
+  const viewer = createHistoryViewer(
+    { terminal: { rows: 12 }, requestRender: () => undefined },
+    {
+      fg: (_color: unknown, text: string) => text,
+      bg: (_color: unknown, text: string) => text,
+      bold: (text: string) => text,
+      italic: (text: string) => text,
+      inverse: (text: string) => `<current>${text}</current>`,
+      underline: (text: string) => text,
+    },
+    { matches: () => false },
+    [{
+      key: "user:1",
+      original: { role: "user", content: "`wsl90.top`" },
+      masked: { role: "user", content: "`test.xyz`" },
+      capturedAt: 1,
+    }],
+    () => undefined,
+  );
+
+  const rendered = viewer.render(120).join("\n");
+  assert.match(rendered, /`<current>wsl90\.top<\/current>`/);
+  assert.match(rendered, /LOCAL: wsl90\.top  →  MODEL: test\.xyz(?:\s|$)/);
+  assert.doesNotMatch(rendered, /LOCAL: wsl90\.top`|MODEL: test\.xyz`/);
 });
 
 test("M toggles original and masked views while Ctrl+M is not captured", () => {
@@ -201,7 +274,8 @@ test("selected replacement styling does not reset the surrounding message backgr
   );
 
   const rendered = viewer.render(120).join("\n");
-  assert.match(rendered, /<inverse>⟦mysecret⟧<\/inverse>/);
+  assert.match(rendered, /<inverse>mysecret<\/inverse>/);
+  assert.doesNotMatch(rendered, /[⟦⟧]/);
   assert.deepEqual(new Set(calls), new Set(["userMessageBg"]));
 });
 

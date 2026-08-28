@@ -67,6 +67,10 @@ interface RenderSelection {
   nextOccurrence: number;
 }
 
+// Internal zero-width anchor used only to locate the selected occurrence after
+// Text has wrapped it. entryRender() strips it before any line reaches the TUI.
+const SELECTED_OCCURRENCE_ANCHOR = "\u2063\u200b\u2063";
+
 interface HistoryTui {
   terminal: { rows: number };
   requestRender(): void;
@@ -254,7 +258,18 @@ export function diffText(original: string, masked: string): DiffSegment[] {
       }
     }
     if (anchorOriginal < 0) {
-      push(before, after, true);
+      // Short closing delimiters (for example the final backtick in
+      // `wsl90.top` → `test.xyz`) are too small to qualify as scan anchors,
+      // but they are still unchanged context and must not appear inside the
+      // factual replacement span. Preserve only the immediately trailing
+      // non-word run; shared lexical suffixes remain part of the replacement.
+      const trailingContext = sharedTrailingNonWordLength(before, after);
+      if (trailingContext > 0) {
+        push(before.slice(0, -trailingContext), after.slice(0, -trailingContext), true);
+        push(before.slice(-trailingContext), after.slice(-trailingContext), false);
+      } else {
+        push(before, after, true);
+      }
       return segments;
     }
     push(before.slice(0, anchorOriginal), after.slice(0, anchorMasked), true);
@@ -276,6 +291,18 @@ const WORD_CHARACTER = /[\p{L}\p{N}_]/u;
 function isContextAnchor(text: string, start: number): boolean {
   if (start <= 0) return true;
   return !WORD_CHARACTER.test(text[start - 1] ?? "") || !WORD_CHARACTER.test(text[start] ?? "");
+}
+
+/** Length of the identical trailing punctuation/whitespace run on both sides. */
+function sharedTrailingNonWordLength(original: string, masked: string): number {
+  let length = 0;
+  while (length < original.length && length < masked.length) {
+    const originalChar = original[original.length - length - 1] ?? "";
+    const maskedChar = masked[masked.length - length - 1] ?? "";
+    if (originalChar !== maskedChar || WORD_CHARACTER.test(originalChar)) break;
+    length++;
+  }
+  return length;
 }
 
 function collectTextReplacements(
@@ -386,9 +413,9 @@ function highlightSegment(
   const value = side === "original" ? segment.original : segment.masked;
   if (!segment.changed) return theme.fg(baseColor, value);
   if (selected) {
-    // Brackets are display-only navigation markers. They remain unmistakable
-    // even in themes or terminals where underline and inverse look similar.
-    const marked = theme.bold(theme.fg("accent", `⟦${value}⟧`));
+    // Keep navigation styling display-only: the highlighted characters remain
+    // exactly the factual replacement span, without bracket-like decorations.
+    const marked = theme.bold(theme.fg("accent", `${SELECTED_OCCURRENCE_ANCHOR}${value}`));
     return theme.inverse?.(marked) ?? marked;
   }
   const colored = side === "original"
@@ -634,7 +661,12 @@ export function createHistoryViewer(
   // History is a replay: open at its live edge rather than at session start.
   // visiblePage() will retreat just enough to fill the screen on first render.
   let position = { entry: displayEntries.length, line: 0 };
-  const entryCache = new Map<number, { width: number; version: number; lines: string[] }>();
+  const entryCache = new Map<number, {
+    width: number;
+    version: number;
+    lines: string[];
+    selectedLine: number;
+  }>();
 
   const replacements: Replacement[] = [];
   for (let index = 0; index < displayEntries.length; index++) {
@@ -659,12 +691,12 @@ export function createHistoryViewer(
   };
 
   const pageSize = () => Math.max(3, tui.terminal.rows - (options.subtitle ? 5 : 4));
-  const entryLines = (index: number, width: number): string[] => {
+  const entryRender = (index: number, width: number) => {
     const cached = entryCache.get(index);
-    if (cached?.width === width && cached.version === cacheVersion) return cached.lines;
+    if (cached?.width === width && cached.version === cacheVersion) return cached;
     const entry = displayEntries[index];
-    if (!entry) return [];
-    const lines = renderTranscriptEntry(
+    if (!entry) return { width, version: cacheVersion, lines: [], selectedLine: -1 };
+    const rendered = renderTranscriptEntry(
       entry,
       toolResults,
       toolsExpanded,
@@ -673,9 +705,13 @@ export function createHistoryViewer(
       viewMode,
       selectedReplacement()?.entryIndex === index ? selectedReplacement() : undefined,
     ).render(width);
-    entryCache.set(index, { width, version: cacheVersion, lines });
-    return lines;
+    const selectedLine = rendered.findIndex((line) => line.includes(SELECTED_OCCURRENCE_ANCHOR));
+    const lines = rendered.map((line) => line.replaceAll(SELECTED_OCCURRENCE_ANCHOR, ""));
+    const result = { width, version: cacheVersion, lines, selectedLine };
+    entryCache.set(index, result);
+    return result;
   };
+  const entryLines = (index: number, width: number): string[] => entryRender(index, width).lines;
 
   const advance = (start: typeof position, amount: number, width: number) => {
     const next = { ...start };
@@ -733,9 +769,8 @@ export function createHistoryViewer(
     if (revealSelectedOccurrence) {
       const selected = selectedReplacement();
       if (selected) {
-        const markerLine = entryLines(selected.entryIndex, width)
-          .findIndex((line) => line.includes("⟦"));
-        if (markerLine >= 0) position = { entry: selected.entryIndex, line: Math.max(0, markerLine - 1) };
+        const selectedLine = entryRender(selected.entryIndex, width).selectedLine;
+        if (selectedLine >= 0) position = { entry: selected.entryIndex, line: Math.max(0, selectedLine - 1) };
       }
       revealSelectedOccurrence = false;
     }
@@ -786,10 +821,10 @@ export function createHistoryViewer(
         ? `Current masked occurrence ${replacementIndex + 1}/${replacements.length}${replacements.length === 1 ? " (only)" : ""}  LOCAL: ${selected.original}  →  MODEL: ${selected.masked}`
         : "No masked text in this session";
       const legend = viewMode === "original"
-        ? "Underlined: local text changed by masking · ⟦brackets⟧: current N/P target (display-only)"
+        ? "Underlined: local text changed by masking · Reverse video: current N/P target"
         : viewMode === "model"
-          ? "Underlined: masking replacement · ⟦brackets⟧: current N/P target (display-only)"
-          : "Left: local original · Right: model input · ⟦brackets⟧ mark current N/P target";
+          ? "Underlined: masking replacement · Reverse video: current N/P target"
+          : "Left: local original · Right: model input · Reverse video: current N/P target";
       const footerPrefix = options.footerPrefix ? `${options.footerPrefix} · ` : "";
       const occurrenceControl = replacements.length > 1 ? " · N/P next/previous masked text" : "";
       const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll${occurrenceControl} · M original/masked · C side-by-side compare · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
