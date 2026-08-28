@@ -11,6 +11,8 @@ process.env.PI_CODING_AGENT_DIR = TEST_AGENT_DIR;
 process.on("exit", () => rmSync(TEST_AGENT_DIR, { recursive: true, force: true }));
 
 type Handler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown;
+type Component = { render(width: number): string[]; handleInput(data: string): void };
+type Scenario = (component: Component) => Promise<void>;
 
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -28,6 +30,7 @@ async function createHarness(cwd: string, branch: unknown[] = []) {
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   const entries: Array<{ customType: string; data: unknown }> = [];
   const notifications: string[] = [];
+  const scenarios: Scenario[] = [];
   const pi = {
     on(name: string, handler: Handler) {
       const handlers = events.get(name) ?? [];
@@ -41,12 +44,33 @@ async function createHarness(cwd: string, branch: unknown[] = []) {
       entries.push({ customType, data: structuredClone(data) });
     },
   };
+  const theme = {
+    fg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+  };
+  const actionKeys: Record<string, string> = {
+    "tui.select.up": "\x1b[A",
+    "tui.select.down": "\x1b[B",
+    "tui.select.confirm": "\r",
+    "tui.select.cancel": "\x1b",
+    "app.interrupt": "\x03",
+  };
+  const keybindings = { matches: (data: string, action: string) => data === actionKeys[action] };
+  const tui = { terminal: { rows: 50, columns: 120 }, requestRender() {} };
   const ctx = {
     cwd,
     ui: {
       notify(message: string) { notifications.push(message); },
       setStatus() {},
       setWidget() {},
+      async custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => Component): Promise<T> {
+        const scenario = scenarios.shift();
+        assert.ok(scenario, "unexpected TUI screen");
+        return new Promise<T>((resolve, reject) => {
+          const component = factory(tui, theme, keybindings, resolve);
+          void scenario(component).catch(reject);
+        });
+      },
     },
     sessionManager: { getBranch: () => branch },
   };
@@ -64,9 +88,23 @@ async function createHarness(cwd: string, branch: unknown[] = []) {
       for (const handler of events.get(name) ?? []) result = await handler(event, ctx);
       return result;
     },
-    async command(name: string) {
-      const command = commands.get(name);
-      assert.ok(command, `missing command ${name}`);
+    async toggleMasking(confirmDisable: boolean) {
+      const before = notifications.length;
+      scenarios.push(async (component) => {
+        assert.ok(component.render(100).some((line) => line.includes("GLOBAL MASKING")));
+        component.handleInput("m");
+        await waitFor(() => notifications.length > before);
+        component.handleInput("\x1b");
+      });
+      if (confirmDisable) {
+        scenarios.push(async (component) => {
+          assert.ok(component.render(100).some((line) => line.includes("Disable masking?")));
+          component.handleInput("\r");
+        });
+      }
+      const command = commands.get("masking");
+      assert.ok(command, "missing command masking");
+      assert.equal(commands.has("masking-toggle"), false);
       await command.handler("", ctx);
     },
     async shutdown() {
@@ -122,7 +160,7 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     assert.ok(e1PrefixBatch?.prefix?.system);
     assert.equal(JSON.stringify(e1PrefixBatch).includes(systemOriginal), false);
 
-    await harness.command("masking-toggle");
+    await harness.toggleMasking(true);
     assert.ok(harness.notifications.some((message) => message.includes("active run keeps its current rules")));
     assert.ok(harness.notifications.some((message) =>
       message.includes("Local preflight") &&
@@ -167,8 +205,8 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
 
     // Two edits during E2 coalesce to the original disabled behavior, so the
     // next run reuses E2 instead of creating unused E3/E4 epochs.
-    await harness.command("masking-toggle");
-    await harness.command("masking-toggle");
+    await harness.toggleMasking(false);
+    await harness.toggleMasking(true);
     await harness.emit("agent_settled", {});
     await harness.emit("before_agent_start", { systemPrompt: "system", prompt: "again" });
     assert.deepEqual(epochs(harness.entries).map((epoch) => epoch.epochId), [1, 2]);
@@ -176,7 +214,7 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     // Re-enable between runs (E3), then change the rule file while E3 is
     // running. The watcher queues E4 without disturbing E3's tool loop.
     await harness.emit("agent_settled", {});
-    await harness.command("masking-toggle");
+    await harness.toggleMasking(false);
     assert.deepEqual(epochs(harness.entries).map((epoch) => epoch.epochId), [1, 2, 3]);
     await harness.emit("before_agent_start", { systemPrompt: "system", prompt: "reload" });
     writeFileSync(join(configDir, "masking.config.json"), JSON.stringify({

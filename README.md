@@ -161,11 +161,10 @@ Regex safety diagnostics are advisory and do not reject a rule. Keep patterns na
 
 | Command | Purpose |
 |---|---|
-| `/masking` | Manage, order, enable, edit, and locally test project/global rules |
-| `/masking-toggle` | Persistently enable or disable masking |
+| `/masking` | Globally enable/disable masking; manage, order, enable, edit, and locally test project/global rules |
 | `/masking-history` | Audit factual local/model views by active rule version (`[`/`]`) |
 
-In `/masking`, `Space` toggles a rule, `Enter` edits or adds, `Ctrl+↑/↓` changes priority, `D`/`Delete` removes, `Tab` focuses local testing, and `R` reveals the selected literal value. The screen lists the remaining filter, search, batch, help, import, and redacted-export shortcuts.
+In `/masking`, `M` persistently enables or disables masking across projects and future sessions, while `Space` toggles the selected rule. `Enter` edits or adds, `Ctrl+↑/↓` changes priority, `D`/`Delete` removes, `Tab` focuses local testing, and `R` reveals the selected literal value. The screen lists the remaining filter, search, batch, help, import, and redacted-export shortcuts.
 
 The test areas are local: sample text does not enter model context, session history, configuration, or live placeholder mappings.
 
@@ -203,12 +202,12 @@ If the model saw a string first, protecting it later would rewrite text the mode
 
 ## Scope, persistence, and recovery
 
-When both configuration files exist, project rules run before global rules; project option fields override global fields. A saved `/masking-toggle` state overrides both files.
+When both configuration files exist, project rules run before global rules; project option fields override global fields. The global masking state saved from `/masking` overrides both files.
 
 Config writes are atomic and use user-only permissions where POSIX modes are available. Multi-file operations roll back on failure. If a watched file is temporarily invalid or unreadable, the last successfully parsed configuration remains active; deleting the file intentionally removes that scope.
 
 Masking behavior is pinned for one complete agent run, including all model/tool
-loop iterations. A config reload or `/masking-toggle` change that arrives while
+loop iterations. A config reload or global masking-state change that arrives while
 the agent is running is saved immediately but activates before the next agent
 run, so tool placeholders are always restored by the masker that created them.
 Effective behavior changes append sanitized, secret-free `RuleEpoch` metadata to

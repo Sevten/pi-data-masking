@@ -17,7 +17,7 @@
     "enabled": {
       "type": "boolean",
       "default": true,
-      "description": "Top-level masking switch before any persistent /masking-toggle override."
+      "description": "Top-level masking switch before any persistent global state saved from /masking."
     },
     "rules": {
       "type": "array",

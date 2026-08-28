@@ -22,7 +22,7 @@
  * Session key:
  *  - A random sessionKey is generated on session_start
  *  - It stays the same for the whole session (including config hot reloads
- *    and /masking-toggle)
+ *    and global masking-state changes)
  *  - This guarantees the same real value always maps to the same placeholder
  *    within a session
  *
@@ -32,7 +32,7 @@
  *    dynamicPlaceholderMap.
  *  - dynamicPlaceholderMap shares its lifecycle with sessionKey: created
  *    (cleared) only on session_start; every other path (config hot reload and
- *    /masking-toggle) reuses the same Map reference when
+ *    global masking-state changes) reuses the same Map reference when
  *    constructing a new Masker, so dynamically generated placeholders stay
  *    stable across rule changes or toggling — only a brand-new session
  *    resets them.
@@ -679,7 +679,7 @@ export default async function (pi: ExtensionAPI) {
     updateStatus(ctx);
   }
 
-  /** Apply the user-level /masking-toggle override after config-file merging. */
+  /** Apply the user-level masking-state override after config-file merging. */
   async function applyPersistentToggle(cfg: MaskingConfig): Promise<{ config: MaskingConfig; warnings: string[] }> {
     const persisted = await loadPersistentToggle();
     if (persisted.enabled === undefined) {
@@ -1224,6 +1224,27 @@ export default async function (pi: ExtensionAPI) {
 
   async function confirmMaskingAction(ctx: ExtensionContext, title: string, message: string): Promise<boolean> {
     return await selectMaskingOption(ctx, title, ["Yes", "No"], message) === "Yes";
+  }
+
+  async function toggleGlobalMasking(
+    ctx: ExtensionContext,
+  ): Promise<{ enabled: boolean; disposition: "activated" | "queued" } | undefined> {
+    const baseConfig = pendingConfigActivation?.config ?? config;
+    const enabled = !baseConfig.enabled;
+    try {
+      await savePersistentToggle(enabled);
+    } catch (err) {
+      ctx.ui.notify(`Failed to save masking setting: ${(err as Error).message}`, "error");
+      return undefined;
+    }
+    const disposition = acceptConfigChange(ctx, { ...baseConfig, enabled }, "toggle");
+    ctx.ui.notify(
+      disposition === "queued"
+        ? `Data masking ${enabled ? "enable" : "disable"} saved; the active run keeps its current rules, the change activates before the next run, and recorded history is not rewritten`
+        : `Data masking ${enabled ? "enabled" : "disabled"}; previously recorded masking facts remain unchanged (saved across projects and future sessions)`,
+      "info",
+    );
+    return { enabled, disposition };
   }
 
   async function inputMaskingValue(
@@ -2508,6 +2529,37 @@ export default async function (pi: ExtensionAPI) {
         else selectedIndex = Math.max(0, Math.min(selectedIndex, visibleRules().length));
       }
 
+      async function toggleMaskingInPlace(): Promise<void> {
+        const baseConfig = pendingConfigActivation?.config ?? config;
+        const enabled = !baseConfig.enabled;
+        mutationInProgress = true;
+        mutationMessage = enabled ? "Enabling masking…" : "Opening confirmation…";
+        tui.requestRender();
+        if (!enabled && !await confirmMaskingAction(
+          ctx,
+          "Disable masking?",
+          "Configured values may be exposed in future model requests. This setting persists across projects and future sessions; previously sent context cannot be retracted.",
+        )) {
+          mutationInProgress = false;
+          mutationMessage = "Global masking unchanged";
+          refresh();
+          return;
+        }
+        mutationMessage = enabled ? "Enabling masking…" : "Disabling masking…";
+        tui.requestRender();
+        const result = await toggleGlobalMasking(ctx);
+        mutationInProgress = false;
+        if (!result) {
+          mutationMessage = "Global masking save failed";
+        } else if (result.disposition === "queued") {
+          mutationMessage = `Masking ${result.enabled ? "ON" : "OFF"} saved · activates next run`;
+        } else {
+          mutationMessage = `Masking ${result.enabled ? "ON" : "OFF"} · saved globally`;
+        }
+        screenRules = config.configuredRules;
+        refresh();
+      }
+
       async function toggleRuleInPlace(selected: ConfiguredMaskingRule): Promise<void> {
         const stableKey = configuredRuleStableKey(selected);
         const enabling = !selected.enabled;
@@ -2579,14 +2631,19 @@ export default async function (pi: ExtensionAPI) {
         render: (width) => {
           const visibleRulesNow = visibleRules();
           const active = screenRules.filter((configured) => configured.enabled && configured.available).length;
+          const desiredConfig = pendingConfigActivation?.config ?? config;
+          const maskingEnabled = desiredConfig.enabled;
+          const maskingActivationPending = pendingConfigActivation !== null && desiredConfig.enabled !== config.enabled;
           const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
           const browseHints = [
-            ...wrappedMaskingText(theme.fg("dim", "↑↓ browse · Space immediate toggle · Enter edit/add · A add · D / Delete remove · Ctrl+↑↓ reorder"), width),
+            ...wrappedMaskingText(theme.fg("dim", "↑↓ browse · Space rule on/off · M global masking on/off · Enter edit/add · A add · D / Delete remove · Ctrl+↑↓ reorder"), width),
             ...wrappedMaskingText(theme.fg("dim", "Tab switch area · R reveal value · F filter · / search · B batch · H help · I import · X export · Esc close"), width),
           ];
+          const globalState = `GLOBAL MASKING [${maskingEnabled ? "ON" : "OFF"}] · M turn ${maskingEnabled ? "off" : "on"} · saved across projects and future sessions${maskingActivationPending ? " · activates next run" : ""}`;
           const lines: string[] = [
             theme.fg("accent", theme.bold(`Masking configuration${mutationMessage ? ` · ${mutationMessage}` : ""}`)),
-            ...wrappedMaskingText(theme.fg("muted", `${active} active / ${screenRules.length} configured · filter: ${filters[filterIndex]}${searchQuery ? ` · search: ${searchQuery}` : ""}`), width),
+            ...wrappedMaskingText(maskingEnabled ? theme.fg("success", globalState) : theme.fg("warning", globalState), width),
+            ...wrappedMaskingText(theme.fg("muted", `${active} enabled / ${screenRules.length} configured · filter: ${filters[filterIndex]}${searchQuery ? ` · search: ${searchQuery}` : ""}`), width),
             "",
             homeFocus === "rules"
               ? theme.fg("accent", theme.bold("RULES · focused"))
@@ -2608,7 +2665,7 @@ export default async function (pi: ExtensionAPI) {
           } else {
             const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
             lines.push(theme.fg("dim", truncateToWidth(header, Math.max(1, width))));
-            const reservedRows = 22 + browseHints.length;
+            const reservedRows = 23 + browseHints.length;
             const rowCount = visibleRulesNow.length + 1;
             const listHeight = Math.max(3, Math.min(rowCount, tui.terminal.rows - reservedRows));
             keepSelectedVisible(listHeight, rowCount);
@@ -2753,6 +2810,10 @@ export default async function (pi: ExtensionAPI) {
             void toggleRuleInPlace(selected);
             return;
           }
+          if (matchesKey(data, "m") || data === "M") {
+            void toggleMaskingInPlace();
+            return;
+          }
           if (keybindings.matches(data, "tui.select.confirm")) {
             void runScreenAction(selected ? { kind: "edit", rule: selected } : { kind: "add" });
             return;
@@ -2805,7 +2866,7 @@ export default async function (pi: ExtensionAPI) {
   }
 
   pi.registerCommand("masking", {
-    description: "View and configure masking rules (real values stay hidden)",
+    description: "Enable/disable masking and configure rules (real values stay hidden)",
     handler: async (_args, ctx) => openMaskingConfig(ctx),
   });
 
@@ -2832,29 +2893,6 @@ export default async function (pi: ExtensionAPI) {
         overlay: true,
         overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
       });
-    },
-  });
-
-  // ── Command: /masking-toggle ──────────────────────────────────────────────
-
-  pi.registerCommand("masking-toggle", {
-    description: "Toggle masking on/off for future sessions too",
-    handler: async (_args, ctx) => {
-      const baseConfig = pendingConfigActivation?.config ?? config;
-      const enabled = !baseConfig.enabled;
-      try {
-        await savePersistentToggle(enabled);
-      } catch (err) {
-        ctx.ui.notify(`Failed to save masking setting: ${(err as Error).message}`, "error");
-        return;
-      }
-      const disposition = acceptConfigChange(ctx, { ...baseConfig, enabled }, "toggle");
-      ctx.ui.notify(
-        disposition === "queued"
-          ? `Data masking ${enabled ? "enable" : "disable"} saved; the active run keeps its current rules, the change activates before the next run, and recorded history is not rewritten`
-          : `Data masking ${enabled ? "enabled" : "disabled"}; previously recorded masking facts remain unchanged (saved for future sessions)`,
-        "info",
-      );
     },
   });
 

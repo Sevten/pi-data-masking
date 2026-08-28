@@ -50,6 +50,9 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ### Changed
 
+- Integrate the persistent global masking switch into `/masking` under the `M`
+  shortcut, including an explicit disable confirmation and pending-run state;
+  remove the standalone `/masking-toggle` command.
 - Present `/masking-history` as consecutive factual `Version n/total` views
   instead of exposing sparse internal epoch ids. Adjacent factual versions now
   show their final secret-free net rule changes; unused intermediate edits and

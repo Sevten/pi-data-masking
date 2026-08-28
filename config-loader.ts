@@ -147,8 +147,8 @@ export const GLOBAL_CONFIG_PATH = join(
 
 /**
  * User-level switch state. It is intentionally separate from the rule config:
- * the command must survive new sessions and project-level `enabled` settings
- * without rewriting a user's rules.
+ * the configuration-center setting must survive new sessions and project-level
+ * `enabled` settings without rewriting a user's rules.
  */
 export const PERSISTENT_TOGGLE_PATH = join(
   AGENT_CONFIG_DIR,
@@ -306,7 +306,7 @@ async function tryReadJson(path: string): Promise<ReadJsonResult> {
   }
 }
 
-/** Read the user-level override written by /masking-toggle. */
+/** Read the user-level override written by the /masking configuration center. */
 export async function loadPersistentToggle(
   path = PERSISTENT_TOGGLE_PATH
 ): Promise<PersistentToggleResult> {

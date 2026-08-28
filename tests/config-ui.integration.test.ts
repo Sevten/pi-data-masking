@@ -160,11 +160,17 @@ test("configuration home toggles and reorders in place while retaining selection
     const narrowLines = component.render(42);
     const narrow = narrowLines.join("\n");
     assert.ok(narrowLines.every((line) => visibleWidth(line) <= 42));
-    assert.match(narrow, /Space immediate toggle/);
+    assert.match(narrow, /Space rule on\/off/);
+    assert.match(narrow, /M global\nmasking on\/off/);
     assert.match(narrow, /Ctrl\+↑↓ reorder/);
     assert.match(narrow, /I\s+import/);
     assert.match(narrow, /X export/);
     assert.match(narrow, /Esc close/);
+    assert.ok(component.render(100).some((line) => line.includes("GLOBAL MASKING [ON]")));
+    component.handleInput("M");
+    await waitFor(() => component.render(100).some((line) => line.includes("GLOBAL MASKING [OFF]")));
+    component.handleInput("m");
+    await waitFor(() => component.render(100).some((line) => line.includes("GLOBAL MASKING [ON]")));
     component.handleInput("\t");
     assert.ok(component.render(100).some((line) => line.includes("TEST ACTIVE RULES · focused")));
     component.handleInput("\t");
@@ -180,10 +186,17 @@ test("configuration home toggles and reorders in place while retaining selection
     const selectedRow = component.render(100).find((line) => line.includes("First rule"));
     assert.ok(selectedRow?.startsWith("›"), "moved rule should remain selected");
     component.handleInput(INPUT.escape);
+  }, async (component) => {
+    const confirmation = component.render(100).join("\n");
+    assert.match(confirmation, /Disable masking\?/);
+    assert.match(confirmation, /persists across projects/);
+    assert.match(confirmation, /future sessions/);
+    component.handleInput(INPUT.enter);
   }]);
 
   try {
     assert.equal(harness.commands.has("masking"), true);
+    assert.equal(harness.commands.has("masking-toggle"), false);
     assert.equal(harness.commands.has("masking-config"), false);
     assert.equal(harness.commands.has("masking-test"), false);
     assert.equal(harness.commands.has("masking-list"), false);
@@ -231,6 +244,7 @@ test("history-changing saves confirm inside configuration UI before writing", as
       assert.equal(configRules(projectPath)[0]?.enabled, undefined, "Back to editing must leave the file unchanged");
       component.handleInput(INPUT.space);
       await waitFor(() => configRules(projectPath)[0]?.enabled === false);
+      await waitFor(() => component.render(100)[0]?.includes("Disabled ·") === true);
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.space);
       await waitFor(() => configRules(projectPath)[1]?.enabled === false);
