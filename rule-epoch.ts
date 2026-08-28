@@ -15,6 +15,8 @@ export interface RuleEpochRuleMetadata {
   enabled: boolean;
   available: boolean;
   order: number;
+  /** Opaque equality token for the rule's effective matching/replacement behavior. */
+  behaviorFingerprint?: string;
 }
 
 export type RuleEpochChangeKind =
@@ -127,6 +129,7 @@ function descriptor(configured: ConfiguredMaskingRule, order: number, sessionKey
       enabled: configured.enabled,
       available: configured.available,
       order,
+      behaviorFingerprint: keyedDigest(sessionKey, behaviorRule(rule)),
     },
     fields,
   };
@@ -212,6 +215,94 @@ export function summarizeRuleChanges(
   return changes.length > 0 ? changes : [{ kind: "configuration_changed" }];
 }
 
+export function summarizeEpochNetChanges(previous: RuleEpoch, next: RuleEpoch): RuleEpochChange[] {
+  const changes: RuleEpochChange[] = [];
+  if (previous.enabled !== next.enabled) {
+    changes.push({ kind: next.enabled ? "masking_enabled" : "masking_disabled" });
+  }
+  if (previous.caseSensitive !== next.caseSensitive) {
+    changes.push({ kind: "option_changed", option: "caseSensitive" });
+  }
+  if (previous.systemPromptGuidance !== next.systemPromptGuidance) {
+    changes.push({ kind: "option_changed", option: "systemPromptGuidance" });
+  }
+
+  const before = new Map(previous.rules.map((rule) => [rule.key, rule]));
+  const after = new Map(next.rules.map((rule) => [rule.key, rule]));
+  let hasUncomparableRule = false;
+
+  for (const [key, oldRule] of before) {
+    if (after.has(key)) continue;
+    changes.push({
+      kind: "rule_removed",
+      ruleKey: key,
+      ruleId: oldRule.id,
+      ruleName: oldRule.name,
+    });
+  }
+
+  for (const [key, newRule] of after) {
+    const oldRule = before.get(key);
+    if (!oldRule) {
+      changes.push({
+        kind: "rule_added",
+        ruleKey: key,
+        ruleId: newRule.id,
+        ruleName: newRule.name,
+      });
+      continue;
+    }
+    if (oldRule.enabled !== newRule.enabled) {
+      changes.push({
+        kind: newRule.enabled ? "rule_enabled" : "rule_disabled",
+        ruleKey: key,
+        ruleId: newRule.id,
+        ruleName: newRule.name,
+      });
+    }
+    if (oldRule.order !== newRule.order) {
+      changes.push({
+        kind: "rule_moved",
+        ruleKey: key,
+        ruleId: newRule.id,
+        ruleName: newRule.name,
+        fromOrder: oldRule.order,
+        toOrder: newRule.order,
+      });
+    }
+    const availabilityChanged = oldRule.available !== newRule.available;
+    let behaviorChanged = false;
+    if (oldRule.behaviorFingerprint !== undefined && newRule.behaviorFingerprint !== undefined) {
+      behaviorChanged = oldRule.behaviorFingerprint !== newRule.behaviorFingerprint;
+    } else {
+      hasUncomparableRule = true;
+    }
+    if (availabilityChanged || behaviorChanged) {
+      changes.push({
+        kind: "rule_updated",
+        ruleKey: key,
+        ruleId: newRule.id,
+        ruleName: newRule.name,
+        fields: availabilityChanged ? ["availability"] : undefined,
+      });
+    }
+  }
+
+  // Old persisted epochs have no per-rule fingerprints. Their global token can
+  // prove that some final behavior differs, but cannot safely attribute it.
+  if (
+    previous.behaviorFingerprint !== next.behaviorFingerprint &&
+    previous.enabled && next.enabled &&
+    hasUncomparableRule
+  ) {
+    changes.push({ kind: "configuration_changed" });
+  }
+  if (changes.length === 0 && previous.behaviorFingerprint !== next.behaviorFingerprint) {
+    changes.push({ kind: "configuration_changed" });
+  }
+  return changes;
+}
+
 export function createRuleEpoch(args: {
   config: MaskingConfig;
   previousConfig?: MaskingConfig;
@@ -252,7 +343,8 @@ function parseRuleMetadata(value: unknown): RuleEpochRuleMetadata | undefined {
     (value.sourceKind !== "literal" && value.sourceKind !== "regex" && value.sourceKind !== "preset") ||
     typeof value.enabled !== "boolean" ||
     typeof value.available !== "boolean" ||
-    typeof value.order !== "number" || !Number.isInteger(value.order) || value.order < 0
+    typeof value.order !== "number" || !Number.isInteger(value.order) || value.order < 0 ||
+    (value.behaviorFingerprint !== undefined && typeof value.behaviorFingerprint !== "string")
   ) return undefined;
   return value as unknown as RuleEpochRuleMetadata;
 }

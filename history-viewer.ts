@@ -6,9 +6,10 @@ import {
   Text,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
   type Component,
 } from "@earendil-works/pi-tui";
-import type { RuleEpoch, RuleEpochChange } from "./rule-epoch.ts";
+import { summarizeEpochNetChanges, type RuleEpoch, type RuleEpochChange } from "./rule-epoch.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -43,7 +44,12 @@ interface HistoryTheme {
   underline?(text: string): string;
 }
 
-type ViewMode = "original" | "model" | "compare";
+export type HistoryViewMode = "original" | "model" | "compare";
+
+export interface HistoryViewState {
+  mode: HistoryViewMode;
+  modeBeforeCompare: Exclude<HistoryViewMode, "compare">;
+}
 
 export interface DiffSegment {
   original: string;
@@ -84,12 +90,13 @@ export interface HistoryViewerOptions {
   title?: string;
   subtitle?: string;
   footerPrefix?: string;
+  /** Shared by the rule-version wrapper so switching versions preserves view mode. */
+  viewState?: HistoryViewState;
 }
 
 export interface EpochHistoryView {
   epoch: RuleEpoch;
   entries: readonly TranscriptEntry[];
-  current?: boolean;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -482,7 +489,7 @@ function addMessageText(
   masked: string,
   theme: HistoryTheme,
   style: "user" | "assistant" | "thinking",
-  mode: ViewMode,
+  mode: HistoryViewMode,
   selection: RenderSelection,
 ) {
   const baseColor = style === "user" ? "userMessageText" : style === "thinking" ? "thinkingText" : "text";
@@ -522,7 +529,7 @@ function addToolCard(
   result: TranscriptEntry | undefined,
   expanded: boolean,
   theme: HistoryTheme,
-  mode: ViewMode,
+  mode: HistoryViewMode,
   selection: RenderSelection,
 ) {
   const originalArguments = JSON.stringify(call.arguments ?? {}, null, 2);
@@ -555,7 +562,7 @@ function addAssistant(
   expanded: boolean,
   thinkingVisible: boolean,
   theme: HistoryTheme,
-  mode: ViewMode,
+  mode: HistoryViewMode,
   selection: RenderSelection,
 ) {
   const originalContent = Array.isArray(entry.original.content) ? entry.original.content : [];
@@ -602,7 +609,7 @@ function renderTranscriptEntry(
   expanded: boolean,
   thinkingVisible: boolean,
   theme: HistoryTheme,
-  mode: ViewMode,
+  mode: HistoryViewMode,
   selected: Replacement | undefined,
 ): Component {
   const container = new Container();
@@ -647,8 +654,8 @@ export function createHistoryViewer(
 ): Component {
   let toolsExpanded = false;
   let thinkingVisible = true;
-  let viewMode: ViewMode = "original";
-  let modeBeforeCompare: Exclude<ViewMode, "compare"> = "original";
+  let viewMode: HistoryViewMode = options.viewState?.mode ?? "original";
+  let modeBeforeCompare: Exclude<HistoryViewMode, "compare"> = options.viewState?.modeBeforeCompare ?? "original";
   let replacementIndex = 0;
   let lastWidth = 80;
   let cacheVersion = 0;
@@ -690,7 +697,8 @@ export function createHistoryViewer(
     cacheVersion++;
   };
 
-  const pageSize = () => Math.max(3, tui.terminal.rows - (options.subtitle ? 5 : 4));
+  let chromeRows = options.subtitle ? 5 : 4;
+  const pageSize = () => Math.max(1, tui.terminal.rows - chromeRows);
   const entryRender = (index: number, width: number) => {
     const cached = entryCache.get(index);
     if (cached?.width === width && cached.version === cacheVersion) return cached;
@@ -749,10 +757,17 @@ export function createHistoryViewer(
       : advance(position, amount, lastWidth);
   };
 
+  const persistViewState = () => {
+    if (!options.viewState) return;
+    options.viewState.mode = viewMode;
+    options.viewState.modeBeforeCompare = modeBeforeCompare;
+  };
+
   const toggleModelView = () => {
     if (viewMode === "compare") viewMode = modeBeforeCompare;
     viewMode = viewMode === "original" ? "model" : "original";
     modeBeforeCompare = viewMode;
+    persistViewState();
     cacheVersion++;
   };
 
@@ -762,6 +777,7 @@ export function createHistoryViewer(
       modeBeforeCompare = viewMode;
       viewMode = "compare";
     }
+    persistViewState();
     cacheVersion++;
   };
 
@@ -808,14 +824,11 @@ export function createHistoryViewer(
     },
     render: (width) => {
       lastWidth = width;
-      const { visible, cursor } = visiblePage(width);
+      const safeWidth = Math.max(1, width);
+      const wrapStyled = (text: string) => wrapTextWithAnsi(text, safeWidth);
       const modeLabel = viewMode === "original" ? "LOCAL ORIGINAL" : viewMode === "model" ? "MODEL INPUT" : "SIDE-BY-SIDE COMPARE";
       const title = options.title ?? `Masking history · ${entries.length} messages`;
       const header = theme.fg("accent", theme.bold(`${title} · ${modeLabel}`));
-      const visibleEnd = Math.min(cursor.entry + (cursor.line > 0 ? 1 : 0), displayEntries.length);
-      const progress = displayEntries.length > 0
-        ? ` messages ${Math.min(position.entry + 1, displayEntries.length)}-${visibleEnd}/${displayEntries.length}`
-        : "";
       const selected = selectedReplacement();
       const inspector = selected
         ? `Current masked occurrence ${replacementIndex + 1}/${replacements.length}${replacements.length === 1 ? " (only)" : ""}  LOCAL: ${selected.original}  →  MODEL: ${selected.masked}`
@@ -827,14 +840,35 @@ export function createHistoryViewer(
           : "Left: local original · Right: model input · Reverse video: current N/P target";
       const footerPrefix = options.footerPrefix ? `${options.footerPrefix} · ` : "";
       const occurrenceControl = replacements.length > 1 ? " · N/P next/previous masked text" : "";
-      const footer = `${footerPrefix}↑↓/PgUp/PgDn scroll${occurrenceControl} · M original/masked · C side-by-side compare · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
+      const footerText = (progress: string) => `${footerPrefix}↑↓/PgUp/PgDn scroll${occurrenceControl} · M original/masked · C side-by-side compare · Ctrl+O tools · Ctrl+T thinking · Esc close${progress}`;
+      const headerLines = [truncateToWidth(header, safeWidth)];
+      const subtitleLines = options.subtitle ? wrapStyled(theme.fg("muted", options.subtitle)) : [];
+      const legendLines = wrapStyled(theme.fg("dim", legend));
+      const inspectorLines = [theme.fg("muted", truncateToWidth(inspector, safeWidth))];
+      const maximumProgress = displayEntries.length > 0
+        ? ` · messages ${displayEntries.length}-${displayEntries.length}/${displayEntries.length}`
+        : "";
+      let footerLines = wrapStyled(theme.fg("dim", footerText(maximumProgress)));
+      chromeRows = headerLines.length + subtitleLines.length + legendLines.length + inspectorLines.length + footerLines.length;
+
+      let page = visiblePage(safeWidth);
+      const progressFor = (cursor: typeof page.cursor) => displayEntries.length > 0
+        ? ` · messages ${Math.min(position.entry + 1, displayEntries.length)}-${Math.min(cursor.entry + (cursor.line > 0 ? 1 : 0), displayEntries.length)}/${displayEntries.length}`
+        : "";
+      let actualFooterLines = wrapStyled(theme.fg("dim", footerText(progressFor(page.cursor))));
+      if (actualFooterLines.length !== footerLines.length) {
+        chromeRows += actualFooterLines.length - footerLines.length;
+        page = visiblePage(safeWidth);
+        actualFooterLines = wrapStyled(theme.fg("dim", footerText(progressFor(page.cursor))));
+      }
+      footerLines = actualFooterLines;
       const lines = [
-        truncateToWidth(header, width),
-        ...(options.subtitle ? [theme.fg("muted", truncateToWidth(options.subtitle, width))] : []),
-        theme.fg("dim", truncateToWidth(legend, width)),
-        ...visible,
-        theme.fg("muted", truncateToWidth(inspector, width)),
-        theme.fg("dim", truncateToWidth(footer, width)),
+        ...headerLines,
+        ...subtitleLines,
+        ...legendLines,
+        ...page.visible,
+        ...inspectorLines,
+        ...footerLines,
       ];
       return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
     },
@@ -884,14 +918,19 @@ function epochChangeLabel(change: RuleEpochChange): string {
 }
 
 function epochLabel(view: EpochHistoryView, index: number, total: number): string {
-  return `Masking history · E${view.epoch.epochId} (${index + 1}/${total}) · ${view.entries.length} factual messages`;
+  return `Masking history · Version ${index + 1}/${total} · ${view.entries.length} factual messages`;
 }
 
-function epochDetails(view: EpochHistoryView): string {
-  const changeSummary = view.epoch.changes.map(epochChangeLabel).join("; ");
-  const activated = new Date(view.epoch.activatedAt).toLocaleString();
-  const status = view.current ? "current" : "closed";
-  return `${status} · activated ${activated} · ${view.epoch.reason} · fingerprint ${view.epoch.behaviorFingerprint.slice(0, 12)} · ${changeSummary}`;
+function epochDetails(view: EpochHistoryView, previous: EpochHistoryView | undefined): string {
+  if (!previous) {
+    const active = view.epoch.enabled
+      ? view.epoch.rules.filter((rule) => rule.enabled && rule.available).length
+      : 0;
+    return `Initial factual version · ${active} active masking rule${active === 1 ? "" : "s"}`;
+  }
+  const changes = summarizeEpochNetChanges(previous.epoch, view.epoch);
+  if (changes.length === 0) return "No net masking changes from previous version";
+  return `Changes from previous version: ${changes.map(epochChangeLabel).join("; ")}`;
 }
 
 /**
@@ -907,6 +946,7 @@ export function createEpochHistoryViewer(
 ): Component {
   const views = epochViews.filter((view) => view.entries.length > 0);
   let selectedIndex = Math.max(0, views.length - 1);
+  const viewState: HistoryViewState = { mode: "original", modeBeforeCompare: "original" };
   const createSelected = (): Component => {
     const view = views[selectedIndex];
     return createHistoryViewer(
@@ -919,8 +959,9 @@ export function createEpochHistoryViewer(
         title: view
           ? epochLabel(view, selectedIndex, views.length)
           : "Masking history · no factual epochs",
-        subtitle: view ? epochDetails(view) : undefined,
-        footerPrefix: views.length > 1 ? "[/] rule epoch" : undefined,
+        subtitle: view ? epochDetails(view, views[selectedIndex - 1]) : undefined,
+        footerPrefix: views.length > 1 ? "[/] rule version" : undefined,
+        viewState,
       },
     );
   };

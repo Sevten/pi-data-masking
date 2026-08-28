@@ -100,21 +100,13 @@ provenance state; it does not mutate live mappings or claim that a provider
 cache was affected.
 
 The activation notice also explains which agent run keeps the old rules and
-confirms that recorded history is not rewritten. At the first actual provider
-boundary under the new rule version, the emitted system prompt and provider
-prompt are compared with the most recent factual epoch when their source
-fingerprints match. Shared historical messages follow the same factual rule. A
-prefix-cache warning appears once only when one of these stored model-input
-fingerprints really differs; system has priority over prompt and conversation
-position. New tail messages, compacted-away messages, and unchanged output do
-not trigger it.
-
-The warning reports an observed provider-boundary change, not a simulated rule
-replay or a guaranteed provider cache miss. System and prompt facts are stored
-only as session-keyed HMACs, never plaintext, and only the first provider
-observation is retained per epoch—there is no request timeline. Serialization
-or mutation after this extension's hook, tokenization, and provider cache policy
-remain outside the comparison.
+confirms that recorded history is not rewritten. The extension does not repeat
+the cache warning after a provider request, when it is too late to preserve
+reuse. Provider-boundary facts are still retained for factual epoch history:
+system and prompt values are stored only as session-keyed HMACs, never
+plaintext, and only the first provider observation is retained per epoch—there
+is no request timeline. Serialization or mutation after this extension's hook,
+tokenization, and provider cache policy remain outside the local preflight.
 
 ### Transparent tool execution
 
@@ -124,11 +116,12 @@ The model must pass a placeholder verbatim. A placeholder that the model slices,
 
 ### Inspectable model view
 
-`/masking-history` is a factual audit grouped by masking rule version (E1, E2,
-E3, ...). Use `[` and `]` to switch versions. Each version shows only messages
-that actually crossed an outbound boundary while that version was active; it
+`/masking-history` is a factual audit grouped into consecutive user-facing rule
+versions. Use `[` and `]` to switch versions. Each version shows only messages
+that actually crossed an outbound boundary while that behavior was active; it
 does not apply old or current rules hypothetically to other messages. Empty,
-unused versions are hidden.
+unused internal epochs are omitted without exposing gaps in the displayed
+version numbers.
 
 Within a version, the viewer opens at the newest messages. Underlining marks
 all replacements; reverse-video highlighting identifies only the current
@@ -138,8 +131,10 @@ masked occurrence and `P` to the previous one, visiting every occurrence
 the local original, the exact stored model-facing representation, and a
 comparison view. Wide terminals show
 the comparison side by side; narrow terminals stack both versions. The header
-includes the activation source, secret-free change summary, and behavior
-fingerprint so similar rule versions remain distinguishable.
+shows `Version n/total` and a secret-free net change summary against the previous
+factual version. Intermediate edits that were reverted before any model input
+are not shown. Per-rule behavior fingerprints support this comparison but are
+never displayed.
 
 ## Rules and configuration
 

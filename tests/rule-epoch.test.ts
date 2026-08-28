@@ -7,6 +7,7 @@ import {
   createRuleEpoch,
   restoreRuleEpochs,
   ruleBehaviorFingerprint,
+  summarizeEpochNetChanges,
   summarizeRuleChanges,
 } from "../rule-epoch.ts";
 
@@ -101,6 +102,35 @@ test("epoch metadata and change summaries never persist literal values or config
   assert.equal(serialized.includes("operator notes must not be persisted"), false);
 });
 
+test("factual versions report only final net rule changes", () => {
+  const base = literalConfig();
+  const changed = literalConfig({ placeholder: "temporary-placeholder" });
+  const first = createRuleEpoch({ config: base, sessionKey: KEY, reason: "session_start", activatedAt: 10 });
+  const intermediate = createRuleEpoch({
+    config: changed,
+    previousConfig: base,
+    previousEpoch: first,
+    sessionKey: KEY,
+    reason: "ui_edit",
+    activatedAt: 20,
+  });
+  const reverted = createRuleEpoch({
+    config: base,
+    previousConfig: changed,
+    previousEpoch: intermediate,
+    sessionKey: KEY,
+    reason: "ui_edit",
+    activatedAt: 30,
+  });
+
+  assert.ok(first.rules[0]?.behaviorFingerprint);
+  assert.notEqual(first.rules[0]?.behaviorFingerprint, intermediate.rules[0]?.behaviorFingerprint);
+  assert.deepEqual(summarizeEpochNetChanges(first, reverted), []);
+  assert.ok(summarizeEpochNetChanges(first, intermediate).some((change) =>
+    change.kind === "rule_updated" && change.ruleId === "token"
+  ));
+});
+
 test("enable, disable, and rule movement produce sanitized change records", () => {
   const disabled = literalConfig({ ruleEnabled: false });
   const enabled = literalConfig({ ruleEnabled: true });
@@ -150,8 +180,12 @@ test("restoration keeps a monotonic immutable epoch chain and rejects regression
     reason: "toggle",
     activatedAt: 20,
   });
+  const legacyFirst = {
+    ...first,
+    rules: first.rules.map(({ behaviorFingerprint: _fingerprint, ...rule }) => rule),
+  };
   const restored = restoreRuleEpochs([
-    { type: "custom", customType: RULE_EPOCH_ENTRY, data: first },
+    { type: "custom", customType: RULE_EPOCH_ENTRY, data: legacyFirst },
     { type: "custom", customType: RULE_EPOCH_ENTRY, data: second },
     { type: "custom", customType: RULE_EPOCH_ENTRY, data: first },
     { type: "custom", customType: RULE_EPOCH_ENTRY, data: { ...second, epochId: 4, parentEpochId: 99 } },

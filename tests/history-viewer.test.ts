@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { createEpochHistoryViewer, createHistoryViewer, diffText, mergePendingAssistant, mergeTranscript } from "../history-viewer.ts";
 import type { RuleEpoch } from "../rule-epoch.ts";
 
@@ -231,6 +232,16 @@ test("M toggles original and masked views while Ctrl+M is not captured", () => {
   assert.match(original, /LOCAL ORIGINAL/);
   assert.match(original, /M original\/masked · C side-by-side compare/);
 
+  const narrowLines = viewer.render(40);
+  const narrow = narrowLines.join("\n");
+  assert.match(narrow, /↑↓\/PgUp\/PgDn scroll/);
+  assert.match(narrow, /M original\/masked/);
+  assert.match(narrow, /C side-by-side compare/);
+  assert.match(narrow, /Ctrl\+O tools/);
+  assert.match(narrow, /Ctrl\+T thinking/);
+  assert.match(narrow, /Esc close/);
+  assert.ok(narrowLines.every((line) => visibleWidth(line) <= 40));
+
   viewer.handleInput?.("m");
   const masked = viewer.render(120).join("\n");
   assert.match(masked, /MODEL INPUT/);
@@ -349,7 +360,17 @@ test("epoch history defaults to the latest factual version and switches without 
     caseSensitive: true,
     systemPromptGuidance: false,
     reason: epochId === 1 ? "session_start" : "ui_edit",
-    rules: [],
+    rules: [{
+      key: "project:token",
+      id: "token",
+      name: "Service token",
+      scope: "project",
+      sourceKind: "literal",
+      enabled: true,
+      available: true,
+      order: 0,
+      behaviorFingerprint: `rule-fingerprint-${epochId}`,
+    }],
     changes: [{ kind: epochId === 1 ? "initialized" : "configuration_changed" }],
   });
   const entry = (key: string, content: string) => ({
@@ -371,14 +392,21 @@ test("epoch history defaults to the latest factual version and switches without 
   );
 
   const latest = viewer.render(120).join("\n");
-  assert.match(latest, /E3 \(2\/2\)/);
+  assert.match(latest, /Version 2\/2/);
+  assert.match(latest, /Changes from previous version: Service token updated/);
+  assert.doesNotMatch(latest, /fingerprint|epoch E3|Masking history · E3/);
   assert.match(latest, /only factual in E3/);
   assert.doesNotMatch(latest, /only factual in E1/);
 
+  viewer.handleInput?.("C");
+  assert.match(viewer.render(120).join("\n"), /SIDE-BY-SIDE COMPARE/);
   viewer.handleInput?.("[");
   const previous = viewer.render(120).join("\n");
-  assert.match(previous, /E1 \(1\/2\)/);
+  assert.match(previous, /Version 1\/2/);
+  assert.match(previous, /Initial factual version · 1 active masking rule/);
+  assert.doesNotMatch(previous, /fingerprint|epoch E1|Masking history · E1/);
   assert.match(previous, /only factual in E1/);
   assert.doesNotMatch(previous, /only factual in E3/);
-  assert.equal(renderRequests, 1);
+  assert.match(previous, /SIDE-BY-SIDE COMPARE/);
+  assert.equal(renderRequests, 2);
 });

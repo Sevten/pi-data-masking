@@ -8,6 +8,16 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ### Fixed
 
+- Preserve original, masked, or side-by-side comparison mode when switching
+  between factual rule versions in `/masking-history`.
+- Wrap history controls, rule-version summaries, configuration shortcuts,
+  builder guidance, warnings, and help text at narrow terminal widths instead
+  of clipping the actionable part of each line. History paging now reserves
+  the actual wrapped header/footer height so controls remain visible.
+- Stop repeating prefix-cache warnings after a provider request has already
+  been sent. Save confirmations and external-reload preflights remain
+  actionable, while provider-boundary fingerprints continue to be recorded for
+  factual epoch history without adding a late conversation notification.
 - Keep save-impact confirmation active across repeated rule edits made before
   another provider request. Each candidate now compares with the latest
   factual model input—the relevant prefix-cache baseline—instead of requiring
@@ -37,13 +47,17 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ### Changed
 
+- Present `/masking-history` as consecutive factual `Version n/total` views
+  instead of exposing sparse internal epoch ids. Adjacent factual versions now
+  show their final secret-free net rule changes; unused intermediate edits and
+  changes reverted before model input stay hidden.
 - Pin masking configuration for a complete agent run, including tool-loop model
   calls. Toggles and config reloads received mid-run are coalesced and activate
   before the next run, keeping placeholder unmasking consistent.
 - Cache masked message output across requests: each turn now masks only new or changed messages instead of re-scanning the whole conversation twice (context hook + provider-boundary safety net). Cache fills run the full provenance-registering mask; hits require a content fingerprint match and are cleared whenever rules, case sensitivity, masking toggle, or session change. Snapshot persistence and transcript bookkeeping share the same per-message fingerprints to skip unchanged history.
 - Separate rule-activation guidance from prefix-cache warnings. Activation
-  notices describe the in-flight boundary and immutable past; cache impact is
-  reported only after factual model-input fingerprints actually differ.
+  notices describe the in-flight boundary and immutable past; actionable cache
+  impact is reported by save/reload preflight rather than after a request.
 
 ### Added
 
@@ -55,22 +69,20 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
   earliest affected message and uses cloned placeholder/provenance state
   without mutating live mappings.
 - Record immutable, sanitized `RuleEpoch` metadata for effective masking
-  behavior changes, including monotonic ids, behavior fingerprints, activation
-  reasons, and secret-free change summaries.
+  behavior changes, including monotonic ids, global and per-rule behavior
+  fingerprints, activation reasons, and secret-free change summaries. Rule
+  fingerprints are persisted only as opaque equality tokens and never shown.
 - Persist cumulative factual masking transcripts per `RuleEpoch`. The history
-  viewer now switches between E1/E2/E3 with `[` and `]`, shows only messages
-  actually processed by the selected version, hides unused versions, preserves
-  compacted facts in their original epoch, and restores valid records without
-  accepting late mutations to closed epochs.
-- Compare shared factual messages with the latest prior epoch on the first real
-  context after a rule change. A once-per-epoch warning reports the earliest
-  observed changed conversation message without simulating old rules or
-  predicting provider-specific cache hits.
+  viewer switches between consecutive factual versions with `[` and `]`, shows
+  only messages actually processed by the selected version, hides unused
+  versions, preserves compacted facts in their original epoch, and restores
+  valid records without accepting late mutations to closed epochs.
+- Compare shared factual messages locally before a rule change is saved or
+  activated, reporting the earliest expected change without rewriting stored
+  history or predicting provider-specific cache hits.
 - Record the first factual provider `system` and `prompt` source/output
-  fingerprints per epoch as session-keyed HMACs. Prefix-impact warnings now
-  wait for the provider boundary and prioritize an observed system-prompt
-  change over prompt or conversation-message changes without storing plaintext
-  or creating a request timeline.
+  fingerprints per epoch as session-keyed HMACs, without storing plaintext,
+  creating a request timeline, or emitting a post-request cache warning.
 - Add `tests/perf-mask.bench.ts`, a manual benchmark for the masking hot path (`node tests/perf-mask.bench.ts`).
 
 ## [0.5.0] - 2026-08-24

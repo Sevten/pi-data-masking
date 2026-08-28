@@ -109,8 +109,6 @@ import {
 import {
   EPOCH_TRANSCRIPT_ENTRY,
   createEpochTranscriptState,
-  findObservedPrefixComponentImpact,
-  findObservedPrefixImpact,
   markEpochBatchPersisted,
   mergeEpochFacts,
   mergeEpochPrefixObservation,
@@ -119,7 +117,6 @@ import {
   type EpochPrefixObservation,
   type EpochTranscriptBatch,
   type EpochTranscriptState,
-  type ObservedPrefixImpact,
   type PrefixComponentFingerprint,
 } from "./epoch-transcript.ts";
 
@@ -266,8 +263,6 @@ export default async function (pi: ExtensionAPI) {
   let activeRuleEpoch: RuleEpoch | undefined;
   let activeEpochConfig: MaskingConfig | undefined;
   let persistedEpochIds = new Set<number>();
-  let prefixImpactHandledEpochIds = new Set<number>();
-  let pendingMessagePrefixImpacts = new Map<number, ObservedPrefixImpact>();
   let pendingSystemSourceHash: string | undefined;
   let pendingSystemSourceText: string | undefined;
   /** Most recent factual model input, retained only in memory for an immediate
@@ -413,28 +408,6 @@ export default async function (pi: ExtensionAPI) {
     return state;
   }
 
-  function previousFactualEpochState(epochId: number): EpochTranscriptState | undefined {
-    return [...epochTranscripts.values()]
-      .filter((candidate) =>
-        candidate.epoch.epochId < epochId &&
-        (candidate.entries.length > 0 || candidate.prefixObservation !== undefined)
-      )
-      .sort((left, right) => left.epoch.epochId - right.epoch.epochId)
-      .at(-1);
-  }
-
-  function observeMessagePrefixImpact(
-    epoch: RuleEpoch,
-    observations: readonly EpochFactObservation[],
-  ): void {
-    if (prefixImpactHandledEpochIds.has(epoch.epochId)) return;
-    const previous = previousFactualEpochState(epoch.epochId);
-    const impact = previous ? findObservedPrefixImpact(previous, observations) : undefined;
-    if (impact && !pendingMessagePrefixImpacts.has(epoch.epochId)) {
-      pendingMessagePrefixImpacts.set(epoch.epochId, impact);
-    }
-  }
-
   function persistEpochTranscriptBatch(
     ctx: ExtensionContext,
     state: EpochTranscriptState,
@@ -462,7 +435,6 @@ export default async function (pi: ExtensionAPI) {
     capturedAt = Date.now(),
   ): void {
     if (!activeRuleEpoch || observations.length === 0) return;
-    observeMessagePrefixImpact(activeRuleEpoch, observations);
     const state = ensureEpochTranscript(activeRuleEpoch);
     const { batch } = mergeEpochFacts(state, observations, capturedAt);
     persistEpochTranscriptBatch(ctx, state, batch);
@@ -478,37 +450,10 @@ export default async function (pi: ExtensionAPI) {
 
   function observeEpochProviderPrefix(ctx: ExtensionContext, observation: EpochPrefixObservation): void {
     if (!activeRuleEpoch) return;
-    const epoch = activeRuleEpoch;
-    const state = ensureEpochTranscript(epoch);
-    if (!prefixImpactHandledEpochIds.has(epoch.epochId)) {
-      const previous = previousFactualEpochState(epoch.epochId);
-      const componentImpact = previous
-        ? findObservedPrefixComponentImpact(previous, observation)
-        : undefined;
-      const messageImpact = pendingMessagePrefixImpacts.get(epoch.epochId);
-      if (componentImpact === "system") {
-        const messageSuffix = messageImpact
-          ? `; ${messageImpact.changedMessageCount} existing conversation message${messageImpact.changedMessageCount === 1 ? "" : "s"} also changed`
-          : "";
-        ctx.ui.notify(
-          `⚠️ E${epoch.epochId} has actually changed the provider system prompt${messageSuffix}; prefix-cache reuse may decrease from the system prompt`,
-          "warning",
-        );
-      } else if (componentImpact === "prompt") {
-        ctx.ui.notify(
-          `⚠️ E${epoch.epochId} has actually changed the provider prompt; prefix-cache reuse may decrease from that component`,
-          "warning",
-        );
-      } else if (messageImpact) {
-        const count = messageImpact.changedMessageCount;
-        ctx.ui.notify(
-          `⚠️ E${epoch.epochId} has actually changed the model input for ${count} existing message${count === 1 ? "" : "s"}; the earliest observed changed conversation message is #${messageImpact.firstChangedIndex + 1}, so provider prefix-cache reuse may decrease`,
-          "warning",
-        );
-      }
-      prefixImpactHandledEpochIds.add(epoch.epochId);
-      pendingMessagePrefixImpacts.delete(epoch.epochId);
-    }
+    const state = ensureEpochTranscript(activeRuleEpoch);
+    // Keep factual provider-boundary fingerprints for epoch history, but do not
+    // show a post-request cache warning: at this point the user can no longer
+    // preserve reuse. Actionable warnings belong to the save/reload preflight.
     const { batch } = mergeEpochPrefixObservation(state, observation);
     persistEpochTranscriptBatch(ctx, state, batch);
   }
@@ -869,13 +814,6 @@ export default async function (pi: ExtensionAPI) {
     activeRuleEpoch = ruleEpochs.at(-1);
     activeEpochConfig = undefined;
     persistedEpochIds = new Set(ruleEpochs.map((epoch) => epoch.epochId));
-    // Existing factual epochs were evaluated in the process that produced
-    // their provider-prefix observation; context-only facts may have been
-    // persisted just before a crash and still need final evaluation on resume.
-    prefixImpactHandledEpochIds = new Set([...epochTranscripts.values()]
-      .filter((state) => state.prefixObservation !== undefined)
-      .map((state) => state.epoch.epochId));
-    pendingMessagePrefixImpacts = new Map();
     pendingSystemSourceHash = undefined;
     pendingSystemSourceText = undefined;
     latestModelInput = transcript.map((entry) => ({
@@ -945,7 +883,6 @@ export default async function (pi: ExtensionAPI) {
     stopWatching = null;
     agentRunActive = false;
     pendingConfigActivation = null;
-    pendingMessagePrefixImpacts.clear();
     pendingSystemSourceHash = undefined;
     pendingSystemSourceText = undefined;
     latestModelInput = [];
@@ -1263,7 +1200,8 @@ export default async function (pi: ExtensionAPI) {
             const row = `${index === selectedIndex ? "▶" : " "} ${options[index]}`;
             lines.push(index === selectedIndex ? theme.fg("accent", row) : theme.fg("muted", row));
           }
-          lines.push("", theme.fg("dim", "↑↓ select · Enter confirm · Esc cancel"));
+          lines.push("");
+          lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓ select · Enter confirm · Esc cancel"), width));
           return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => {},
@@ -1315,7 +1253,7 @@ export default async function (pi: ExtensionAPI) {
           "",
           ...editor.render(width),
           "",
-          theme.fg("dim", "Enter confirm · Esc cancel"),
+          ...wrappedMaskingText(theme.fg("dim", "Enter confirm · Esc cancel"), width),
         ], width, tui.terminal.rows),
         invalidate: () => editor.invalidate(),
         handleInput: (data) => {
@@ -1578,12 +1516,14 @@ export default async function (pi: ExtensionAPI) {
             for (const line of preview.text.split("\n").slice(0, 3)) lines.push(`  ${line}`);
           }
           if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
-          for (const warning of preview.warnings.slice(0, 2)) lines.push(theme.fg("warning", `Warning: ${warning}`));
+          for (const warning of preview.warnings.slice(0, 2)) {
+            lines.push(...wrappedMaskingText(theme.fg("warning", `Warning: ${warning}`), width));
+          }
           lines.push("");
           const hints = ["Tab switch area", "Enter save from Rule JSON", "Esc cancel"];
           if (literalValue !== undefined) hints.push(`Ctrl+R ${literalHidden ? "reveal" : "hide"} exact value`);
-          lines.push(theme.fg("dim", hints.join(" · ")));
-          if (toggleError) lines.push(theme.fg("warning", toggleError));
+          lines.push(...wrappedMaskingText(theme.fg("dim", hints.join(" · ")), width));
+          if (toggleError) lines.push(...wrappedMaskingText(theme.fg("warning", toggleError), width));
           return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => {
@@ -1664,9 +1604,10 @@ export default async function (pi: ExtensionAPI) {
               lines.push(index === selectedIndex ? theme.fg("accent", row) : theme.fg("muted", row));
             }
             lines.push("");
-            lines.push(theme.fg("dim", `Description: ${selected.description}`));
-            lines.push(theme.fg("dim", `Example: ${selected.example}`));
-            lines.push("", theme.fg("dim", "↑↓ select · Enter continue · Esc cancel"));
+            lines.push(...wrappedMaskingText(theme.fg("dim", `Description: ${selected.description}`), width));
+            lines.push(...wrappedMaskingText(theme.fg("dim", `Example: ${selected.example}`), width));
+            lines.push("");
+            lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓ select · Enter continue · Esc cancel"), width));
             return fillMaskingScreen(lines, width, tui.terminal.rows);
           },
           invalidate: () => {},
@@ -2032,7 +1973,7 @@ export default async function (pi: ExtensionAPI) {
       function renderActiveFieldDescription(lines: string[], width: number): void {
         const detail = renderedFieldDetails.get(focusedField() === "test" ? lastFormField : focusedField());
         if (!detail) return;
-        lines.push(theme.fg("dim", truncateToWidth(detail.description, Math.max(1, width))));
+        lines.push(...wrappedMaskingText(theme.fg("dim", detail.description), width));
       }
 
       function renderSelector(lines: string[], field: BuilderField, label: string, value: string, width: number, description: string): void {
@@ -2122,8 +2063,8 @@ export default async function (pi: ExtensionAPI) {
           const editorTitle = mode === "form" ? "RULE FIELDS" : "RULE JSON";
           const lines: string[] = [
             theme.fg("accent", theme.bold(`${editing ? "Edit" : "New"} masking rule · Rule Builder`)),
-            theme.fg("muted", `${currentSource().scope} · ${typeLabel()}${currentType() === "Built-in preset template" && selectedPreset ? ` · ${selectedPreset.label}` : ""} · ${mode === "form" ? "Structured fields" : "Advanced JSON"}`),
-            theme.fg("dim", currentSource().path),
+            ...wrappedMaskingText(theme.fg("muted", `${currentSource().scope} · ${typeLabel()}${currentType() === "Built-in preset template" && selectedPreset ? ` · ${selectedPreset.label}` : ""} · ${mode === "form" ? "Structured fields" : "Advanced JSON"}`), width),
+            ...wrappedMaskingText(theme.fg("dim", currentSource().path), width),
             "",
             editorFocused
               ? theme.fg("accent", theme.bold(`${editorTitle} · focused`))
@@ -2167,9 +2108,14 @@ export default async function (pi: ExtensionAPI) {
           lines.push(theme.fg(preview.count > 0 ? "accent" : "muted", `Preview: ${status}`));
           for (const line of preview.text.split("\n").slice(0, 2)) if (line) lines.push(`  ${line}`);
           if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
-          for (const warning of preview.warnings.slice(0, 3)) lines.push(theme.fg("warning", `Warning: ${warning}`));
-          if (saveMessage) lines.push(theme.fg(saveMessage.startsWith("Cannot") ? "warning" : "accent", saveMessage));
-          lines.push("", theme.fg("dim", "↑↓ fields · Tab form/test · ←→ or Space change selection · F2 form/JSON · Enter save · Esc cancel"));
+          for (const warning of preview.warnings.slice(0, 3)) {
+            lines.push(...wrappedMaskingText(theme.fg("warning", `Warning: ${warning}`), width));
+          }
+          if (saveMessage) {
+            lines.push(...wrappedMaskingText(theme.fg(saveMessage.startsWith("Cannot") ? "warning" : "accent", saveMessage), width));
+          }
+          lines.push("");
+          lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓ fields · Tab form/test · ←→ or Space change selection · F2 form/JSON · Enter save · Esc cancel"), width));
           return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => Object.values(editors).forEach((editor) => editor.invalidate()),
@@ -2319,29 +2265,27 @@ export default async function (pi: ExtensionAPI) {
   async function showRuleConfigurationHelp(ctx: ExtensionContext): Promise<void> {
     await ctx.ui.custom<void>((tui, theme, keybindings, done) => ({
       render: (width) => {
-        const lines = [
-          theme.fg("accent", theme.bold("How to configure masking rules")),
-          "",
-          theme.fg("accent", "Literal from environment"),
-          "Use an environment-variable name; its value is resolved in memory and is not stored in JSON.",
-          "",
-          theme.fg("accent", "Exact literal value"),
-          "Match one exact string. Choose an automatic or custom replacement. Explicit editing shows the stored value.",
-          "",
-          theme.fg("accent", "Built-in preset"),
-          "Choose a documented template. The complete regex is written to the config so it can be customized.",
-          "",
-          theme.fg("accent", "Custom regex"),
+        const lines = [theme.fg("accent", theme.bold("How to configure masking rules")), ""];
+        const section = (title: string, ...paragraphs: string[]) => {
+          lines.push(theme.fg("accent", title));
+          for (const paragraph of paragraphs) lines.push(...wrappedMaskingText(paragraph, width));
+          lines.push("");
+        };
+        section("Literal from environment",
+          "Use an environment-variable name; its value is resolved in memory and is not stored in JSON.");
+        section("Exact literal value",
+          "Match one exact string. Choose an automatic or custom replacement. Explicit editing shows the stored value.");
+        section("Built-in preset",
+          "Choose a documented template. The complete regex is written to the config so it can be customized.");
+        section("Custom regex",
           "Write JavaScript regex source without surrounding /.../.",
           "Example: \\bnpm_[A-Za-z0-9]{36}\\b matches npm_ followed by exactly 36 ASCII letters/digits.",
           "\\b is a word boundary; [A-Za-z0-9] is one allowed character; {36} repeats it exactly 36 times.",
           "Optional flags include i (case-insensitive), m (multiline), and s (dot matches newline); g is automatic.",
-          "Without capture groups the whole match is masked; with groups, only captured portions are masked.",
-          "",
-          theme.fg("muted", "Rules run from top to bottom. Prefer narrow patterns and use the embedded test area before relying on them."),
-          "",
-          theme.fg("dim", "Enter / Esc / H close help"),
-        ];
+          "Without capture groups the whole match is masked; with groups, only captured portions are masked.");
+        lines.push(...wrappedMaskingText(theme.fg("muted", "Rules run from top to bottom. Prefer narrow patterns and use the embedded test area before relying on them."), width));
+        lines.push("");
+        lines.push(...wrappedMaskingText(theme.fg("dim", "Enter / Esc / H close help"), width));
         return fillMaskingScreen(lines, width, tui.terminal.rows);
       },
       invalidate: () => {},
@@ -2636,9 +2580,13 @@ export default async function (pi: ExtensionAPI) {
           const visibleRulesNow = visibleRules();
           const active = screenRules.filter((configured) => configured.enabled && configured.available).length;
           const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
+          const browseHints = [
+            ...wrappedMaskingText(theme.fg("dim", "↑↓ browse · Space immediate toggle · Enter edit/add · A add · D / Delete remove · Ctrl+↑↓ reorder"), width),
+            ...wrappedMaskingText(theme.fg("dim", "Tab switch area · R reveal value · F filter · / search · B batch · H help · I import · X export · Esc close"), width),
+          ];
           const lines: string[] = [
             theme.fg("accent", theme.bold(`Masking configuration${mutationMessage ? ` · ${mutationMessage}` : ""}`)),
-            theme.fg("muted", `${active} active / ${screenRules.length} configured · filter: ${filters[filterIndex]}${searchQuery ? ` · search: ${searchQuery}` : ""}`),
+            ...wrappedMaskingText(theme.fg("muted", `${active} active / ${screenRules.length} configured · filter: ${filters[filterIndex]}${searchQuery ? ` · search: ${searchQuery}` : ""}`), width),
             "",
             homeFocus === "rules"
               ? theme.fg("accent", theme.bold("RULES · focused"))
@@ -2649,10 +2597,10 @@ export default async function (pi: ExtensionAPI) {
           if (screenRules.length === 0) {
             lines.push(theme.fg("warning", "No rules are configured."));
             lines.push(theme.fg("muted", "Create or edit one of these files:"));
-            lines.push(theme.fg("dim", `  project  ${getProjectConfigPath(ctx.cwd)}`));
-            lines.push(theme.fg("dim", `  global   ${GLOBAL_CONFIG_PATH}`));
+            lines.push(...wrappedMaskingText(theme.fg("dim", `  project  ${getProjectConfigPath(ctx.cwd)}`), width));
+            lines.push(...wrappedMaskingText(theme.fg("dim", `  global   ${GLOBAL_CONFIG_PATH}`), width));
             lines.push("");
-            lines.push(theme.fg("accent", "Choose Add new rule; its Scope creates the project or global config when saved."));
+            lines.push(...wrappedMaskingText(theme.fg("accent", "Choose Add new rule; its Scope creates the project or global config when saved."), width));
             lines.push("", theme.fg("accent", "▶ ＋ Add new rule"));
           } else if (visibleRulesNow.length === 0) {
             lines.push(theme.fg("warning", "No rules match the current filter/search."));
@@ -2660,7 +2608,7 @@ export default async function (pi: ExtensionAPI) {
           } else {
             const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
             lines.push(theme.fg("dim", truncateToWidth(header, Math.max(1, width))));
-            const reservedRows = 24;
+            const reservedRows = 22 + browseHints.length;
             const rowCount = visibleRulesNow.length + 1;
             const listHeight = Math.max(3, Math.min(rowCount, tui.terminal.rows - reservedRows));
             keepSelectedVisible(listHeight, rowCount);
@@ -2710,15 +2658,16 @@ export default async function (pi: ExtensionAPI) {
           lines.push("");
           if (searchMode) {
             lines.push(theme.fg("accent", `Search: ${searchQuery}▌`));
-            lines.push(theme.fg("dim", "Type to search · Backspace delete · Enter accept · Esc clear"));
+            lines.push(...wrappedMaskingText(theme.fg("dim", "Type to search · Backspace delete · Enter accept · Esc clear"), width));
           } else {
             const showTestPanel = tui.terminal.rows >= 26 || homeFocus === "test" || homeTestText.length > 0;
             if (showTestPanel) {
               testEditor.focused = homeFocus === "test";
               testEditor.borderColor = (text) => theme.fg(homeFocus === "test" ? "accent" : "dim", text);
-              lines.push(homeFocus === "test"
+              const testTitle = homeFocus === "test"
                 ? theme.fg("accent", theme.bold(`TEST ACTIVE RULES · focused${config.enabled ? "" : " · masking is off; preview only"}`))
-                : theme.fg("muted", `TEST ACTIVE RULES · Tab to focus${config.enabled ? "" : " · masking is off; preview only"}`));
+                : theme.fg("muted", `TEST ACTIVE RULES · Tab to focus${config.enabled ? "" : " · masking is off; preview only"}`);
+              lines.push(...wrappedMaskingText(testTitle, width));
               lines.push(...testEditor.render(width));
               const preview = previewActiveRules(testEditor.getExpandedText());
               const status = preview.count > 0 ? `${preview.count} value(s) masked` : preview.attribution;
@@ -2731,8 +2680,7 @@ export default async function (pi: ExtensionAPI) {
               lines.push(theme.fg("muted", "TEST ACTIVE RULES · Tab to focus"));
             }
             lines.push("");
-            lines.push(theme.fg("dim", "↑↓ browse · Space immediate toggle · Enter edit/add · A add · D / Delete remove · Ctrl+↑↓ reorder"));
-            lines.push(theme.fg("dim", "Tab switch area · R reveal value · F filter · / search · B batch · H help · I import · X export · Esc close"));
+            lines.push(...browseHints);
           }
           return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
@@ -2872,7 +2820,6 @@ export default async function (pi: ExtensionAPI) {
         .map((state) => ({
           epoch: state.epoch,
           entries: state.entries,
-          current: state.epoch.epochId === activeRuleEpoch?.epochId,
         }));
       if (epochViews.length === 0 && transcript.length === 0) {
         ctx.ui.notify("No conversation has reached the masking boundary yet", "info");

@@ -3,6 +3,7 @@ import test from "node:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 type Component = {
   render(width: number): string[];
@@ -156,6 +157,14 @@ test("configuration home toggles and reorders in place while retaining selection
 
   const harness = await createHarness(dir, [async (component) => {
     assert.ok(component.render(100).some((line) => line.includes("STATE") && line.includes("ORDER") && line.includes("NAME")));
+    const narrowLines = component.render(42);
+    const narrow = narrowLines.join("\n");
+    assert.ok(narrowLines.every((line) => visibleWidth(line) <= 42));
+    assert.match(narrow, /Space immediate toggle/);
+    assert.match(narrow, /Ctrl\+↑↓ reorder/);
+    assert.match(narrow, /I\s+import/);
+    assert.match(narrow, /X export/);
+    assert.match(narrow, /Esc close/);
     component.handleInput("\t");
     assert.ok(component.render(100).some((line) => line.includes("TEST ACTIVE RULES · focused")));
     component.handleInput("\t");

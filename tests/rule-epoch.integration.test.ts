@@ -161,8 +161,9 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     const e2FactBatches = epochFactBatches(harness.entries, 2);
     assert.equal(e2FactBatches.length, 2);
     assert.equal(e2FactBatches[1]!.messages[0]!.messageKey, "user:98");
-    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 1);
-    assert.ok(harness.notifications.some((message) => message.includes("provider system prompt")));
+    assert.ok(epochBatches(harness.entries).some((batch) => batch.epochId === 2 && batch.prefix));
+    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
+    assert.equal(harness.notifications.some((message) => message.includes("has actually changed")), false);
 
     // Two edits during E2 coalesce to the original disabled behavior, so the
     // next run reuses E2 instead of creating unused E3/E4 epochs.
