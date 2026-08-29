@@ -13,12 +13,14 @@ user/tool data → mask → LLM → restore tool arguments → tool uses real da
 
 Use it for secrets the model only needs to pass to tools, such as API keys, access tokens, private hostnames, and connection credentials—not values whose exact contents it must parse, transform, or validate.
 
-Key features:
+## Features
 
-- Format-preserving placeholders keep tokens, URLs, and addresses operationally believable instead of replacing them with obvious `[REDACTED]` markers.
-- Tool arguments are restored immediately before execution, so tools continue to receive real values.
-- Stable per-conversation mappings preserve the model-facing context and the opportunity for provider prompt-cache hits.
-- `/masking-history` shows the exact local and model-facing views for auditing.
+- **Provider-boundary protection** — configured values are masked before model requests while remaining available to local sessions and tools.
+- **Model-friendly placeholders** — recognizable token, URL, address, and credential shapes reduce disruption to model reasoning and tool calls without exposing an obvious `[REDACTED]` marker.
+- **Automatic tool restoration** — the model passes placeholders in tool calls, and the extension restores the original values immediately before execution with no manual step.
+- **Integrated rule management** — `/masking` manages project and global rules, presets, ordering, testing, import, and redacted export in one UI.
+- **Prompt-cache-aware updates** — rule changes are checked against the existing model-facing prefix before saving.
+- **Auditable model view** — `/masking-history` shows exact local/model representations and the rule versions that reached the model.
 
 ## Quick start
 
@@ -86,27 +88,9 @@ The replacement is operationally believable, not semantically equivalent to the 
 
 ### Stable model context
 
-The same real value maps to the same placeholder throughout a conversation. Reopening a persisted Pi conversation restores the same session key and model-facing history, keeping earlier prefixes stable. A new conversation uses a new key.
+The same real value maps to the same placeholder throughout a conversation. Persisted conversations restore their session key and exact model-facing history; new conversations use a new key.
 
-When masking behavior changes, the extension first performs a side-effect-free
-local preflight against the most recent factual model input. A `/masking` save
-that would change the model-facing system prompt or existing conversation
-messages opens an in-configuration confirmation before writing the candidate
-rules. It reports the earliest affected message and offers **Save anyway** or
-**Back to editing**, so the user can prefer prefix cache reuse without undoing an
-already-published edit. External file reloads and commands outside that screen
-use an immediate notification instead. The estimate clones placeholder and
-provenance state; it does not mutate live mappings or claim that a provider
-cache was affected.
-
-The activation notice also explains which agent run keeps the old rules and
-confirms that recorded history is not rewritten. The extension does not repeat
-the cache warning after a provider request, when it is too late to preserve
-reuse. Provider-boundary facts are still retained for factual epoch history:
-system and prompt values are stored only as session-keyed HMACs, never
-plaintext, and only the first provider observation is retained per epoch—there
-is no request timeline. Serialization or mutation after this extension's hook,
-tokenization, and provider cache policy remain outside the local preflight.
+Before saving a change that would alter the existing model-facing prompt prefix, `/masking` identifies the earliest affected system prompt or message and asks whether to continue. This helps preserve opportunities for provider prompt-cache reuse, but does not predict provider cache behavior. External file reloads receive an immediate warning instead.
 
 ### Transparent tool execution
 
@@ -116,25 +100,9 @@ The model must pass a placeholder verbatim. A placeholder that the model slices,
 
 ### Inspectable model view
 
-`/masking-history` is a factual audit grouped into consecutive user-facing rule
-versions. Use `[` and `]` to switch versions. Each version shows only messages
-that actually crossed an outbound boundary while that behavior was active; it
-does not apply old or current rules hypothetically to other messages. Empty,
-unused internal epochs are omitted without exposing gaps in the displayed
-version numbers.
+`/masking-history` shows only representations that actually reached the model, grouped into consecutive rule versions rather than hypothetical replays. It supports local original, exact model-facing, and comparison views with navigation across every masked occurrence.
 
-Within a version, the viewer opens at the newest messages. Underlining marks
-all replacements; inverse highlighting identifies only the selected occurrence
-without adding display characters. `N` moves to the next masked occurrence and
-`P` to the previous one, visiting every occurrence (including repeated uses of
-the same mapping). The viewer also switches among the local original, the exact
-stored model-facing representation, and a comparison view. Wide terminals show
-the comparison side by side; narrow terminals stack both versions. The header
-shows `Rule version n/total` with that version's active-rule count. Press `R` to
-open a read-only version-rule list with net changes against the previous
-recorded version. Intermediate edits that were reverted before any model input
-are not shown. Per-rule behavior fingerprints support this comparison but are
-never displayed.
+Each version includes a read-only rule list and net changes. Unused intermediate edits are omitted, while persisted and compacted history remains associated with the version that processed it.
 
 ## Rules and configuration
 
@@ -153,20 +121,47 @@ The packaged [`masking.config.example.json`](masking.config.example.json) contai
 
 ## Performance
 
-Masking recursively scans every string in the outbound model context against each active rule. The final provider-boundary safety hook may make a second, idempotent pass. Rules are compiled once per configuration load and placeholders are reused, but large histories, many active rules, or broad and backtracking-heavy custom regexes can add local latency.
+Compiled rules and masked outputs are cached, so unchanged history is reused across requests and only new or changed messages require full scanning. Large messages, many active rules, and broad or backtracking-heavy regexes can still add local latency.
 
-Regex safety diagnostics are advisory and do not reject a rule. Keep patterns narrow and test representative positive, negative, and large inputs in `/masking` before relying on them.
+Regex diagnostics are advisory. Keep patterns narrow and test representative positive, negative, and large inputs in `/masking`.
 
-## Commands
+## Commands and shortcuts
 
 | Command | Purpose |
 |---|---|
-| `/masking` | Globally enable/disable masking; manage, order, enable, edit, and locally test project/global rules |
-| `/masking-history` | Audit factual local/model views by active rule version (`[`/`]`) |
+| `/masking` | Manage and locally test project/global rules and the global masking state |
+| `/masking-history` | Audit exact local/model views by rule version |
 
-In `/masking`, `M` persistently enables or disables masking across projects and future sessions, while `Space` toggles the selected rule. `Enter` edits or adds, `Ctrl+↑/↓` changes priority, `D`/`Delete` removes, `Tab` focuses local testing, and `R` reveals the selected literal value. The screen lists the remaining filter, search, batch, help, import, and redacted-export shortcuts.
+### `/masking`
 
-The test areas are local: sample text does not enter model context, session history, configuration, or live placeholder mappings.
+| Key | Action |
+|---|---|
+| `M` | Toggle global masking |
+| `Space` | Toggle the selected rule |
+| `Enter` / `A` | Edit the selection or add a rule |
+| `Ctrl+↑/↓` | Reorder the selected rule |
+| `D` / `Delete` | Remove the selected rule |
+| `Tab` | Focus the local test area |
+| `R` | Reveal the selected literal value |
+| `F` / `/` | Filter or search rules |
+| `B` / `I` / `X` | Batch edit, import, or redacted export |
+| `H` | Open help |
+| `Esc` | Close |
+
+Test input remains local and does not enter model context, session history, configuration, or live placeholder mappings.
+
+### `/masking-history`
+
+| Key | Action |
+|---|---|
+| `[` / `]` | Switch rule version |
+| `R` | Inspect the selected version's rules and net changes |
+| `N` / `P` | Navigate masked occurrences |
+| `M` | Switch between local original and model-facing views |
+| `C` | Toggle comparison view |
+| `Ctrl+O` / `Ctrl+T` | Toggle tool and thinking content |
+| `↑/↓` / `PgUp/PgDn` | Scroll |
+| `Esc` | Go back or close |
 
 ## Security model and limitations
 
@@ -196,33 +191,15 @@ If the model saw a string first, protecting it later would rewrite text the mode
 - Binary and other non-string data is not scanned. The final provider-request safety pass also depends on provider support for that Pi hook.
 - Literal matching includes substring occurrences. Prefer exact high-entropy values; use narrow regex rules for value classes.
 - A custom placeholder must be unique and must not equal another real value. Generated placeholders include collision checks.
-- Content injected only at the final provider boundary is visible in the live
-  factual history, but cannot be reconstructed after restart unless Pi also
-  stored its local original as a session message.
+- Content injected only at the final provider boundary is visible in live history, but cannot be reconstructed after restart unless Pi also stored its local original as a session message.
 
 ## Scope, persistence, and recovery
 
-When both configuration files exist, project rules run before global rules; project option fields override global fields. The global masking state saved from `/masking` overrides both files.
+Project rules run before global rules, and project options override global options. The persistent global switch in `/masking` overrides both files. Writes are atomic, multi-file operations roll back on failure, and a temporarily invalid or unreadable file leaves the last valid configuration active.
 
-Config writes are atomic and use user-only permissions where POSIX modes are available. Multi-file operations roll back on failure. If a watched file is temporarily invalid or unreadable, the last successfully parsed configuration remains active; deleting the file intentionally removes that scope.
+Rule or global-state changes received during an agent run activate before the next run, keeping tool placeholder restoration consistent. With the default `persistHistory: true`, session keys, rule-version metadata, and model-facing differences survive restarts without duplicating original secrets beyond Pi's normal local conversation storage.
 
-Masking behavior is pinned for one complete agent run, including all model/tool
-loop iterations. A config reload or global masking-state change that arrives while
-the agent is running is saved immediately but activates before the next agent
-run, so tool placeholders are always restored by the masker that created them.
-Effective behavior changes append sanitized, secret-free `RuleEpoch` metadata to
-the session when history persistence is enabled.
-
-`persistHistory` defaults to `true`. It stores the session key, immutable rule
-epochs, and per-epoch model-facing text differences in Pi custom session
-metadata so placeholders and factual `/masking-history` views survive a
-restart. Repeated tool-loop requests do not create request records or duplicate
-unchanged messages. Compacted-away messages remain only in epochs that actually
-processed them; a newer epoch never inherits or recomputes them. Persistence
-does not duplicate original secrets, although Pi's normal session file already
-contains the real conversation.
-
-Other options are `caseSensitive`, `showStatusBar`, and `systemPromptGuidance`; see the JSON Schema for their defaults and descriptions.
+Other options are `caseSensitive`, `showStatusBar`, and `systemPromptGuidance`; see the JSON Schema for defaults and descriptions.
 
 ## Development
 
