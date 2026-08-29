@@ -6,7 +6,7 @@ pi-data-masking is a Pi extension that replaces configured secrets with stable, 
 
 Use pi-data-masking to prevent configured API keys, access tokens, private hostnames, and connection credentials from being sent unchanged to an LLM provider in Pi when the model only needs to pass them to tools—not when it must analyze their exact contents.
 
-> This protects the LLM-provider boundary. Pi's local session files and tools that use a secret still receive the real value.
+> **Boundary:** Masking applies only before requests reach the LLM provider. Pi's local session files retain the original conversation, and matching tool arguments are restored locally before execution.
 
 ```text
 user/tool data → mask → LLM → restore tool arguments → tool uses real data
@@ -210,9 +210,13 @@ Other options are `caseSensitive`, `showStatusBar`, and `systemPromptGuidance`; 
 
 ## FAQ
 
+### How is this different from replacing secrets with `[REDACTED]`?
+
+Generated placeholders preserve recognizable structure, reducing the chance that the model treats a value as missing. They remain substitutes, not semantically equivalent or encrypted versions of the original values.
+
 ### Does pi-data-masking encrypt Pi session files?
 
-No. It protects the LLM-provider boundary; Pi's local session files still contain the real conversation.
+No. Masking applies at the LLM-provider boundary; Pi's local session files still contain the real conversation.
 
 ### Does it automatically detect every secret or piece of PII?
 
@@ -229,10 +233,6 @@ No. Stable placeholders and save-time preflight help preserve model-facing prefi
 ### What happens if the model modifies a placeholder?
 
 A sliced, concatenated, hashed, or otherwise transformed placeholder cannot be mapped back to the original value.
-
-### How is this different from replacing secrets with `[REDACTED]`?
-
-Generated placeholders preserve recognizable structure, reducing the chance that the model treats a value as missing. They remain substitutes, not semantically equivalent or encrypted versions of the original values.
 
 ## Development
 
