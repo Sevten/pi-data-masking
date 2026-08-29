@@ -6,13 +6,18 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-29
+
 ### Added
 
-- Add a built-in preset for publicly routable IPv4 addresses.
+- Add a built-in preset for publicly routable IPv4 addresses, excluding private
+  and common special-use ranges.
 
 ### Changed
 
-- Document that the private IPv4 preset preserves its first two octets by default.
+- Clarify that the private IPv4 preset preserves its first two octets by default.
+- Expand the README with common use cases and FAQs, and clarify the masking
+  boundary and the benefits and limitations of structure-preserving placeholders.
 
 ## [0.6.0] - 2026-08-29
 
