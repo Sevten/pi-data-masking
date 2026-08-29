@@ -18,9 +18,10 @@ user/tool data → mask → LLM → restore tool arguments → tool uses real da
 - **Provider-boundary protection** — configured values are masked before model requests while remaining available to local sessions and tools.
 - **Model-friendly placeholders** — recognizable token, URL, address, and credential shapes reduce disruption to model reasoning and tool calls without exposing an obvious `[REDACTED]` marker.
 - **Automatic tool restoration** — the model passes placeholders in tool calls, and the extension restores the original values immediately before execution with no manual step.
-- **Integrated rule management** — `/masking` manages project and global rules, presets, ordering, testing, import, and redacted export in one UI.
-- **Prompt-cache-aware updates** — rule changes are checked against the existing model-facing prefix before saving.
-- **Auditable model view** — `/masking-history` shows exact local/model representations and the rule versions that reached the model.
+- **Integrated rule management** — `/masking` centralizes project and global rules, presets, ordering, testing, import, and redacted export in one UI.
+- **Efficient long conversations** — with stable rules, cached masking results avoid repeated regex scans of unchanged history as the conversation grows.
+- **Prompt-cache-aware updates** — impact checks before saving help avoid rule changes that would unnecessarily disrupt provider prompt-cache reuse.
+- **Auditable model view** — `/masking-history` lets you verify the exact local and model-facing representations, together with the rule versions that produced them.
 
 ## Use cases
 
@@ -85,7 +86,7 @@ Automatic placeholders instead preserve character classes and separators: letter
 
 ```text
 sk-prod-abc123456789  → sk-nqpz-mwx847312654  (with keepPrefix)
-172.16.254.1          → 233.84.19.207
+172.16.254.1          → 172.16.19.207       (with private-ipv4 preset)
 db.prod.internal      → db-primary.prod.corpnet.internal
 ```
 
@@ -118,7 +119,7 @@ Each version includes a read-only rule list and net changes. Unused intermediate
 | Exact literal | `real` | One known value |
 | Environment literal | `realFromEnv` | One known value that should not be stored in JSON |
 | Custom regex | `type: "regex"`, `pattern` | A narrowly defined class of values |
-| Built-in preset | `preset` | Common tokens, credentials, private keys, connection strings, or private IPs |
+| Built-in preset | `preset` | Common tokens, credentials, private keys, connection strings, or IP addresses |
 
 Every rule has a unique `id` within its file. `name` is the user-facing label; `enabled` defaults to `true`. Literal rules may use a fixed `placeholder` or automatic generation. Regex matches always receive generated placeholders because one pattern can discover many distinct values.
 

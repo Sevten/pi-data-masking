@@ -117,7 +117,8 @@
             "pem-private-key",
             "bearer-token",
             "database-userinfo",
-            "private-ipv4"
+            "private-ipv4",
+            "public-ipv4"
           ]
         },
         "enabled": { "type": "boolean", "default": true },

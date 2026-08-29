@@ -5,6 +5,8 @@
 
 import type { PreserveStructure, RegexMaskingRule } from "./masker.ts";
 
+const IPV4_OCTET = "(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)";
+
 export interface MaskingPreset {
   name: string;
   label: string;
@@ -83,10 +85,17 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
   {
     name: "private-ipv4",
     label: "Private IPv4 address",
-    description: "RFC 1918 private IPv4 addresses",
+    description: "RFC 1918 private IPv4 addresses; preserves the first two octets by default",
     example: "192.168.10.25",
-    pattern: "\\b(?:10\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)|172\\.(?:1[6-9]|2\\d|3[01])\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)|192\\.168\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d))\\b",
+    pattern: `\\b(?:10\\.${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}|172\\.(?:1[6-9]|2\\d|3[01])\\.${IPV4_OCTET}\\.${IPV4_OCTET}|192\\.168\\.${IPV4_OCTET}\\.${IPV4_OCTET})\\b`,
     preserveStructure: { keepIPv4Octets: 2 },
+  },
+  {
+    name: "public-ipv4",
+    label: "Public IPv4 address",
+    description: "Publicly routable IPv4 addresses, excluding private and common special-use ranges",
+    example: "8.8.8.8",
+    pattern: `\\b(?!(?:0|10|127)\\.)(?!100\\.(?:6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.)(?!169\\.254\\.)(?!172\\.(?:1[6-9]|2\\d|3[01])\\.)(?!192\\.0\\.(?:0|2)\\.)(?!192\\.88\\.99\\.)(?!192\\.168\\.)(?!198\\.(?:18|19)\\.)(?!198\\.51\\.100\\.)(?!203\\.0\\.113\\.)(?!(?:22[4-9]|23\\d|24\\d|25[0-5])\\.)${IPV4_OCTET}(?:\\.${IPV4_OCTET}){3}\\b`,
   },
 ];
 

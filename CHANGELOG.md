@@ -6,6 +6,14 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ## [Unreleased]
 
+### Added
+
+- Add a built-in preset for publicly routable IPv4 addresses.
+
+### Changed
+
+- Document that the private IPv4 preset preserves its first two octets by default.
+
 ## [0.6.0] - 2026-08-29
 
 ### Added
