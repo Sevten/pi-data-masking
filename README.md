@@ -4,14 +4,14 @@
 
 pi-data-masking is a Pi extension that replaces configured secrets with stable, realistic-looking placeholders before a request reaches the model. The real values remain in Pi's local conversation and are restored only when a tool needs them.
 
+Use pi-data-masking to prevent configured API keys, access tokens, private hostnames, and connection credentials from being sent unchanged to an LLM provider in Pi when the model only needs to pass them to tools—not when it must analyze their exact contents.
+
 > This protects the LLM-provider boundary. Pi's local session files and tools that use a secret still receive the real value.
 
 ```text
 user/tool data → mask → LLM → restore tool arguments → tool uses real data
                               tool result → mask → next LLM request
 ```
-
-Use it for secrets the model only needs to pass to tools, such as API keys, access tokens, private hostnames, and connection credentials—not values whose exact contents it must parse, transform, or validate.
 
 ## Features
 
@@ -21,6 +21,13 @@ Use it for secrets the model only needs to pass to tools, such as API keys, acce
 - **Integrated rule management** — `/masking` manages project and global rules, presets, ordering, testing, import, and redacted export in one UI.
 - **Prompt-cache-aware updates** — rule changes are checked against the existing model-facing prefix before saving.
 - **Auditable model view** — `/masking-history` shows exact local/model representations and the rule versions that reached the model.
+
+## Use cases
+
+- Pass API keys and access tokens through model-generated tool calls without exposing the real values to the provider.
+- Let the model work with private hostnames and connection strings through structure-preserving substitutes.
+- Audit exactly how local conversation content was transformed before reaching the model.
+- Keep model-facing conversation prefixes stable across repeated requests and review rule changes before they disrupt cache reuse.
 
 ## Quick start
 
@@ -200,6 +207,32 @@ Project rules run before global rules, and project options override global optio
 Rule or global-state changes received during an agent run activate before the next run, keeping tool placeholder restoration consistent. With the default `persistHistory: true`, session keys, rule-version metadata, and model-facing differences survive restarts without duplicating original secrets beyond Pi's normal local conversation storage.
 
 Other options are `caseSensitive`, `showStatusBar`, and `systemPromptGuidance`; see the JSON Schema for defaults and descriptions.
+
+## FAQ
+
+### Does pi-data-masking encrypt Pi session files?
+
+No. It protects the LLM-provider boundary; Pi's local session files still contain the real conversation.
+
+### Does it automatically detect every secret or piece of PII?
+
+No. Only values matched by configured literal, environment, preset, or regex rules are masked.
+
+### Do tools receive the original value?
+
+Yes. When the model passes a placeholder unchanged in a tool call, the extension restores the original value immediately before execution.
+
+### Does masking guarantee provider prompt-cache hits?
+
+No. Stable placeholders and save-time preflight help preserve model-facing prefixes, but provider serialization, tokenization, and cache policy remain outside the extension's control.
+
+### What happens if the model modifies a placeholder?
+
+A sliced, concatenated, hashed, or otherwise transformed placeholder cannot be mapped back to the original value.
+
+### How is this different from replacing secrets with `[REDACTED]`?
+
+Generated placeholders preserve recognizable structure, reducing the chance that the model treats a value as missing. They remain substitutes, not semantically equivalent or encrypted versions of the original values.
 
 ## Development
 

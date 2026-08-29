@@ -21,7 +21,15 @@
     "pi-extension",
     "pi-coding-agent",
     "data-masking",
-    "ai-agent"
+    "secret-masking",
+    "sensitive-data",
+    "llm",
+    "llm-security",
+    "prompt-security",
+    "privacy",
+    "api-keys",
+    "ai-agent",
+    "developer-tools"
   ],
   "scripts": {
     "check": "tsc",
