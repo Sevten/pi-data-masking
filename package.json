@@ -4,7 +4,7 @@
   "description": "Pi extension that masks sensitive data before it reaches the LLM and restores it for users and tools.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sevten/pi-data-masking.git"
+    "url": "https://github.com/Sevten/pi-data-masking"
   },
   "license": "MIT",
   "type": "module",
