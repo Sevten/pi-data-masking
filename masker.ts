@@ -73,6 +73,7 @@
 
 import { generatePlaceholder } from "./placeholder-gen.ts";
 import { finalizeDetails, mergeDetailInto, type DetailAccumulator } from "./details.ts";
+import { isCommonSemanticValue } from "./common-semantic-terms.ts";
 
 // ─── Rule types (discriminated union) ──────────────────────────────────────
 
@@ -427,7 +428,7 @@ export class Masker {
       preserveStructure
     );
     while (
-      (this.usedPlaceholders.has(candidate) || candidate === real) &&
+      (this.usedPlaceholders.has(candidate) || candidate === real || isCommonSemanticValue(candidate)) &&
       attempt < MAX_COLLISION_ATTEMPTS
     ) {
       attempt++;
@@ -438,9 +439,10 @@ export class Masker {
         preserveStructure
       );
     }
-    if (this.usedPlaceholders.has(candidate) || candidate === real) {
+    if (this.usedPlaceholders.has(candidate) || candidate === real || isCommonSemanticValue(candidate)) {
       this.warnings.push(
-        `Rule [${ruleId}]: placeholder still collided after ${MAX_COLLISION_ATTEMPTS} retries; accepted as-is`
+        `Rule [${ruleId}]: placeholder still collided or matched a common semantic value after ` +
+          `${MAX_COLLISION_ATTEMPTS} retries; accepted as-is`
       );
     }
 

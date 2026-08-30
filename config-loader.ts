@@ -17,6 +17,7 @@ import { generatePlaceholder } from "./placeholder-gen.ts";
 import { isRegexRule, MAX_COLLISION_ATTEMPTS, type MaskingRule, type PreserveStructure } from "./masker.ts";
 import { expandMaskingPreset, getMaskingPreset } from "./presets.ts";
 import { analyzeRegexSafety } from "./regex-safety.ts";
+import { isCommonSemanticValue } from "./common-semantic-terms.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -434,7 +435,7 @@ export function validateConfig(
         warnings.push(`Rule [${id}] has invalid 'preset' (must be a non-empty string) and was skipped`);
         continue;
       }
-      const incompatible = ["type", "real", "realFromEnv", "pattern", "flags", "placeholder"]
+      const incompatible = ["type", "real", "realFromEnv", "pattern", "flags", "placeholder", "allowCommonPlaceholder"]
         .filter((field) => rule[field] !== undefined);
       if (incompatible.length > 0) {
         warnings.push(`Rule [${id}] preset reference also sets ${incompatible.join(", ")} and was skipped`);
@@ -457,7 +458,10 @@ export function validateConfig(
     }
 
     if (rule.type === "regex") {
-      if (rule.real !== undefined || rule.realFromEnv !== undefined || rule.placeholder !== undefined) {
+      if (
+        rule.real !== undefined || rule.realFromEnv !== undefined || rule.placeholder !== undefined ||
+        rule.allowCommonPlaceholder !== undefined
+      ) {
         warnings.push(`Rule [${id}] is regex but also sets a literal-only field and was skipped`);
         continue;
       }
@@ -514,17 +518,37 @@ export function validateConfig(
         warnings.push(`Rule [${id}] environment variable ${JSON.stringify(envName)} is missing or empty; rule is inactive`);
         continue;
       }
-      if (rule.lowEntropy !== true && real.length < 8) {
-        warnings.push(
-          `Rule [${id}] masks a ${real.length}-character value — low entropy; ` +
-            `masking short/common values causes semantic contradictions and coincidental restores. ` +
-            `Consider not masking them; set "lowEntropy": true to silence this warning`
-        );
+      if (rule.lowEntropy !== true) {
+        if (isCommonSemanticValue(real)) {
+          warnings.push(
+            `Rule [${id}] masks a common semantic value — ordinary text with the same value cannot be ` +
+              `distinguished from the sensitive value, which may cause semantic contradictions or leave a later ` +
+              `occurrence unprotected. Consider changing the credential or narrowing the rule context; ` +
+              `set "lowEntropy": true to silence this warning`
+          );
+        } else if (real.length < 8) {
+          warnings.push(
+            `Rule [${id}] masks a ${real.length}-character value — low entropy; ` +
+              `masking short/common values causes semantic contradictions and coincidental restores. ` +
+              `Consider not masking them; set "lowEntropy": true to silence this warning`
+          );
+        }
+      }
+      if (rule.allowCommonPlaceholder !== undefined && typeof rule.allowCommonPlaceholder !== "boolean") {
+        warnings.push(`Rule [${id}] has invalid 'allowCommonPlaceholder' (must be a boolean) and was skipped`);
+        continue;
       }
       if (rule.placeholder !== undefined && rule.placeholder !== "auto") {
         if (typeof rule.placeholder !== "string" || rule.placeholder.length === 0) {
           warnings.push(`Rule [${id}] has an invalid placeholder (must be a non-empty string or "auto"); skipped`);
           continue;
+        }
+        if (rule.allowCommonPlaceholder !== true && isCommonSemanticValue(rule.placeholder)) {
+          warnings.push(
+            `Rule [${id}] uses the common semantic value ${JSON.stringify(rule.placeholder)} as a custom placeholder — ` +
+              `if the model independently emits the same text, tool arguments may be restored incorrectly. ` +
+              `Prefer "auto" or an uncommon placeholder; set "allowCommonPlaceholder": true to silence this warning`
+          );
         }
       }
       const resolved: MaskingRule = {
@@ -724,15 +748,16 @@ function fillPlaceholders(rules: MaskingRule[], sessionKey: Buffer, warnings: st
     let attempt = 0;
     let candidate = generatePlaceholder(rule.real, sessionKey, attempt, rule.preserveStructure);
     while (
-      (used.has(candidate) || candidate === rule.real) &&
+      (used.has(candidate) || candidate === rule.real || isCommonSemanticValue(candidate)) &&
       attempt < MAX_COLLISION_ATTEMPTS
     ) {
       attempt++;
       candidate = generatePlaceholder(rule.real, sessionKey, attempt, rule.preserveStructure);
     }
-    if (used.has(candidate) || candidate === rule.real) {
+    if (used.has(candidate) || candidate === rule.real || isCommonSemanticValue(candidate)) {
       warnings.push(
-        `Rule [${rule.id}]: placeholder still collided after ${MAX_COLLISION_ATTEMPTS} retries; accepted as-is`
+        `Rule [${rule.id}]: placeholder still collided or matched a common semantic value after ` +
+          `${MAX_COLLISION_ATTEMPTS} retries; accepted as-is`
       );
     }
 

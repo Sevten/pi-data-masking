@@ -11,6 +11,7 @@
   "main": "./index.ts",
   "files": [
     "*.ts",
+    "common-semantic-terms.txt",
     "masking.config.example.json",
     "masking.config.schema.json",
     "README.md",

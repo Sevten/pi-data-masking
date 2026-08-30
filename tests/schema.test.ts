@@ -25,7 +25,7 @@ test("JSON Schema accepts literal, environment, regex, and preset rules", () => 
     version: 1,
     enabled: true,
     rules: [
-      { id: "domain", name: "Internal domain", real: "internal.example", placeholder: "public.example" },
+      { id: "domain", name: "Internal domain", real: "internal.example", placeholder: "public.example", allowCommonPlaceholder: false },
       { id: "api", realFromEnv: "PROD_API_KEY", preserveStructure: { keepPrefix: true } },
       { id: "custom", type: "regex", pattern: "\\btoken_[A-Za-z0-9]{24}\\b", flags: "i" },
       { id: "github", preset: "github-pat", enabled: false },

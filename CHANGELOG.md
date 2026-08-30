@@ -6,6 +6,13 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ## [Unreleased]
 
+### Added
+
+- Warn when an exact literal or custom placeholder equals a bundled common
+  semantic term, with separate acknowledgements for input-side ambiguity and
+  accidental tool-argument restoration; generated placeholders avoid the same
+  high-risk term list.
+
 ## [0.6.1] - 2026-08-29
 
 ### Added

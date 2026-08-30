@@ -1,0 +1,93 @@
+# High-risk values whose ordinary meaning makes them unsafe as exact masking
+# values or placeholders. Matching is exact after Unicode NFKC normalization,
+# trimming, and case folding. Keep one value or phrase per line.
+
+# Common users, accounts, and roles
+admin
+administrator
+root
+superuser
+user
+username
+guest
+operator
+system
+service
+account
+
+# Common credential words
+password
+passwd
+passphrase
+secret
+token
+api key
+api-key
+apikey
+access key
+access-key
+credential
+credentials
+
+# Common hosts, environments, and visibility labels
+localhost
+local
+default
+dev
+development
+test
+testing
+stage
+staging
+prod
+production
+public
+private
+internal
+external
+
+# Common control and placeholder values
+true
+false
+null
+none
+unknown
+undefined
+example
+sample
+demo
+temp
+tmp
+
+# Common Chinese equivalents
+管理员
+超级用户
+根用户
+用户
+用户名
+访客
+操作员
+系统
+服务
+账户
+帐户
+密码
+口令
+密钥
+令牌
+凭据
+本地
+默认
+开发
+测试
+预发布
+生产
+公共
+公开
+私有
+内部
+外部
+示例
+样例
+临时
+未知

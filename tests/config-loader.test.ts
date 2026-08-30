@@ -31,6 +31,7 @@ import {
 } from "../config-loader.ts";
 import { Masker, isRegexRule } from "../masker.ts";
 import { generatePlaceholder } from "../placeholder-gen.ts";
+import { isCommonSemanticValue } from "../common-semantic-terms.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 
@@ -631,6 +632,51 @@ test("low-entropy values produce warnings; lowEntropy:true silences them", () =>
 
   const silenced = validateConfig([{ id: "s", real: "abc", placeholder: "auto", lowEntropy: true }]);
   assert.deepEqual(silenced.warnings, []);
+});
+
+test("common semantic terms warn separately for real values and custom placeholders", () => {
+  assert.equal(isCommonSemanticValue("  ＡＤＭＩＮ  "), true);
+  assert.equal(isCommonSemanticValue("admin-session-a81f"), false, "matching must not use substrings");
+
+  const commonReal = validateConfig([{
+    id: "common-real",
+    real: "administrator",
+    placeholder: "user-mask-a81f",
+  }]);
+  assert.equal(commonReal.warnings.length, 1);
+  assert.ok(commonReal.warnings[0]!.includes("masks a common semantic value"));
+
+  const envReal = validateConfig([{
+    id: "common-env-real",
+    realFromEnv: "COMMON_TEST_VALUE",
+    placeholder: "user-mask-b92g",
+  }], { COMMON_TEST_VALUE: "administrator" });
+  assert.ok(envReal.warnings.some((warning) => warning.includes("masks a common semantic value")));
+  assert.ok(envReal.warnings.every((warning) => !warning.includes("administrator")), "env values must not appear in warnings");
+
+  const commonPlaceholder = validateConfig([{
+    id: "common-placeholder",
+    real: "internal-user-name-a81f",
+    placeholder: "ＡＤＭＩＮ",
+  }]);
+  assert.equal(commonPlaceholder.warnings.length, 1);
+  assert.ok(commonPlaceholder.warnings[0]!.includes("as a custom placeholder"));
+  assert.ok(commonPlaceholder.warnings[0]!.includes("tool arguments may be restored incorrectly"));
+
+  assert.deepEqual(validateConfig([{
+    id: "acknowledged-risks",
+    real: "administrator",
+    placeholder: "admin",
+    lowEntropy: true,
+    allowCommonPlaceholder: true,
+  }]).warnings, []);
+
+  assert.ok(validateConfig([{
+    id: "invalid-acknowledgement",
+    real: "internal-user-name-a81f",
+    placeholder: "admin",
+    allowCommonPlaceholder: "yes",
+  }]).warnings.some((warning) => warning.includes("invalid 'allowCommonPlaceholder'")));
 });
 
 test("exact literal mutations support custom placeholders and warn about no-op replacements", () => {

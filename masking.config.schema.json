@@ -67,6 +67,11 @@
         "real": { "type": "string", "minLength": 1, "description": "Exact sensitive value. Prefer realFromEnv for secrets." },
         "realFromEnv": { "type": "string", "minLength": 1, "description": "Environment variable containing the exact sensitive value." },
         "placeholder": { "type": "string", "minLength": 1, "default": "auto" },
+        "allowCommonPlaceholder": {
+          "type": "boolean",
+          "default": false,
+          "description": "Acknowledge the accidental tool-restoration risk of using a bundled common semantic value as a custom placeholder."
+        },
         "preserveStructure": { "$ref": "#/$defs/preserveStructure" },
         "lowEntropy": { "type": "boolean", "default": false }
       },
