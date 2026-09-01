@@ -1388,6 +1388,7 @@ export default async function (pi: ExtensionAPI) {
       return { text: input, count: 0, attribution: "Draft must be a JSON object", warnings: [] };
     }
     const candidate: RawConfigRule = { ...(parsed as RawConfigRule), enabled: true };
+    if (typeof candidate.id !== "string" || !candidate.id.trim()) candidate.id = "preview-rule";
     const validated = validateConfig([candidate]);
     let mutationWarnings: string[] = [];
     try {
@@ -1693,7 +1694,22 @@ export default async function (pi: ExtensionAPI) {
           noMatch: (text) => theme.fg("warning", text),
         },
       };
-      const makeEditor = (initial = "", singleLine = true) => {
+      let saveMessage = "";
+      let saveWarnings: string[] = [];
+      let warningSignature = "";
+      let saving = false;
+      let discardConfirmation = false;
+      let builderType: BuilderType = selectedType;
+      let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
+      let mode: "form" | "json" = options.initialMode ?? "form";
+      let focusIndex = !editing && mode === "form" ? 2 : 0;
+      let lastFormField: BuilderField = !editing && mode === "form" ? "name" : "type";
+      let explicitId: string | undefined = editing && typeof editing.initial.id === "string" ? editing.initial.id : undefined;
+      let advancedFields: RawConfigRule = editing ? { ...editing.initial } : {};
+      let testAutoManaged = !editing && mode === "form";
+      let updatingAutoTest = false;
+      let testEditor: Editor | undefined;
+      const makeEditor = (initial = "", singleLine = true, afterChange?: (text: string) => void) => {
         const editor = new Editor(tui, editorTheme);
         editor.setText(initial);
         let normalizing = false;
@@ -1704,36 +1720,44 @@ export default async function (pi: ExtensionAPI) {
               normalizing = true;
               editor.setText(normalized);
               normalizing = false;
+              return;
             }
           }
           saveMessage = "";
+          saveWarnings = [];
           warningSignature = "";
           discardConfirmation = false;
+          afterChange?.(text);
           tui.requestRender();
         };
         return editor;
       };
-      let saveMessage = "";
-      let warningSignature = "";
-      let saving = false;
-      let discardConfirmation = false;
-      let builderType: BuilderType = selectedType;
-      let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
-      let focusIndex = 0;
-      let lastFormField: BuilderField = "type";
-      let mode: "form" | "json" = options.initialMode ?? "form";
-      let explicitId: string | undefined = editing && typeof editing.initial.id === "string" ? editing.initial.id : undefined;
-      let advancedFields: RawConfigRule = editing ? { ...editing.initial } : {};
       const editors = {
         name: makeEditor(selectedPreset?.label ?? (typeof editing?.initial.name === "string" ? editing.initial.name : "")),
         description: makeEditor(selectedPreset ? `${selectedPreset.description} · Example: ${selectedPreset.example}` : (typeof editing?.initial.description === "string" ? editing.initial.description : "")),
         pattern: makeEditor(selectedPreset?.pattern ?? (typeof editing?.initial.pattern === "string" ? editing.initial.pattern : "")),
         flags: makeEditor(selectedPreset?.flags ?? (typeof editing?.initial.flags === "string" ? editing.initial.flags : "")),
         env: makeEditor(typeof editing?.initial.realFromEnv === "string" ? editing.initial.realFromEnv : ""),
-        real: makeEditor(typeof editing?.initial.real === "string" ? editing.initial.real : ""),
+        real: makeEditor(typeof editing?.initial.real === "string" ? editing.initial.real : "", true, (text) => {
+          if (testAutoManaged && builderType === "Exact literal value" && testEditor) {
+            updatingAutoTest = true;
+            testEditor.setText(text);
+            updatingAutoTest = false;
+          }
+        }),
         placeholder: makeEditor(typeof editing?.initial.placeholder === "string" && editing.initial.placeholder !== "auto" ? editing.initial.placeholder : ""),
         json: makeEditor("", false),
-        test: makeEditor("", false),
+        test: makeEditor("", false, () => {
+          if (!updatingAutoTest) testAutoManaged = false;
+        }),
+      };
+      testEditor = editors.test;
+
+      const setAutoTestText = (text: string) => {
+        if (!testAutoManaged) return;
+        updatingAutoTest = true;
+        editors.test.setText(text);
+        updatingAutoTest = false;
       };
 
       const currentSource = () => selectedSource;
@@ -1748,7 +1772,9 @@ export default async function (pi: ExtensionAPI) {
         const normalizedType: BuilderType = currentType() === "Built-in preset template" ? "Custom regex" : currentType();
         const currentIndex = editableTypes.indexOf(normalizedType);
         builderType = editableTypes[(currentIndex + delta + editableTypes.length) % editableTypes.length]!;
+        setAutoTestText(builderType === "Exact literal value" ? editors.real.getExpandedText() : "");
         saveMessage = "";
+        saveWarnings = [];
         warningSignature = "";
         focusFormField("type");
       };
@@ -1756,13 +1782,15 @@ export default async function (pi: ExtensionAPI) {
         const currentIndex = Math.max(0, sources.findIndex((source) => source.path === currentSource().path));
         selectedSource = sources[(currentIndex + delta + sources.length) % sources.length]!;
         saveMessage = "";
+        saveWarnings = [];
         warningSignature = "";
         focusFormField("scope");
       };
-      const generatedId = () => explicitId ?? generateUniqueRuleId(
-        editors.name.getExpandedText().trim() || "rule",
-        existingIds.get(currentSource().path) ?? [],
-      );
+      const generatedId = (): string | undefined => {
+        if (explicitId) return explicitId;
+        const name = editors.name.getExpandedText().trim();
+        return name ? generateUniqueRuleId(name, existingIds.get(currentSource().path) ?? []) : undefined;
+      };
 
       function formFields(): BuilderField[] {
         const common: BuilderField[] = [];
@@ -1820,10 +1848,13 @@ export default async function (pi: ExtensionAPI) {
         const description = editors.description.getExpandedText().trim();
         const base: RawConfigRule = {
           ...advancedFields,
-          id: generatedId(),
-          name,
           enabled: typeof advancedFields.enabled === "boolean" ? advancedFields.enabled : true,
         };
+        const id = generatedId();
+        if (id) base.id = id;
+        else delete base.id;
+        if (name) base.name = name;
+        else delete base.name;
         if (description) base.description = description;
         else delete base.description;
         if (currentType() === "Built-in preset template" || currentType() === "Custom regex") {
@@ -1966,6 +1997,7 @@ export default async function (pi: ExtensionAPI) {
         description: string;
         cursorEditor?: Editor;
         selector?: boolean;
+        dim?: boolean;
       };
       const renderedFieldDetails = new Map<BuilderField, RenderedFieldDetail>();
 
@@ -1976,7 +2008,7 @@ export default async function (pi: ExtensionAPI) {
         value: string,
         width: number,
         description: string,
-        options: { cursorEditor?: Editor; selector?: boolean } = {},
+        options: { cursorEditor?: Editor; selector?: boolean; dim?: boolean } = {},
       ): void {
         const focused = field !== undefined && focusedField() === field;
         const marker = focused ? "▶" : " ";
@@ -1987,7 +2019,13 @@ export default async function (pi: ExtensionAPI) {
           ? valueWithCursor(options.cursorEditor, valueWidth)
           : truncateToWidth(rawValue, valueWidth);
         const summary = `${marker} ${padCell(label, labelWidth)}  ${displayedValue}`;
-        lines.push(theme.fg(focused ? "accent" : "muted", truncateToWidth(summary, Math.max(1, width))));
+        const rendered = truncateToWidth(summary, Math.max(1, width));
+        const editorAreaFocused = focusedField() !== "test";
+        lines.push(focused
+          ? theme.fg("accent", rendered)
+          : options.dim || !editorAreaFocused
+            ? theme.fg("dim", rendered)
+            : rendered);
         if (field !== undefined) {
           renderedFieldDetails.set(field, { label, value, description, ...options });
         }
@@ -1996,7 +2034,8 @@ export default async function (pi: ExtensionAPI) {
       function renderActiveFieldDescription(lines: string[], width: number): void {
         const detail = renderedFieldDetails.get(focusedField() === "test" ? lastFormField : focusedField());
         if (!detail) return;
-        lines.push(...wrappedMaskingText(theme.fg("dim", detail.description), width));
+        const description = focusedField() === "test" ? theme.fg("dim", detail.description) : detail.description;
+        lines.push(...wrappedMaskingText(description, width));
       }
 
       function renderSelector(lines: string[], field: BuilderField, label: string, value: string, width: number, description: string): void {
@@ -2016,16 +2055,68 @@ export default async function (pi: ExtensionAPI) {
         lines.push(...editor.render(width));
       }
 
+      function cleanBuilderIssue(issue: string): string {
+        let cleaned = issue.trim().replace(/^Rule \[[^\]]*\]\s*/, "");
+        if (cleaned === "A rule entry is missing a non-empty 'id' and was skipped") {
+          return "Enter a rule name or a non-empty JSON id";
+        }
+        cleaned = cleaned
+          .replace(/^has an invalid regex and was skipped:\s*/, "Regex is invalid: ")
+          .replace(/^is type "regex" but has no pattern; skipped$/, "Enter a regex pattern")
+          .replace(/^is literal but has no 'real' value or valid 'realFromEnv'; skipped$/, "Enter an exact value or a valid environment variable name")
+          .replace(/^has placeholder equal to its real value; the rule has no effect$/, "Placeholder must differ from the exact value")
+          .replace(/\s+and was skipped(?=[:;.]|$)/g, "")
+          .replace(/;\s*skipped(?=[:;.]|$)/g, "");
+        return cleaned ? cleaned[0]!.toUpperCase() + cleaned.slice(1) : "Rule is invalid";
+      }
+
+      function cleanBuilderIssues(message: string): string[] {
+        return message.split(/;\s+(?=Rule \[|A rule entry)/).map(cleanBuilderIssue);
+      }
+
+      function builderPreview(draft: { rule?: RawConfigRule; text: string; error?: string }): LocalMaskingPreview {
+        const input = editors.test.getExpandedText();
+        if (mode === "form") {
+          if (currentType() === "Exact literal value" && !editors.real.getExpandedText()) {
+            return { text: input, count: 0, attribution: "Enter an exact value to preview", warnings: [] };
+          }
+          if (currentType() === "Literal from environment" && !editors.env.getExpandedText().trim()) {
+            return { text: input, count: 0, attribution: "Enter an environment variable name to preview", warnings: [] };
+          }
+          if ((currentType() === "Built-in preset template" || currentType() === "Custom regex") && !editors.pattern.getExpandedText()) {
+            return { text: input, count: 0, attribution: "Enter a regex pattern to preview", warnings: [] };
+          }
+        }
+        return previewCandidateRule(input, draft.text);
+      }
+
       async function attemptSave(): Promise<void> {
+        saveWarnings = [];
         const draft = currentDraft();
         if (!draft.rule) {
           saveMessage = `Cannot save: ${draft.error}`;
           tui.requestRender();
           return;
         }
+        if (mode === "form" && !editing && !editors.name.getExpandedText().trim()) {
+          saveMessage = "Cannot save: enter a rule name";
+          focusFormField("name");
+          return;
+        }
+        if (mode === "form" && currentType() === "Exact literal value" && !editors.real.getExpandedText()) {
+          saveMessage = "Cannot save: enter an exact value";
+          focusFormField("real");
+          return;
+        }
         if (mode === "form" && currentType() === "Literal from environment" && !editors.env.getExpandedText().trim()) {
           saveMessage = "Cannot save: enter an environment variable name, for example PROD_API_KEY";
           focusFormField("env");
+          return;
+        }
+        if (mode === "form" && (currentType() === "Built-in preset template" || currentType() === "Custom regex")
+          && !editors.pattern.getExpandedText()) {
+          saveMessage = "Cannot save: enter a regex pattern";
+          focusFormField("pattern");
           return;
         }
         if (mode === "form" && (currentType() === "Literal from environment" || currentType() === "Exact literal value")
@@ -2034,11 +2125,23 @@ export default async function (pi: ExtensionAPI) {
           focusFormField("placeholder");
           return;
         }
+        if (typeof draft.rule.id !== "string" || !draft.rule.id.trim()) {
+          const name = typeof draft.rule.name === "string" ? draft.rule.name.trim() : "";
+          if (!name) {
+            saveMessage = `Cannot save: ${mode === "json" ? "enter a non-empty id or name in the JSON" : "enter a rule name"}`;
+            if (mode === "form") focusFormField("name");
+            else tui.requestRender();
+            return;
+          }
+          draft.rule.id = generateUniqueRuleId(name, existingIds.get(currentSource().path) ?? []);
+        }
         let warnings: string[];
         try {
           warnings = validateRawConfigRule(draft.rule);
         } catch (err) {
-          saveMessage = `Cannot save: ${(err as Error).message}`;
+          const issues = cleanBuilderIssues((err as Error).message);
+          saveMessage = `Cannot save: ${issues[0] ?? "rule is invalid"}`;
+          saveWarnings = issues.slice(1);
           tui.requestRender();
           return;
         }
@@ -2047,13 +2150,14 @@ export default async function (pi: ExtensionAPI) {
           && currentSource().path === editing.configured.path
           && id === editing.configured.rule.id;
         if ((existingIds.get(currentSource().path) ?? []).includes(id) && !isOriginalEntry) {
-          saveMessage = `Cannot save: rule ID [${id}] already exists in ${currentSource().scope}`;
+          saveMessage = `Cannot save: ID ${JSON.stringify(id)} already exists in ${currentSource().scope}`;
           tui.requestRender();
           return;
         }
         const signature = warnings.join("\n");
         if (warnings.length > 0 && warningSignature !== signature) {
           warningSignature = signature;
+          saveWarnings = warnings.map(cleanBuilderIssue);
           saveMessage = "Warnings are shown below · press Enter again to save anyway";
           tui.requestRender();
           return;
@@ -2098,8 +2202,9 @@ export default async function (pi: ExtensionAPI) {
             const fieldRowsStart = lines.length;
             renderSelector(lines, "type", "Rule type", typeLabel(), width, "←/→ or Space switches between exact, environment, and regular-expression rules");
             renderSelector(lines, "scope", "Scope", currentSource().scope, width, "←/→ or Space moves the rule between project and global configuration");
-            renderSingleLineField(lines, "name", "Name", editors.name, width, "Required display name");
-            renderFieldRow(lines, undefined, "Generated ID", generatedId(), width, "Read-only · generated from name");
+            renderSingleLineField(lines, "name", "Name", editors.name, width, "Human-readable label for this rule");
+            const displayedId = generatedId();
+            renderFieldRow(lines, undefined, "Generated ID", displayedId ?? "Enter a name to generate", width, "Generated from Name · existing IDs are preserved while editing", { dim: !displayedId });
             renderSingleLineField(lines, "description", "Description", editors.description, width, "Optional longer explanation");
             if (currentType() === "Built-in preset template" || currentType() === "Custom regex") {
               renderSingleLineField(lines, "pattern", "Pattern", editors.pattern, width, "JavaScript regex without /.../ · e.g. \\btoken_[A-Za-z0-9]{24}\\b");
@@ -2109,7 +2214,7 @@ export default async function (pi: ExtensionAPI) {
               renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
               if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             } else {
-              renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Stored in plaintext in the config");
+              renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
               renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
               if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             }
@@ -2118,7 +2223,9 @@ export default async function (pi: ExtensionAPI) {
             lines.push(editorDivider);
             renderActiveFieldDescription(lines, width);
           } else {
-            lines.push(theme.fg("dim", "Edit the complete rule object as multiline JSON"));
+            lines.push(editorFocused
+              ? "Edit the complete rule object as multiline JSON"
+              : theme.fg("dim", "Edit the complete rule object as multiline JSON"));
             renderMultilineEditor(lines, "json", editors.json, width);
           }
           lines.push("");
@@ -2126,16 +2233,16 @@ export default async function (pi: ExtensionAPI) {
             ? theme.fg("accent", theme.bold("TEST THIS RULE · focused"))
             : theme.fg("muted", "TEST THIS RULE · Tab to focus"));
           renderMultilineEditor(lines, "test", editors.test, width);
-          const preview = previewCandidateRule(editors.test.getExpandedText(), draft.text);
+          const preview = builderPreview(draft);
           const status = preview.count > 0 ? `${preview.count} value(s) masked` : preview.attribution;
           lines.push(theme.fg(preview.count > 0 ? "accent" : "muted", `Preview: ${status}`));
           for (const line of preview.text.split("\n").slice(0, 2)) if (line) lines.push(line);
           if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
-          for (const warning of preview.warnings.slice(0, 3)) {
-            lines.push(...wrappedMaskingText(theme.fg("warning", `Warning: ${warning}`), width));
-          }
           if (saveMessage) {
             lines.push(...wrappedMaskingText(theme.fg(saveMessage.startsWith("Cannot") ? "warning" : "accent", saveMessage), width));
+          }
+          for (const warning of saveWarnings.slice(0, 3)) {
+            lines.push(...wrappedMaskingText(theme.fg("warning", `Warning: ${warning}`), width));
           }
           lines.push("");
           lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓ fields · Tab form/test · ←→ or Space change selection · F2 form/JSON · Enter save · Esc cancel"), width));
@@ -2168,6 +2275,7 @@ export default async function (pi: ExtensionAPI) {
             return;
           }
           if (matchesKey(data, Key.f2)) {
+            testAutoManaged = false;
             if (mode === "form") {
               editors.json.setText(JSON.stringify(draftFromForm(), null, 2));
               mode = "json";
@@ -2219,6 +2327,7 @@ export default async function (pi: ExtensionAPI) {
               return;
             }
             saveMessage = "";
+            saveWarnings = [];
             warningSignature = "";
             tui.requestRender();
             return;

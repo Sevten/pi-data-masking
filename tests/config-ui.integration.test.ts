@@ -301,6 +301,7 @@ test("F2 opens existing and new rules directly in JSON mode", async () => {
       assert.ok(lines.some((line) => line.includes("New masking rule · Rule Builder")));
       assert.ok(lines.some((line) => line.includes("global · exact · Advanced JSON")));
       assert.ok(lines.some((line) => line.includes("RULE JSON · focused")));
+      assert.equal(lines.some((line) => line.includes('"id"')), false, "new JSON drafts should not expose a fake default ID");
       component.handleInput(INPUT.escape);
     },
   ]);
@@ -405,15 +406,56 @@ test("adding a rule keeps the type picker and builder on clean full-screen pages
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.enter);
     },
-    async (component) => {
+    async (component, styleCalls) => {
       assertFullScreen(component, "New masking rule");
-      assert.ok(component.render(100).some((line) => line.includes("global · exact · Structured fields")));
-      component.handleInput(INPUT.tab);
+      const initialBuilder = component.render(100);
+      assert.ok(initialBuilder.some((line) => line.includes("global · exact · Structured fields")));
+      assert.ok(initialBuilder.some((line) => line.includes("▶ Name")), "new structured rules should focus Name first");
+      assert.ok(initialBuilder.some((line) => line.includes("Generated ID") && line.includes("Enter a name to generate")), "ID should explain how it is generated");
+      assert.ok(initialBuilder.some((line) => line.includes("Preview: Enter an exact value to preview")));
+      assert.equal(initialBuilder.some((line) => line.includes("Warning:") || line.includes("Rule [rule]")), false);
+      styleCalls.length = 0;
+      component.render(100);
+      assert.ok(styleCalls.some((call) => call.color === "accent" && call.text.includes("▶ Name")), "the active field should keep accent styling");
+      assert.equal(styleCalls.some((call) => call.text.includes("Rule type") || call.text.includes("Scope")), false, "other fields in the focused editor should use the default white foreground");
+      assert.equal(styleCalls.some((call) => call.text.includes("Human-readable label for this rule")), false, "the active field description should use the default white foreground");
+      assert.ok(styleCalls.some((call) => call.color === "dim" && call.text.includes("Enter a name to generate")), "the missing ID hint should remain gray");
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.down);
       for (const character of "preview-value") component.handleInput(character);
+      const syncedPreview = component.render(100);
+      assert.ok(
+        syncedPreview.some((line) => line.includes("Preview: 1 value(s) masked")),
+        `exact value should sync into the test area:\n${syncedPreview.join("\n")}`,
+      );
+      assert.equal(syncedPreview.some((line) => line.includes("Warning:") || line.includes("Rule [")), false);
+      component.handleInput(INPUT.enter);
+      const saveValidation = component.render(100);
+      assert.ok(saveValidation.some((line) => line.includes("Cannot save: enter a rule name")));
+      assert.ok(saveValidation.some((line) => line.includes("▶ Name")), "save validation should focus the missing field");
+      assert.equal(saveValidation.some((line) => line.includes("Rule [")), false);
+      for (const character of "Preview rule") component.handleInput(character);
+      assert.ok(component.render(100).some((line) => line.includes("Generated ID") && line.includes("preview-rule")));
+      component.handleInput(INPUT.tab);
+      styleCalls.length = 0;
       const previewLines = component.render(100);
-      assert.ok(previewLines.includes("preview-value"), "rule preview text should be left-aligned");
-      assert.equal(previewLines.includes("  preview-value"), false);
+      const unfocusedFieldRows = styleCalls.filter((call) => /^  (?:Rule type|Scope|Name|Generated ID|Description|Exact value|Replacement)\b/.test(call.text));
+      assert.equal(unfocusedFieldRows.length, 7);
+      assert.ok(unfocusedFieldRows.every((call) => call.color === "dim"), "the entire field area should turn gray when Test is focused");
+      assert.ok(styleCalls.some((call) => call.color === "dim" && call.text.includes("Human-readable label for this rule")), "the field description should turn gray with the field area");
+      assert.ok(previewLines.some((line) => line.startsWith("preview-value")), "rule preview text should be left-aligned");
+      assert.equal(previewLines.some((line) => line.startsWith("  preview-value")), false);
+      for (const character of " custom context") component.handleInput(character);
+      component.handleInput(INPUT.tab);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.down);
+      component.handleInput("2");
+      const detachedPreview = component.render(100);
+      assert.ok(detachedPreview.some((line) => line.startsWith("preview-value custom context")), "manual test input should stop exact-value synchronization");
+      assert.ok(detachedPreview.some((line) => line.includes("Preview: No values matched")));
       component.handleInput(INPUT.escape);
+      assert.ok(component.render(100).some((line) => line.includes("Discard unsaved changes?")));
+      component.handleInput(INPUT.enter);
     },
   ]);
 
