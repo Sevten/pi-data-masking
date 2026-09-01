@@ -259,7 +259,14 @@ export function diffText(original: string, masked: string): DiffSegment[] {
       const fragment = before.slice(start, start + 6);
       if (fragment.length < 3) break;
       const found = after.indexOf(fragment);
-      if (found >= 0 && isContextAnchor(before, start) && isContextAnchor(after, found)) {
+      // Prefix rewinding can leave the same shared fragment at offset zero in
+      // both strings. Accepting that (0, 0) anchor would slice away nothing
+      // and repeat this loop forever, so every anchor must advance at least
+      // one side of the comparison.
+      if (
+        found >= 0 && (start > 0 || found > 0) &&
+        isContextAnchor(before, start) && isContextAnchor(after, found)
+      ) {
         anchorOriginal = start;
         anchorMasked = found;
         break;

@@ -47,6 +47,21 @@ test("text diff does not split a replacement at its shared word suffix", () => {
   );
 });
 
+test("text diff advances after rewinding a shared prefix to the word start", () => {
+  assert.deepEqual(
+    diffText("abcdefX", "abcdefY"),
+    [{ original: "abcdefX", masked: "abcdefY", changed: true }],
+  );
+  assert.deepEqual(
+    diffText("value=abcdefX; keep=this", "value=abcdefY; keep=this"),
+    [
+      { original: "value=", masked: "value=", changed: false },
+      { original: "abcdefX", masked: "abcdefY", changed: true },
+      { original: "; keep=this", masked: "; keep=this", changed: false },
+    ],
+  );
+});
+
 test("text diff excludes short shared closing delimiters from a replacement", () => {
   assert.deepEqual(
     diffText("`wsl90.top`", "`test.xyz`"),
