@@ -180,7 +180,7 @@ function configuredRuleDisplayName(configured: ConfiguredMaskingRule): string {
     || configured.rule.id;
 }
 
-function configuredRuleDetail(configured: ConfiguredMaskingRule, revealValue: boolean): string[] {
+function configuredRuleDetail(configured: ConfiguredMaskingRule, showExactValues: boolean): string[] {
   const rule = configured.rule;
   const lines = [
     `Description: ${rule.description?.trim() || "—"}`,
@@ -194,25 +194,21 @@ function configuredRuleDetail(configured: ConfiguredMaskingRule, revealValue: bo
     if (configured.realFromEnv) {
       lines.push(`Environment: ${configured.realFromEnv} · ${configured.available ? "available" : "missing or empty"}`);
       if (configured.available) {
-        lines.push(revealValue
-          ? `Resolved value: ${JSON.stringify(rule.real)}`
-          : "Resolved value: <hidden> · R to reveal");
+        lines.push("Resolved value: <hidden>");
       }
     } else {
-      lines.push(revealValue
+      lines.push(showExactValues
         ? `Exact value: ${JSON.stringify(rule.real)}`
-        : "Exact value: <hidden> · R to reveal");
+        : "Exact value: <hidden> · R to show");
     }
     if (configured.placeholderMode === "custom") {
-      lines.push(`Placeholder: ${rule.placeholder} · custom, stable across sessions`);
+      lines.push(`Placeholder: ${rule.placeholder} · custom`);
     } else if (configured.enabled && configured.available && rule.placeholder && rule.placeholder !== "auto") {
-      lines.push(`Placeholder: ${rule.placeholder} · auto, current session`);
+      lines.push(`Placeholder: ${rule.placeholder} · automatic`);
     } else {
-      lines.push("Placeholder: automatic · generated when the rule becomes active");
+      lines.push("Placeholder: automatic");
     }
   }
-  lines.push(`Scope: ${configured.scope}`);
-  lines.push(`Source: ${configured.path}`);
   return lines;
 }
 
@@ -1534,7 +1530,7 @@ export default async function (pi: ExtensionAPI) {
           const previewStatus = preview.count > 0 ? `${preview.count} value(s) masked` : preview.attribution;
           lines.push(theme.fg(preview.count > 0 ? "accent" : "muted", `Preview: ${previewStatus}`));
           if (preview.text) {
-            for (const line of preview.text.split("\n").slice(0, 3)) lines.push(`  ${line}`);
+            for (const line of preview.text.split("\n").slice(0, 3)) lines.push(line);
           }
           if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
           for (const warning of preview.warnings.slice(0, 2)) {
@@ -1570,6 +1566,7 @@ export default async function (pi: ExtensionAPI) {
   async function addConfigRule(
     ctx: ExtensionContext,
     editing?: { configured: ConfiguredMaskingRule; original: RawConfigRule; initial: RawConfigRule },
+    options: { initialMode?: "form" | "json" } = {},
   ): Promise<void> {
     const projectPath = getProjectConfigPath(ctx.cwd);
     const sources: Array<{ scope: ConfigScope; path: string; label: string }> = [
@@ -1595,7 +1592,7 @@ export default async function (pi: ExtensionAPI) {
     type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
     type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "env" | "real" | "replacement" | "placeholder" | "json" | "test";
     const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
-    let selectedSource: (typeof sources)[number] = sources[0]!;
+    let selectedSource: (typeof sources)[number] = sources.find((source) => source.scope === "global")!;
     let selectedType: BuilderType | undefined;
     if (editing) {
       selectedSource = sources.find((source) => source.path === editing.configured.path) ?? sources[0];
@@ -1604,8 +1601,9 @@ export default async function (pi: ExtensionAPI) {
         : typeof editing.initial.realFromEnv === "string"
           ? "Literal from environment"
           : "Exact literal value";
+    } else if (options.initialMode === "json") {
+      selectedType = "Exact literal value";
     } else {
-      selectedSource = sources.find((source) => existsSync(source.path)) ?? sources[0];
       const selectedTypeOption = await selectMaskingOption(ctx, "Rule type", builderTypes);
       if (!selectedTypeOption) return;
       selectedType = selectedTypeOption as BuilderType;
@@ -1723,7 +1721,7 @@ export default async function (pi: ExtensionAPI) {
       let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
       let focusIndex = 0;
       let lastFormField: BuilderField = "type";
-      let mode: "form" | "json" = "form";
+      let mode: "form" | "json" = options.initialMode ?? "form";
       let explicitId: string | undefined = editing && typeof editing.initial.id === "string" ? editing.initial.id : undefined;
       let advancedFields: RawConfigRule = editing ? { ...editing.initial } : {};
       const editors = {
@@ -1886,6 +1884,10 @@ export default async function (pi: ExtensionAPI) {
         } catch (err) {
           return { text, error: (err as Error).message };
         }
+      }
+
+      if (mode === "json") {
+        editors.json.setText(JSON.stringify(editing?.initial ?? draftFromForm(), null, 2));
       }
 
       const draftSignature = (): string => {
@@ -2127,7 +2129,7 @@ export default async function (pi: ExtensionAPI) {
           const preview = previewCandidateRule(editors.test.getExpandedText(), draft.text);
           const status = preview.count > 0 ? `${preview.count} value(s) masked` : preview.attribution;
           lines.push(theme.fg(preview.count > 0 ? "accent" : "muted", `Preview: ${status}`));
-          for (const line of preview.text.split("\n").slice(0, 2)) if (line) lines.push(`  ${line}`);
+          for (const line of preview.text.split("\n").slice(0, 2)) if (line) lines.push(line);
           if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
           for (const warning of preview.warnings.slice(0, 3)) {
             lines.push(...wrappedMaskingText(theme.fg("warning", `Warning: ${warning}`), width));
@@ -2256,7 +2258,11 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
-  async function editConfigRule(ctx: ExtensionContext, configured: ConfiguredMaskingRule): Promise<void> {
+  async function editConfigRule(
+    ctx: ExtensionContext,
+    configured: ConfiguredMaskingRule,
+    initialMode: "form" | "json" = "form",
+  ): Promise<void> {
     try {
       const data = await readRawConfigFile(configured.path);
       const original = data.rules[configured.sourceIndex];
@@ -2264,7 +2270,7 @@ export default async function (pi: ExtensionAPI) {
         throw new Error("source position changed; reopen /masking");
       }
       const initial = configured.sourceKind === "preset" ? { ...configured.rule } : { ...original };
-      await addConfigRule(ctx, { configured, original, initial });
+      await addConfigRule(ctx, { configured, original, initial }, { initialMode });
     } catch (err) {
       ctx.ui.notify(`Failed to edit rule: ${(err as Error).message}`, "error");
     }
@@ -2304,6 +2310,10 @@ export default async function (pi: ExtensionAPI) {
           "\\b is a word boundary; [A-Za-z0-9] is one allowed character; {36} repeats it exactly 36 times.",
           "Optional flags include i (case-insensitive), m (multiline), and s (dot matches newline); g is automatic.",
           "Without capture groups the whole match is masked; with groups, only captured portions are masked.");
+        section("Keyboard shortcuts",
+          "↑/↓ select · PgUp/PgDn page · Home/End first/add · Enter edit/add · F2 JSON · Space rule on/off · M global masking on/off",
+          "R show/hide exact values · F filter · / search · Ctrl+↑/↓ reorder · A add · D/Delete remove",
+          "Tab test area · B batch · I import · X export · H/Enter/Esc close help");
         lines.push(...wrappedMaskingText(theme.fg("muted", "Rules run from top to bottom. Prefer narrow patterns and use the embedded test area before relying on them."), width));
         lines.push("");
         lines.push(...wrappedMaskingText(theme.fg("dim", "Enter / Esc / H close help"), width));
@@ -2445,18 +2455,20 @@ export default async function (pi: ExtensionAPI) {
     let filterIndex = 0;
     let searchQuery = "";
     let selectedRuleKey: string | undefined;
-    let revealedRuleKey: string | undefined;
+    let showExactValues = true;
     let homeTestText = "";
     let homeFocus: "rules" | "test" = "rules";
     type ScreenAction =
       | { kind: "batch"; changes: RuleEnabledChange[] }
-      | { kind: "edit"; rule: ConfiguredMaskingRule }
+      | { kind: "edit"; rule: ConfiguredMaskingRule; initialMode?: "form" | "json" }
       | { kind: "delete"; rule: ConfiguredMaskingRule }
-      | { kind: "add" | "import" | "export" | "help" };
+      | { kind: "add"; initialMode?: "form" | "json" }
+      | { kind: "import" | "export" | "help" };
     await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
       let screenRules = config.configuredRules;
       let selectedIndex = 0;
       let scrollOffset = 0;
+      let rulePageSize = 1;
       let searchMode = false;
       let mutationInProgress = false;
       let mutationMessage = "";
@@ -2613,9 +2625,9 @@ export default async function (pi: ExtensionAPI) {
         tui.requestRender();
         try {
           if (action.kind === "batch") await applyBatchRuleState(ctx, action.changes);
-          else if (action.kind === "edit") await editConfigRule(ctx, action.rule);
+          else if (action.kind === "edit") await editConfigRule(ctx, action.rule, action.initialMode);
           else if (action.kind === "delete") await deleteConfigRule(ctx, action.rule);
-          else if (action.kind === "add") await addConfigRule(ctx);
+          else if (action.kind === "add") await addConfigRule(ctx, undefined, { initialMode: action.initialMode });
           else if (action.kind === "help") await showRuleConfigurationHelp(ctx);
           else if (action.kind === "import") await importConfigRules(ctx);
           else await exportConfigRules(ctx);
@@ -2635,10 +2647,7 @@ export default async function (pi: ExtensionAPI) {
           const maskingEnabled = desiredConfig.enabled;
           const maskingActivationPending = pendingConfigActivation !== null && desiredConfig.enabled !== config.enabled;
           const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
-          const browseHints = [
-            ...wrappedMaskingText(theme.fg("dim", "↑↓ browse · Space rule on/off · M global masking on/off · Enter edit/add · A add · D / Delete remove · Ctrl+↑↓ reorder"), width),
-            ...wrappedMaskingText(theme.fg("dim", "Tab switch area · R reveal value · F filter · / search · B batch · H help · I import · X export · Esc close"), width),
-          ];
+          const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab test · M masking · H help · Esc close`), width);
           const globalState = `GLOBAL MASKING [${maskingEnabled ? "ON" : "OFF"}] · M turn ${maskingEnabled ? "off" : "on"} · saved across projects and future sessions${maskingActivationPending ? " · activates next run" : ""}`;
           const lines: string[] = [
             theme.fg("accent", theme.bold(`Masking configuration${mutationMessage ? ` · ${mutationMessage}` : ""}`)),
@@ -2665,15 +2674,18 @@ export default async function (pi: ExtensionAPI) {
           } else {
             const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
             lines.push(theme.fg("dim", truncateToWidth(header, Math.max(1, width))));
-            const reservedRows = 23 + browseHints.length;
+            const reservedRows = 21 + browseHints.length;
             const rowCount = visibleRulesNow.length + 1;
             const listHeight = Math.max(3, Math.min(rowCount, tui.terminal.rows - reservedRows));
+            rulePageSize = listHeight;
             keepSelectedVisible(listHeight, rowCount);
             const endIndex = Math.min(rowCount, scrollOffset + listHeight);
             for (let absoluteIndex = scrollOffset; absoluteIndex < endIndex; absoluteIndex++) {
               if (absoluteIndex === visibleRulesNow.length) {
                 const addRow = `${absoluteIndex === selectedIndex ? "▶" : " "} ＋ Add new rule`;
-                lines.push(absoluteIndex === selectedIndex ? theme.fg("accent", addRow) : theme.fg("muted", addRow));
+                lines.push(homeFocus !== "rules"
+                  ? theme.fg("dim", addRow)
+                  : absoluteIndex === selectedIndex ? theme.fg("accent", addRow) : theme.fg("muted", addRow));
                 continue;
               }
               const configured = visibleRulesNow[absoluteIndex]!;
@@ -2686,9 +2698,11 @@ export default async function (pi: ExtensionAPI) {
               const displayName = configuredRuleDisplayName(configured);
               const text = `${cursor} [${state}] ${String(priority).padStart(5)}  ${configured.scope.padEnd(7)}  ${configuredRuleKind(configured).padEnd(7)}  ${displayName}`;
               const clipped = truncateToWidth(text, Math.max(1, width));
-              lines.push(absoluteIndex === selectedIndex
-                ? theme.fg("accent", clipped)
-                : enabled ? clipped : theme.fg("dim", clipped));
+              lines.push(homeFocus !== "rules"
+                ? theme.fg("dim", clipped)
+                : absoluteIndex === selectedIndex
+                  ? theme.fg("accent", clipped)
+                  : enabled ? clipped : theme.fg("dim", clipped));
             }
 
           }
@@ -2697,18 +2711,15 @@ export default async function (pi: ExtensionAPI) {
           if (screenRules.length > 0 && visibleRulesNow.length > 0) {
             // Keep details outside the list dividers and reserve a fixed block
             // so exact/env/regex/preset rows never move the test panel.
-            const detailRowCount = 6;
+            const detailRowCount = 4;
             const selected = visibleRulesNow[selectedIndex];
             const details = selected
-              ? configuredRuleDetail(
-                  selected,
-                  revealedRuleKey === configuredRuleStableKey(selected),
-                )
+              ? configuredRuleDetail(selected, showExactValues)
               : [];
             for (let index = 0; index < detailRowCount; index++) {
               const detail = details[index];
               lines.push(detail
-                ? truncateToWidth(theme.fg("muted", detail), Math.max(1, width))
+                ? truncateToWidth(homeFocus === "rules" ? detail : theme.fg("dim", detail), Math.max(1, width))
                 : "");
             }
           }
@@ -2730,7 +2741,7 @@ export default async function (pi: ExtensionAPI) {
               const status = preview.count > 0 ? `${preview.count} value(s) masked` : preview.attribution;
               lines.push(theme.fg(preview.count > 0 ? "accent" : "muted", `Preview: ${status}`));
               for (const line of preview.text.split("\n").slice(0, 2)) {
-                if (line) lines.push(`  ${line}`);
+                if (line) lines.push(line);
               }
               if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
             } else {
@@ -2786,6 +2797,12 @@ export default async function (pi: ExtensionAPI) {
 
           const visible = visibleRules();
           const selected = visible[selectedIndex];
+          if (matchesKey(data, Key.f2)) {
+            void runScreenAction(selected
+              ? { kind: "edit", rule: selected, initialMode: "json" }
+              : { kind: "add", initialMode: "json" });
+            return;
+          }
           if (matchesKey(data, Key.ctrl(Key.up)) && selected) {
             void moveRuleInPlace(selected, -1);
             return;
@@ -2796,13 +2813,31 @@ export default async function (pi: ExtensionAPI) {
           }
           if (keybindings.matches(data, "tui.select.up")) {
             selectedIndex = Math.max(0, selectedIndex - 1);
-            revealedRuleKey = undefined;
             refresh();
             return;
           }
           if (keybindings.matches(data, "tui.select.down")) {
             selectedIndex = Math.min(visible.length, selectedIndex + 1);
-            revealedRuleKey = undefined;
+            refresh();
+            return;
+          }
+          if (keybindings.matches(data, "tui.select.pageUp")) {
+            selectedIndex = Math.max(0, selectedIndex - rulePageSize);
+            refresh();
+            return;
+          }
+          if (keybindings.matches(data, "tui.select.pageDown")) {
+            selectedIndex = Math.min(visible.length, selectedIndex + rulePageSize);
+            refresh();
+            return;
+          }
+          if (matchesKey(data, Key.home)) {
+            selectedIndex = 0;
+            refresh();
+            return;
+          }
+          if (matchesKey(data, Key.end)) {
+            selectedIndex = visible.length;
             refresh();
             return;
           }
@@ -2825,9 +2860,8 @@ export default async function (pi: ExtensionAPI) {
             return;
           }
           if (matchesKey(data, "a")) return void runScreenAction({ kind: "add" });
-          if (matchesKey(data, "r") && selected && configuredRuleKind(selected) !== "regex") {
-            const key = configuredRuleStableKey(selected);
-            revealedRuleKey = revealedRuleKey === key ? undefined : key;
+          if (matchesKey(data, "r")) {
+            showExactValues = !showExactValues;
             refresh();
             return;
           }

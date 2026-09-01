@@ -10,7 +10,8 @@ type Component = {
   handleInput(data: string): void;
 };
 
-type Scenario = (component: Component) => Promise<void>;
+type StyleCall = { color: string; text: string };
+type Scenario = (component: Component, styleCalls: StyleCall[]) => Promise<void>;
 
 const TEST_AGENT_DIR = mkdtempSync(join(tmpdir(), "masking-ui-agent-"));
 process.env.PI_CODING_AGENT_DIR = TEST_AGENT_DIR;
@@ -23,6 +24,12 @@ const INPUT = {
   down: "\x1b[B",
   ctrlDown: "\x1b[1;5B",
   ctrlC: "\x03",
+  f2: "\x1bOQ",
+  pageUp: "\x1b[5~",
+  pageDown: "\x1b[6~",
+  home: "\x1b[H",
+  end: "\x1b[F",
+  tab: "\t",
 } as const;
 
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -45,6 +52,7 @@ async function createHarness(cwd: string, scenarios: Scenario[]) {
   const events = new Map<string, Array<(event: unknown, ctx: unknown) => Promise<void> | void>>();
   const notifications: string[] = [];
   const statuses: string[] = [];
+  const styleCalls: StyleCall[] = [];
   const pi = {
     on(name: string, handler: (event: unknown, ctx: unknown) => Promise<void> | void) {
       const handlers = events.get(name) ?? [];
@@ -57,12 +65,17 @@ async function createHarness(cwd: string, scenarios: Scenario[]) {
     appendEntry() {},
   };
   const theme = {
-    fg: (_color: string, text: string) => text,
+    fg: (color: string, text: string) => {
+      styleCalls.push({ color, text });
+      return text;
+    },
     bold: (text: string) => text,
   };
   const actionKeys: Record<string, string> = {
     "tui.select.up": "\x1b[A",
     "tui.select.down": INPUT.down,
+    "tui.select.pageUp": INPUT.pageUp,
+    "tui.select.pageDown": INPUT.pageDown,
     "tui.select.confirm": INPUT.enter,
     "tui.select.cancel": INPUT.escape,
     "app.interrupt": INPUT.ctrlC,
@@ -81,7 +94,7 @@ async function createHarness(cwd: string, scenarios: Scenario[]) {
       assert.ok(scenario, "unexpected TUI screen");
       return new Promise<T>((resolve, reject) => {
         const component = factory(tui, theme, keybindings, resolve);
-        void scenario(component).catch(reject);
+        void scenario(component, styleCalls).catch(reject);
       });
     },
   };
@@ -101,6 +114,7 @@ async function createHarness(cwd: string, scenarios: Scenario[]) {
     ctx,
     notifications,
     statuses,
+    styleCalls,
     async emit(name: string, event: unknown): Promise<unknown> {
       let result: unknown;
       for (const handler of events.get(name) ?? []) {
@@ -151,29 +165,65 @@ test("configuration home toggles and reorders in place while retaining selection
   const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
   mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
   writeFileSync(projectPath, JSON.stringify({ rules: [
-    { id: "first", name: "First rule", real: "first-secret-value" },
+    { id: "first", name: "First rule", real: "first-secret-value", placeholder: "masked-first-value" },
     { id: "second", name: "Second rule", real: "second-secret-value" },
   ] }));
 
-  const harness = await createHarness(dir, [async (component) => {
+  const harness = await createHarness(dir, [async (component, styleCalls) => {
     assert.ok(component.render(100).some((line) => line.includes("STATE") && line.includes("ORDER") && line.includes("NAME")));
     const narrowLines = component.render(42);
     const narrow = narrowLines.join("\n");
     assert.ok(narrowLines.every((line) => visibleWidth(line) <= 42));
-    assert.match(narrow, /Space rule on\/off/);
-    assert.match(narrow, /M global\nmasking on\/off/);
-    assert.match(narrow, /Ctrl\+↑↓ reorder/);
-    assert.match(narrow, /I\s+import/);
-    assert.match(narrow, /X export/);
-    assert.match(narrow, /Esc close/);
+    assert.match(narrow, /Space on\/off/);
+    assert.match(narrow, /M masking/);
+    assert.doesNotMatch(narrow, /↑↓.*browse/);
+    assert.match(narrow, /F2 JSON/);
+    assert.match(narrow, /\/\s+search/);
+    assert.match(narrow, /R hide values/);
+    assert.doesNotMatch(narrow, /I\s+import/);
+    assert.doesNotMatch(narrow, /X export/);
+    assert.match(narrow, /Esc\s+close/);
     assert.ok(component.render(100).some((line) => line.includes("GLOBAL MASKING [ON]")));
+    const focusedDetails = component.render(100);
+    assert.ok(focusedDetails.includes("Description: —"));
+    assert.ok(focusedDetails.includes('Exact value: "first-secret-value"'));
+    assert.ok(focusedDetails.includes("Placeholder: masked-first-value · custom"));
+    assert.equal(focusedDetails.some((line) => line.includes("stable across sessions")), false);
+    assert.equal(focusedDetails.some((line) => line.startsWith("Scope:")), false);
+    assert.equal(focusedDetails.some((line) => line.startsWith("Source:")), false);
+    styleCalls.length = 0;
+    component.render(100);
+    assert.equal(styleCalls.some((call) => call.text.startsWith("Description:")), false);
+    assert.equal(styleCalls.some((call) => call.text.startsWith("Exact value:")), false);
+    component.handleInput("r");
+    assert.ok(component.render(100).includes("Exact value: <hidden> · R to show"));
+    assert.ok(component.render(100).some((line) => line.includes("R show values")));
+    component.handleInput(INPUT.pageDown);
+    assert.ok(component.render(100).some((line) => line.startsWith("▶ ＋ Add new rule")));
+    component.handleInput(INPUT.pageUp);
+    assert.ok(component.render(100).some((line) => line.startsWith("›") && line.includes("First rule")));
+    assert.ok(component.render(100).includes("Exact value: <hidden> · R to show"));
+    component.handleInput(INPUT.end);
+    assert.ok(component.render(100).some((line) => line.startsWith("▶ ＋ Add new rule")));
+    component.handleInput(INPUT.home);
+    assert.ok(component.render(100).some((line) => line.startsWith("›") && line.includes("First rule")));
+    component.handleInput("r");
+    assert.ok(component.render(100).includes('Exact value: "first-secret-value"'));
     component.handleInput("M");
     await waitFor(() => component.render(100).some((line) => line.includes("GLOBAL MASKING [OFF]")));
     component.handleInput("m");
     await waitFor(() => component.render(100).some((line) => line.includes("GLOBAL MASKING [ON]")));
-    component.handleInput("\t");
+    component.handleInput(INPUT.tab);
     assert.ok(component.render(100).some((line) => line.includes("TEST ACTIVE RULES · focused")));
-    component.handleInput("\t");
+    styleCalls.length = 0;
+    component.render(100);
+    const unfocusedRuleRows = styleCalls.filter((call) => /\[\s*(?:ON|OFF|WAIT)\s*\].*(?:First|Second) rule/.test(call.text));
+    assert.equal(unfocusedRuleRows.length, 2);
+    assert.ok(unfocusedRuleRows.every((call) => call.color === "dim"));
+    const unfocusedDetails = styleCalls.filter((call) => /^(?:Description|Exact value|Placeholder):/.test(call.text));
+    assert.equal(unfocusedDetails.length, 3);
+    assert.ok(unfocusedDetails.every((call) => call.color === "dim"));
+    component.handleInput(INPUT.tab);
     assert.ok(component.render(100).some((line) => line.includes("RULES · focused")));
     component.handleInput(INPUT.space);
     await waitFor(() => configRules(projectPath)[0]?.enabled === false);
@@ -212,6 +262,52 @@ test("configuration home toggles and reorders in place while retaining selection
     } finally {
       await restarted.shutdown();
     }
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("F2 opens existing and new rules directly in JSON mode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(projectPath, JSON.stringify({ rules: [
+    { id: "json-rule", name: "JSON rule", real: "json-secret-value" },
+  ] }));
+
+  const harness = await createHarness(dir, [
+    async (component) => {
+      component.render(100);
+      component.handleInput(INPUT.f2);
+      await waitFor(() => !component.render(100)[0]?.includes("Opening"));
+
+      component.handleInput(INPUT.pageDown);
+      assert.ok(component.render(100).some((line) => line.startsWith("▶ ＋ Add new rule")));
+      component.handleInput(INPUT.f2);
+      await waitFor(() => !component.render(100)[0]?.includes("Opening"));
+      component.handleInput(INPUT.escape);
+    },
+    async (component) => {
+      const lines = component.render(100);
+      assert.ok(lines.some((line) => line.includes("Edit masking rule · Rule Builder")));
+      assert.ok(lines.some((line) => line.includes("project · exact · Advanced JSON")));
+      assert.ok(lines.some((line) => line.includes("RULE JSON · focused")));
+      assert.ok(lines.some((line) => line.includes("json-rule")));
+      component.handleInput(INPUT.escape);
+    },
+    async (component) => {
+      const lines = component.render(100);
+      assert.ok(lines.some((line) => line.includes("New masking rule · Rule Builder")));
+      assert.ok(lines.some((line) => line.includes("global · exact · Advanced JSON")));
+      assert.ok(lines.some((line) => line.includes("RULE JSON · focused")));
+      component.handleInput(INPUT.escape);
+    },
+  ]);
+
+  try {
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    assert.equal(configRules(projectPath).length, 1);
   } finally {
     await harness.shutdown();
     rmSync(dir, { recursive: true, force: true });
@@ -311,6 +407,12 @@ test("adding a rule keeps the type picker and builder on clean full-screen pages
     },
     async (component) => {
       assertFullScreen(component, "New masking rule");
+      assert.ok(component.render(100).some((line) => line.includes("global · exact · Structured fields")));
+      component.handleInput(INPUT.tab);
+      for (const character of "preview-value") component.handleInput(character);
+      const previewLines = component.render(100);
+      assert.ok(previewLines.includes("preview-value"), "rule preview text should be left-aligned");
+      assert.equal(previewLines.includes("  preview-value"), false);
       component.handleInput(INPUT.escape);
     },
   ]);

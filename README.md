@@ -36,7 +36,7 @@ user/tool data → mask → LLM → restore tool arguments → tool uses real da
 pi install npm:@sevten/pi-data-masking
 ```
 
-Start Pi and open `/masking`. Select `＋ Add new rule`, choose project or global scope, test the rule in the same screen, and save it.
+Start Pi and open `/masking`. Select `＋ Add new rule`, choose project or global scope (global is the default), test the rule in the same screen, and save it.
 
 | Scope | Configuration path |
 |---|---|
@@ -146,11 +146,13 @@ Regex diagnostics are advisory. Keep patterns narrow and test representative pos
 |---|---|
 | `M` | Toggle global masking |
 | `Space` | Toggle the selected rule |
-| `Enter` / `A` | Edit the selection or add a rule |
+| `↑/↓` / `PgUp/PgDn` / `Home/End` | Browse rules by row or page, or jump to the first rule/Add row |
+| `Enter` / `A` | Edit the selection or add a rule with structured fields |
+| `F2` | Edit the selected rule as JSON, or start a new JSON rule draft |
 | `Ctrl+↑/↓` | Reorder the selected rule |
 | `D` / `Delete` | Remove the selected rule |
 | `Tab` | Focus the local test area |
-| `R` | Reveal the selected literal value |
+| `R` | Show or hide exact literal values (shown by default) |
 | `F` / `/` | Filter or search rules |
 | `B` / `I` / `X` | Batch edit, import, or redacted export |
 | `H` | Open help |
