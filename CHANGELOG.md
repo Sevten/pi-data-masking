@@ -6,12 +6,26 @@ The entries before 0.4.0 were reconstructed from the Git history and existing ta
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-01
+
 ### Added
 
 - Warn when an exact literal or custom placeholder equals a bundled common
   semantic term, with separate acknowledgements for input-side ambiguity and
   accidental tool-argument restoration; generated placeholders avoid the same
   high-risk term list.
+
+### Changed
+
+- Improve the `/masking` configuration home with faster rule navigation, direct
+  JSON editing, sensitive-value visibility controls, and clearer compact layouts.
+- Streamline rule creation with global scope by default, generated IDs, immediate
+  test previews, and validation when saving.
+
+### Fixed
+
+- Prevent history comparisons from repeatedly rewinding a shared prefix to the
+  start of a word without making progress.
 
 ## [0.6.1] - 2026-08-29
 
