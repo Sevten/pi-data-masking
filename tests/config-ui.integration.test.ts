@@ -248,6 +248,7 @@ test("history-changing saves confirm inside configuration UI before writing", as
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.space);
       await waitFor(() => configRules(projectPath)[1]?.enabled === false);
+      await waitFor(() => component.render(100)[0]?.includes("Disabled ·") === true);
       component.handleInput(INPUT.escape);
     },
     async (component) => {
