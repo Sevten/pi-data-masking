@@ -132,6 +132,7 @@ import {
   createEpochTranscriptState,
   markEpochBatchPersisted,
   mergeEpochFacts,
+  mergeEpochPendingAssistant,
   mergeEpochPrefixObservation,
   restoreEpochTranscripts,
   type EpochFactObservation,
@@ -695,6 +696,15 @@ export default async function (pi: ExtensionAPI) {
     // preserve reuse. Actionable warnings belong to the save/reload preflight.
     const { batch } = mergeEpochPrefixObservation(state, observation);
     persistEpochTranscriptBatch(ctx, state, batch);
+  }
+
+  /** Provisional, in-memory only; the next context observation confirms it. */
+  function observeEpochPendingAssistant(
+    original: Record<string, unknown>,
+    masked: Record<string, unknown>,
+  ): void {
+    if (!activeRuleEpoch) return;
+    mergeEpochPendingAssistant(ensureEpochTranscript(activeRuleEpoch), original, masked);
   }
 
   function epochObservations(
@@ -1329,11 +1339,9 @@ export default async function (pi: ExtensionAPI) {
     if (event.message.role !== "assistant") return;
 
     if (!config.enabled || config.rules.length === 0) {
-      transcript = mergePendingAssistant(
-        transcript,
-        event.message as unknown as Record<string, unknown>,
-        event.message as unknown as Record<string, unknown>,
-      );
+      const message = event.message as unknown as Record<string, unknown>;
+      transcript = mergePendingAssistant(transcript, message, message);
+      observeEpochPendingAssistant(message, message);
       return;
     }
 
@@ -1345,6 +1353,10 @@ export default async function (pi: ExtensionAPI) {
     const maskedForTranscript = masker.maskValue(message, maskOptionsForRole("assistant")).value;
     transcript = mergePendingAssistant(
       transcript,
+      message as unknown as Record<string, unknown>,
+      maskedForTranscript as Record<string, unknown>,
+    );
+    observeEpochPendingAssistant(
       message as unknown as Record<string, unknown>,
       maskedForTranscript as Record<string, unknown>,
     );

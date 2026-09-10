@@ -7,6 +7,7 @@ import {
   findObservedPrefixImpact,
   markEpochBatchPersisted,
   mergeEpochFacts,
+  mergeEpochPendingAssistant,
   mergeEpochPrefixObservation,
   restoreEpochTranscripts,
   type EpochFactObservation,
@@ -218,4 +219,29 @@ test("recovery refuses a late batch that tries to mutate a closed epoch", () => 
 
   assert.equal(restored.get(1)!.entries[0]!.masked.content, "token=MASK-1");
   assert.equal(restored.get(2)!.entries.length, 0);
+});
+
+test("pending assistant response appears in epoch history and is confirmed at the boundary", () => {
+  const state = createEpochTranscriptState(epoch(1));
+  const user = { role: "user", timestamp: 1, content: "token=secret" };
+  const userMasked = { ...user, content: "token=MASK" };
+  mergeEpochFacts(state, [observation(user, userMasked)], 10);
+  state.persistedMaskedHashes.set(`user:1:${hashMessage(user)}`, hashMessage(userMasked));
+
+  const assistant = { role: "assistant", timestamp: 2, content: "the token is MASK" };
+  mergeEpochPendingAssistant(state, assistant, assistant, 20);
+  assert.equal(state.entries.length, 2);
+  assert.equal(state.entries[1]!.pending, true);
+  // Provisional records are not persisted.
+  assert.equal(state.persistedMaskedHashes.size, 1);
+
+  // Reaching the provider boundary confirms it and produces a persistence batch.
+  const confirmed = mergeEpochFacts(
+    state,
+    [observation(user, userMasked), observation(assistant, assistant, "assistant:2")],
+    30,
+  );
+  assert.equal(state.entries[1]!.pending, false);
+  assert.ok(confirmed.batch);
+  assert.deepEqual(confirmed.batch.messages.map((message) => message.messageKey), ["assistant:2"]);
 });

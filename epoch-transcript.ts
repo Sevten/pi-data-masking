@@ -230,6 +230,9 @@ export function mergeEpochFacts(
     } else {
       entry.lastObservedAt = capturedAt;
       entry.capturedAt = capturedAt;
+      // Reaching the provider boundary confirms a pending assistant response
+      // and replaces its provisional masked form with the factual one.
+      entry.pending = false;
       if (entry.maskedHash !== observation.hashes.masked) {
         entry.original = structuredClone(observation.original);
         entry.masked = structuredClone(observation.masked);
@@ -252,6 +255,51 @@ export function mergeEpochFacts(
       messages: [...changedForPersistence.values()].map(persistedMessage),
     },
   };
+}
+
+/**
+ * Add the just-finished assistant response before it reaches the provider
+ * boundary, so /masking-history shows the live edge. This is a provisional,
+ * in-memory record: it is deliberately not persisted, and the next factual
+ * context observation replaces its masked form and clears the pending flag.
+ */
+export function mergeEpochPendingAssistant(
+  state: EpochTranscriptState,
+  original: JsonRecord,
+  masked: JsonRecord,
+  capturedAt = Date.now(),
+): void {
+  const messageKey = transcriptKey(original, state.entries.length);
+  const originalHash = hashMessage(original);
+  const recordKey = epochRecordKey(messageKey, originalHash);
+  const maskedHash = hashMessage(masked);
+  const prior = state.records.get(recordKey);
+  if (prior) {
+    prior.original = structuredClone(original);
+    prior.masked = structuredClone(masked);
+    prior.maskedHash = maskedHash;
+    prior.contentHashes = { original: originalHash, masked: maskedHash };
+    prior.lastObservedAt = capturedAt;
+    prior.capturedAt = capturedAt;
+    prior.pending = true;
+    return;
+  }
+  const entry: EpochTranscriptEntry = {
+    key: messageKey,
+    recordKey,
+    messageKey,
+    originalHash,
+    maskedHash,
+    original: structuredClone(original),
+    masked: structuredClone(masked),
+    capturedAt,
+    firstObservedAt: capturedAt,
+    lastObservedAt: capturedAt,
+    contentHashes: { original: originalHash, masked: maskedHash },
+    pending: true,
+  };
+  state.records.set(recordKey, entry);
+  state.entries.push(entry);
 }
 
 /** Call only after appendEntry succeeds, so a failed append is retried later. */
