@@ -242,6 +242,7 @@ export function mergeEpochFacts(
       // so a restart does not resurrect the pending flag.
       const wasPending = entry.pending === true;
       entry.pending = false;
+      entry.snapshotMissing = false;
       if (wasPending || state.persistedMaskedHashes.get(recordKey) !== observation.hashes.masked) {
         changedForPersistence.set(recordKey, entry);
       }
@@ -323,6 +324,69 @@ export function mergeEpochPendingAssistant(
       messages: [persistedMessage(entry)],
     },
   };
+}
+
+/**
+ * Sessions recorded by versions without pending persistence end their epoch
+ * transcript at the last provider request, which can be several messages
+ * before the branch's actual last message (typically the final assistant
+ * text). Append that never-observed tail to the newest epoch that has
+ * entries, flagged pending with no model-input snapshot; the next factual
+ * observation replaces these provisional entries.
+ */
+export function appendUnobservedTail(
+  states: Map<number, EpochTranscriptState>,
+  originals: readonly JsonRecord[],
+): void {
+  let target: EpochTranscriptState | undefined;
+  for (const state of states.values()) {
+    if (state.entries.length === 0) continue;
+    if (!target || state.epoch.epochId > target.epoch.epochId) target = state;
+  }
+  if (!target) return;
+
+  const observedAnywhere = (messageKey: string) => {
+    for (const state of states.values()) {
+      for (const recordKey of state.records.keys()) {
+        if (recordKey.startsWith(`${messageKey}:`)) return true;
+      }
+    }
+    return false;
+  };
+
+  // Walk backward from the live edge while messages were never observed at
+  // any boundary. Unobserved messages always form a contiguous tail because
+  // every request re-observes the full provider history.
+  const tail: Array<{ message: JsonRecord; messageKey: string }> = [];
+  for (let index = originals.length - 1; index >= 0; index--) {
+    const message = originals[index]!;
+    const messageKey = transcriptKey(message, index);
+    if (observedAnywhere(messageKey)) break;
+    tail.unshift({ message, messageKey });
+  }
+
+  for (const { message, messageKey } of tail) {
+    const originalHash = hashMessage(message);
+    const recordKey = epochRecordKey(messageKey, originalHash);
+    if (target.records.has(recordKey)) continue;
+    const entry: EpochTranscriptEntry = {
+      key: messageKey,
+      recordKey,
+      messageKey,
+      originalHash,
+      maskedHash: originalHash,
+      original: structuredClone(message),
+      masked: structuredClone(message),
+      capturedAt: 0,
+      firstObservedAt: 0,
+      lastObservedAt: 0,
+      contentHashes: { original: originalHash, masked: originalHash },
+      pending: true,
+      snapshotMissing: true,
+    };
+    target.records.set(recordKey, entry);
+    target.entries.push(entry);
+  }
 }
 
 /** Call only after appendEntry succeeds, so a failed append is retried later. */

@@ -129,6 +129,7 @@ import {
 } from "./rule-epoch.ts";
 import {
   EPOCH_TRANSCRIPT_ENTRY,
+  appendUnobservedTail,
   createEpochTranscriptState,
   markEpochBatchPersisted,
   mergeEpochFacts,
@@ -1160,6 +1161,10 @@ export default async function (pi: ExtensionAPI) {
     sessionKey = restored.sessionKey ?? sessionKey ?? generateSessionKey();
     ruleEpochs = restored.sessionKey ? restoreRuleEpochs(branchEntries) : [];
     epochTranscripts = restoreEpochTranscripts(branchEntries, ruleEpochs, restored.messages);
+    // Sessions recorded before pending persistence existed can end before the
+    // branch's real last message; fill that gap so /masking-history opens at
+    // the live edge even before the next provider request re-observes history.
+    appendUnobservedTail(epochTranscripts, restored.messages);
     activeRuleEpoch = ruleEpochs.at(-1);
     activeEpochConfig = undefined;
     persistedEpochIds = new Set(ruleEpochs.map((epoch) => epoch.epochId));

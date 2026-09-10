@@ -7,6 +7,7 @@ import {
   findObservedPrefixImpact,
   markEpochBatchPersisted,
   mergeEpochFacts,
+  appendUnobservedTail,
   mergeEpochPendingAssistant,
   mergeEpochPrefixObservation,
   restoreEpochTranscripts,
@@ -280,4 +281,44 @@ test("restored pending assistant response stays pending until the next boundary"
   assert.equal(state.entries.length, 2);
   assert.equal(state.entries[1]!.pending, true);
   assert.deepEqual(state.entries[1]!.masked, assistantMasked);
+});
+
+test("restore fills the never-observed tail recorded by old versions", () => {
+  // Epoch 1 observed the user message and the assistant tool-call message,
+  // but the session ended before the final text crossed any boundary
+  // (old extension: no pending persistence at message_end).
+  const first = createEpochTranscriptState(epoch(1));
+  const user = { role: "user", timestamp: 1, content: "hi" };
+  const toolCall = { role: "assistant", timestamp: 2, content: [{ type: "toolCall", id: "c1", name: "bash", arguments: {} }] };
+  const finalText = { role: "assistant", timestamp: 3, content: "done" };
+  const result = mergeEpochFacts(first, [
+    observation(user, user),
+    { ...observation(toolCall, toolCall), messageKey: "assistant:2" },
+  ], 10);
+  if (result.batch) markEpochBatchPersisted(first, result.batch);
+
+  const logEntries = [
+    { type: "message", message: user },
+    { type: "message", message: toolCall },
+    { type: "message", message: finalText },
+    { type: "custom", customType: RULE_EPOCH_ENTRY, data: epoch(1) },
+    ...(result.batch ? [{ type: "custom", customType: EPOCH_TRANSCRIPT_ENTRY, data: result.batch }] : []),
+  ];
+  const originals = [user, toolCall, finalText];
+  const states = restoreEpochTranscripts(logEntries, [epoch(1)], originals);
+  assert.equal(states.get(1)!.entries.length, 2);
+
+  appendUnobservedTail(states, originals);
+  const repaired = states.get(1)!.entries;
+  assert.equal(repaired.length, 3);
+  const tail = repaired.at(-1)!;
+  assert.equal(tail.messageKey, "assistant:3");
+  assert.equal(tail.pending, true);
+  assert.equal(tail.snapshotMissing, true);
+
+  // The next factual observation confirms the repaired tail and persists it.
+  const confirmed = mergeEpochFacts(states.get(1)!, [observation(finalText, finalText, "assistant:3")], 50);
+  assert.equal(tail.pending, false);
+  assert.equal(tail.snapshotMissing, false);
+  assert.ok(confirmed.batch);
 });
