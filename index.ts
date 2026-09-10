@@ -112,6 +112,7 @@ import {
   SNAPSHOT_ENTRY,
   buildMessageSnapshot,
   restoreHistory,
+  type RestoredHistory,
   type MessageSnapshot,
   type PersistedSessionState,
   type SessionEntryLike,
@@ -1124,20 +1125,25 @@ export default async function (pi: ExtensionAPI) {
 
   // ── Session lifecycle ─────────────────────────────────────────────────────
 
-  pi.on("session_start", async (_event, ctx) => {
-    ensureStreamDisplayRestore(ctx.model, ctx);
-    stopWatching?.();
+  /**
+   * Rebuild branch-derived state (transcript, rule epochs, epoch transcripts)
+   * from the session manager's active branch. Runs on session_start and again
+   * on session_tree so /tree navigation never leaves the in-memory history
+   * (shown by /masking-history) pointing at the previous branch. Returns the
+   * restored history so callers can replay messages with the activated config.
+   */
+  const restoreBranchState = (ctx: ExtensionContext): RestoredHistory => {
     const branchEntries = ctx.sessionManager.getBranch() as unknown as SessionEntryLike[];
     const restored = restoreHistory(branchEntries);
     transcript = restored.transcript;
     snapshotSignatures = restored.signatures;
     requestSequence = restored.requestSequence;
-    sessionStatePersisted = restored.sessionKey !== undefined;
+    sessionStatePersisted = sessionStatePersisted || restored.sessionKey !== undefined;
 
     // A resumed Pi session reuses its persisted key, keeping placeholders
     // stable across process restarts. Sessions predating persistence get a new
     // key and clearly marked missing snapshots for their existing messages.
-    sessionKey = restored.sessionKey ?? generateSessionKey();
+    sessionKey = restored.sessionKey ?? sessionKey ?? generateSessionKey();
     ruleEpochs = restored.sessionKey ? restoreRuleEpochs(branchEntries) : [];
     epochTranscripts = restoreEpochTranscripts(branchEntries, ruleEpochs, restored.messages);
     activeRuleEpoch = ruleEpochs.at(-1);
@@ -1166,6 +1172,24 @@ export default async function (pi: ExtensionAPI) {
     dynamicMapWarned = false;
     inventedMapWarned = false;
     persistenceWarned = false;
+    return restored;
+  };
+
+  /** Replay the full active branch locally to rebuild dynamic mappings and
+   * first-seen provenance using the restored session key, priming the
+   * masked-output cache so the first post-restore request skips re-masking
+   * history. Nothing from this pass is counted or sent to the model.
+   * Must run with the session's config already activated. */
+  const replayBranchMessages = (messages: RestoredHistory["messages"]) => {
+    for (let index = 0; index < messages.length; index++) {
+      resolveMaskedMessage(messages[index], index);
+    }
+  };
+
+  pi.on("session_start", async (_event, ctx) => {
+    ensureStreamDisplayRestore(ctx.model, ctx);
+    stopWatching?.();
+    const restored = restoreBranchState(ctx);
 
     configSnapshot = undefined;
     const loaded = await loadConfig(ctx.cwd, sessionKey);
@@ -1177,9 +1201,7 @@ export default async function (pi: ExtensionAPI) {
     // first-seen provenance using the restored session key, priming the
     // masked-output cache so the first post-restore request skips re-masking
     // history. Nothing from this pass is counted or sent to the model.
-    for (let index = 0; index < restored.messages.length; index++) {
-      resolveMaskedMessage(restored.messages[index], index);
-    }
+    replayBranchMessages(restored.messages);
 
     ensureSessionStatePersisted(ctx);
     notifyWarnings(ctx, [...loaded.warnings, ...persisted.warnings, ...compileWarnings]);
@@ -1204,6 +1226,16 @@ export default async function (pi: ExtensionAPI) {
       );
     });
 
+    updateStatus(ctx);
+  });
+
+  pi.on("session_tree", async (_event, ctx) => {
+    // /tree navigation re-points the active branch without reloading the
+    // extension, so branch-derived state must be rebuilt here as well —
+    // otherwise /masking-history keeps showing the previous branch.
+    const restored = restoreBranchState(ctx);
+    replayBranchMessages(restored.messages);
+    ensureSessionStatePersisted(ctx);
     updateStatus(ctx);
   });
 

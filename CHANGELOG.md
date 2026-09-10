@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Fix `/masking-history` showing the previous branch's history after `/tree`
+  navigation: branch-derived state (transcript, rule epochs, epoch transcripts)
+  is now also rebuilt on `session_tree`, not only on `session_start`.
 - Fix live streaming in @jmfederico/pi-web still showing masked placeholders:
   register the provider stream wrappers at extension load time so the
   registration survives pi-web's post-bootstrap provider freeze; real values
