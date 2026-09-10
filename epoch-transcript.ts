@@ -33,6 +33,8 @@ export interface PersistedEpochMessage {
   firstObservedAt: number;
   lastObservedAt: number;
   snapshot: MessageSnapshot;
+  /** Provisional assistant response that has not yet crossed the boundary. */
+  pending?: boolean;
 }
 
 export interface EpochTranscriptBatch {
@@ -193,6 +195,7 @@ function persistedMessage(entry: EpochTranscriptEntry): PersistedEpochMessage {
     firstObservedAt: entry.firstObservedAt,
     lastObservedAt: entry.lastObservedAt,
     snapshot,
+    ...(entry.pending ? { pending: true } : {}),
   };
 }
 
@@ -227,22 +230,30 @@ export function mergeEpochFacts(
       };
       state.records.set(recordKey, entry);
       state.entries.push(entry);
+      if (state.persistedMaskedHashes.get(recordKey) !== entry.maskedHash) {
+        changedForPersistence.set(recordKey, entry);
+      }
     } else {
       entry.lastObservedAt = capturedAt;
       entry.capturedAt = capturedAt;
       // Reaching the provider boundary confirms a pending assistant response
-      // and replaces its provisional masked form with the factual one.
+      // and replaces its provisional masked form with the factual one. The
+      // confirmation must be persisted even when the masked form is unchanged,
+      // so a restart does not resurrect the pending flag.
+      const wasPending = entry.pending === true;
       entry.pending = false;
+      if (wasPending || state.persistedMaskedHashes.get(recordKey) !== observation.hashes.masked) {
+        changedForPersistence.set(recordKey, entry);
+      }
       if (entry.maskedHash !== observation.hashes.masked) {
         entry.original = structuredClone(observation.original);
         entry.masked = structuredClone(observation.masked);
         entry.maskedHash = observation.hashes.masked;
         entry.contentHashes = { ...observation.hashes };
+        if (state.persistedMaskedHashes.get(recordKey) !== entry.maskedHash) {
+          changedForPersistence.set(recordKey, entry);
+        }
       }
-    }
-
-    if (state.persistedMaskedHashes.get(recordKey) !== entry.maskedHash) {
-      changedForPersistence.set(recordKey, entry);
     }
   }
 
@@ -259,16 +270,18 @@ export function mergeEpochFacts(
 
 /**
  * Add the just-finished assistant response before it reaches the provider
- * boundary, so /masking-history shows the live edge. This is a provisional,
- * in-memory record: it is deliberately not persisted, and the next factual
- * context observation replaces its masked form and clears the pending flag.
+ * boundary, so /masking-history shows the live edge. The masked form is
+ * provisional: the next factual context observation replaces it and clears
+ * the pending flag. The returned batch is persisted so the response survives
+ * a restart; once appendEntry succeeds the caller must acknowledge it with
+ * markEpochBatchPersisted.
  */
 export function mergeEpochPendingAssistant(
   state: EpochTranscriptState,
   original: JsonRecord,
   masked: JsonRecord,
   capturedAt = Date.now(),
-): void {
+): EpochTranscriptMergeResult {
   const messageKey = transcriptKey(original, state.entries.length);
   const originalHash = hashMessage(original);
   const recordKey = epochRecordKey(messageKey, originalHash);
@@ -282,24 +295,34 @@ export function mergeEpochPendingAssistant(
     prior.lastObservedAt = capturedAt;
     prior.capturedAt = capturedAt;
     prior.pending = true;
-    return;
+  } else {
+    const entry: EpochTranscriptEntry = {
+      key: messageKey,
+      recordKey,
+      messageKey,
+      originalHash,
+      maskedHash,
+      original: structuredClone(original),
+      masked: structuredClone(masked),
+      capturedAt,
+      firstObservedAt: capturedAt,
+      lastObservedAt: capturedAt,
+      contentHashes: { original: originalHash, masked: maskedHash },
+      pending: true,
+    };
+    state.records.set(recordKey, entry);
+    state.entries.push(entry);
   }
-  const entry: EpochTranscriptEntry = {
-    key: messageKey,
-    recordKey,
-    messageKey,
-    originalHash,
-    maskedHash,
-    original: structuredClone(original),
-    masked: structuredClone(masked),
-    capturedAt,
-    firstObservedAt: capturedAt,
-    lastObservedAt: capturedAt,
-    contentHashes: { original: originalHash, masked: maskedHash },
-    pending: true,
+  const entry = state.records.get(recordKey)!;
+  if (state.persistedMaskedHashes.get(recordKey) === maskedHash && !entry.pending) return {};
+  return {
+    batch: {
+      version: 1,
+      epochId: state.epoch.epochId,
+      capturedAt,
+      messages: [persistedMessage(entry)],
+    },
   };
-  state.records.set(recordKey, entry);
-  state.entries.push(entry);
 }
 
 /** Call only after appendEntry succeeds, so a failed append is retried later. */
@@ -349,6 +372,7 @@ function parsePersistedEpochMessage(value: unknown): PersistedEpochMessage | und
     firstObservedAt: value.firstObservedAt,
     lastObservedAt: value.lastObservedAt,
     snapshot,
+    ...(value.pending === true ? { pending: true } : {}),
   };
 }
 
@@ -431,6 +455,7 @@ export function restoreEpochTranscripts(
         prior.lastObservedAt = Math.max(prior.lastObservedAt, message.lastObservedAt);
         prior.capturedAt = Math.max(prior.capturedAt, batch.capturedAt);
         prior.contentHashes = { original: message.originalHash, masked: message.maskedHash };
+        prior.pending = message.pending;
       } else {
         const entry: EpochTranscriptEntry = {
           key: message.messageKey,
@@ -444,6 +469,7 @@ export function restoreEpochTranscripts(
           firstObservedAt: message.firstObservedAt,
           lastObservedAt: message.lastObservedAt,
           contentHashes: { original: message.originalHash, masked: message.maskedHash },
+          pending: message.pending,
         };
         state.records.set(message.recordKey, entry);
         state.entries.push(entry);

@@ -12,6 +12,7 @@ import {
   restoreEpochTranscripts,
   type EpochFactObservation,
 } from "../epoch-transcript.ts";
+import { RULE_EPOCH_ENTRY } from "../rule-epoch.ts";
 import { hashMessage } from "../masked-cache.ts";
 import type { RuleEpoch } from "../rule-epoch.ts";
 
@@ -221,21 +222,22 @@ test("recovery refuses a late batch that tries to mutate a closed epoch", () => 
   assert.equal(restored.get(2)!.entries.length, 0);
 });
 
-test("pending assistant response appears in epoch history and is confirmed at the boundary", () => {
+test("pending assistant response persists and is confirmed at the boundary", () => {
   const state = createEpochTranscriptState(epoch(1));
   const user = { role: "user", timestamp: 1, content: "token=secret" };
   const userMasked = { ...user, content: "token=MASK" };
-  mergeEpochFacts(state, [observation(user, userMasked)], 10);
-  state.persistedMaskedHashes.set(`user:1:${hashMessage(user)}`, hashMessage(userMasked));
+  const first = mergeEpochFacts(state, [observation(user, userMasked)], 10);
+  if (first.batch) markEpochBatchPersisted(state, first.batch);
 
   const assistant = { role: "assistant", timestamp: 2, content: "the token is MASK" };
-  mergeEpochPendingAssistant(state, assistant, assistant, 20);
+  const pending = mergeEpochPendingAssistant(state, assistant, assistant, 20);
   assert.equal(state.entries.length, 2);
   assert.equal(state.entries[1]!.pending, true);
-  // Provisional records are not persisted.
-  assert.equal(state.persistedMaskedHashes.size, 1);
+  // The provisional response IS persisted so it survives a restart.
+  assert.ok(pending.batch);
+  markEpochBatchPersisted(state, pending.batch);
 
-  // Reaching the provider boundary confirms it and produces a persistence batch.
+  // Reaching the provider boundary confirms it and persists the confirmation.
   const confirmed = mergeEpochFacts(
     state,
     [observation(user, userMasked), observation(assistant, assistant, "assistant:2")],
@@ -244,4 +246,38 @@ test("pending assistant response appears in epoch history and is confirmed at th
   assert.equal(state.entries[1]!.pending, false);
   assert.ok(confirmed.batch);
   assert.deepEqual(confirmed.batch.messages.map((message) => message.messageKey), ["assistant:2"]);
+  assert.notEqual(confirmed.batch.messages[0]!.pending, true);
+  markEpochBatchPersisted(state, confirmed.batch);
+
+  // Confirming again with unchanged content adds no duplicate batch.
+  const repeated = mergeEpochFacts(state, [observation(assistant, assistant, "assistant:2")], 40);
+  assert.equal(repeated.batch, undefined);
+});
+
+test("restored pending assistant response stays pending until the next boundary", () => {
+  const first = createEpochTranscriptState(epoch(1));
+  const user = { role: "user", timestamp: 1, content: "token=secret" };
+  const userMasked = { ...user, content: "token=MASK" };
+  const assistant = { role: "assistant", timestamp: 2, content: "the token is MASK" };
+  const assistantMasked = { ...assistant, content: "the token is M" };
+
+  const batches: unknown[] = [];
+  const record = (state: ReturnType<typeof createEpochTranscriptState>, result: { batch?: unknown }) => {
+    if (result.batch) {
+      batches.push(result.batch);
+      markEpochBatchPersisted(state, result.batch as never);
+    }
+  };
+  record(first, mergeEpochFacts(first, [observation(user, userMasked)], 10));
+  record(first, mergeEpochPendingAssistant(first, assistant, assistantMasked, 20));
+
+  const entries = [
+    { type: "custom", customType: RULE_EPOCH_ENTRY, data: epoch(1) },
+    ...batches.map((data) => ({ type: "custom", customType: EPOCH_TRANSCRIPT_ENTRY, data })),
+  ];
+  const restored = restoreEpochTranscripts(entries, [epoch(1)], [user, assistant]);
+  const state = restored.get(1)!;
+  assert.equal(state.entries.length, 2);
+  assert.equal(state.entries[1]!.pending, true);
+  assert.deepEqual(state.entries[1]!.masked, assistantMasked);
 });

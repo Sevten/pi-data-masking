@@ -698,13 +698,17 @@ export default async function (pi: ExtensionAPI) {
     persistEpochTranscriptBatch(ctx, state, batch);
   }
 
-  /** Provisional, in-memory only; the next context observation confirms it. */
+  /** Persisted so the provisional response survives a restart; the next
+   *  boundary observation replaces it and clears the pending flag. */
   function observeEpochPendingAssistant(
+    ctx: ExtensionContext,
     original: Record<string, unknown>,
     masked: Record<string, unknown>,
   ): void {
     if (!activeRuleEpoch) return;
-    mergeEpochPendingAssistant(ensureEpochTranscript(activeRuleEpoch), original, masked);
+    const state = ensureEpochTranscript(activeRuleEpoch);
+    const { batch } = mergeEpochPendingAssistant(state, original, masked);
+    persistEpochTranscriptBatch(ctx, state, batch);
   }
 
   function epochObservations(
@@ -1341,7 +1345,7 @@ export default async function (pi: ExtensionAPI) {
     if (!config.enabled || config.rules.length === 0) {
       const message = event.message as unknown as Record<string, unknown>;
       transcript = mergePendingAssistant(transcript, message, message);
-      observeEpochPendingAssistant(message, message);
+      observeEpochPendingAssistant(ctx, message, message);
       return;
     }
 
@@ -1357,6 +1361,7 @@ export default async function (pi: ExtensionAPI) {
       maskedForTranscript as Record<string, unknown>,
     );
     observeEpochPendingAssistant(
+      ctx,
       message as unknown as Record<string, unknown>,
       maskedForTranscript as Record<string, unknown>,
     );
