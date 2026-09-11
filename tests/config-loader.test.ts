@@ -790,3 +790,180 @@ test("watchConfigPaths is safe when neither file nor directory exists", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("watchConfigPaths attaches error handlers to all FSWatchers and survives ENOSPC / ENOENT error events", () => {
+  const dir = makeTmp();
+  try {
+    const configDir = join(dir, ".pi", "pi-data-masking");
+    const projectPath = join(configDir, "masking.config.json");
+    const globalPath = join(dir, "global.json");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(projectPath, JSON.stringify({ rules: [] }));
+
+    const capturedWatchers: Array<{ watcher: any; target: string }> = [];
+    let stop: (() => void) | undefined;
+    try {
+      stop = watchConfigPaths(globalPath, projectPath, () => {}, {
+        onWatcher: (watcher, target) => {
+          capturedWatchers.push({ watcher, target });
+        },
+      });
+
+      assert.ok(capturedWatchers.length >= 1, "should register watchers");
+
+      for (const { watcher } of capturedWatchers) {
+        assert.ok(watcher.listenerCount("error") >= 1, "watcher must have an error listener");
+        // Simulating ENOSPC / ENOENT error event must NOT throw uncaughtException
+        assert.doesNotThrow(() => {
+          watcher.emit("error", new Error("ENOSPC: System limit for number of file watchers reached, watch"));
+        });
+        assert.doesNotThrow(() => {
+          watcher.emit("error", new Error("ENOENT: no such file or directory, watch"));
+        });
+      }
+
+      // Stop must succeed cleanly even when watchers already emitted errors and were closed
+      assert.doesNotThrow(() => {
+        stop?.();
+      });
+    } finally {
+      stop?.();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("watchConfigFile watches parentDir non-recursively when configDir does not exist yet and ignores sibling churn", async () => {
+  const dir = makeTmp();
+  let stop: (() => void) | undefined;
+  try {
+    const parentDir = join(dir, "agent");
+    mkdirSync(parentDir, { recursive: true });
+    // Sibling directory with deep subdirectories (simulates sessions / node_modules)
+    const sessionsDir = join(parentDir, "sessions", "session-1", "subagent-artifacts");
+    mkdirSync(sessionsDir, { recursive: true });
+
+    const globalPath = join(parentDir, "pi-data-masking", "masking.config.json");
+    const projectPath = join(dir, "project.json");
+
+    let fired = 0;
+    stop = watchConfigPaths(globalPath, projectPath, () => { fired++; });
+
+    // Writing to sibling sessions/ should NOT trigger masking reload
+    writeFileSync(join(sessionsDir, "artifact.txt"), "subagent artifact data");
+    await new Promise((r) => setTimeout(r, 350));
+    assert.equal(fired, 0, "churn in sibling sessions directory must not trigger config reload");
+
+    // Creating pi-data-masking and masking.config.json SHOULD trigger reload
+    const configDir = join(parentDir, "pi-data-masking");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(globalPath, JSON.stringify({ rules: [] }));
+
+    const deadline = Date.now() + 2000;
+    while (fired === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(fired >= 1, "onChange should fire when intermediate configDir and file are created");
+  } finally {
+    stop?.();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parentWatcher is cleanly detached when configDir is created and dirWatcher is attached", async () => {
+  const dir = makeTmp();
+  let stop: (() => void) | undefined;
+  try {
+    const parentDir = join(dir, "agent");
+    mkdirSync(parentDir, { recursive: true });
+    const globalPath = join(parentDir, "pi-data-masking", "masking.config.json");
+    const projectPath = join(dir, "project.json");
+
+    const targets: string[] = [];
+    stop = watchConfigPaths(globalPath, projectPath, () => {}, {
+      onWatcher: (_w, target) => {
+        targets.push(target);
+      },
+    });
+
+    assert.ok(targets.includes(parentDir), "parentDir should be watched initially");
+
+    // Now create configDir
+    const configDir = join(parentDir, "pi-data-masking");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(globalPath, JSON.stringify({ rules: [] }));
+
+    const deadline = Date.now() + 2000;
+    while (!targets.includes(configDir) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    assert.ok(targets.includes(configDir), "configDir watcher should be attached upon creation");
+  } finally {
+    stop?.();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("watchConfigPaths does not climb beyond immediate parent and detects config when intermediate directories are created later", async () => {
+  const dir = makeTmp();
+  let stop: (() => void) | undefined;
+  try {
+    // Both configDir (pi-data-masking) and parentDir (.pi) do not exist yet
+    const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+    const globalPath = join(dir, "missing-global", "masking.config.json");
+
+    let fired = 0;
+    stop = watchConfigPaths(globalPath, projectPath, () => { fired++; });
+
+    // Create the intermediate directory hierarchy and config file after watching started
+    mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+    writeFileSync(projectPath, JSON.stringify({ rules: [] }));
+
+    const deadline = Date.now() + 2000;
+    while (fired === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(fired >= 1, "poller and promoted watchers should detect config creation");
+
+    // Subsequent in-place edit should also be detected
+    const beforeEdit = fired;
+    writeFileSync(projectPath, JSON.stringify({ rules: [{ id: "test", real: "secret" }] }));
+    const editDeadline = Date.now() + 2000;
+    while (fired === beforeEdit && Date.now() < editDeadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(fired > beforeEdit, "subsequent edit after creation should trigger reload");
+  } finally {
+    stop?.();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("watchConfigPaths survives watched directory deletion without throwing uncaught exceptions", async () => {
+  const dir = makeTmp();
+  let stop: (() => void) | undefined;
+  try {
+    const configDir = join(dir, ".pi", "pi-data-masking");
+    const projectPath = join(configDir, "masking.config.json");
+    const globalPath = join(dir, "global.json");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(projectPath, JSON.stringify({ rules: [] }));
+
+    let fired = 0;
+    stop = watchConfigPaths(globalPath, projectPath, () => { fired++; });
+
+    // Delete the watched directory entirely
+    rmSync(configDir, { recursive: true, force: true });
+    await new Promise((r) => setTimeout(r, 350));
+
+    // Must not crash, stop must succeed cleanly
+    assert.doesNotThrow(() => {
+      stop?.();
+    });
+  } finally {
+    stop?.();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -1176,26 +1176,77 @@ export async function saveConfigRuleMutations(
 
 // ─── File watching (hot reload) ────────────────────────────────────────────
 
+export interface WatchConfigHooks {
+  /** Test seam called whenever an FSWatcher is registered. */
+  onWatcher?: (watcher: FSWatcher, target: string) => void;
+}
+
 /**
- * Watch a config file so later creation or edits trigger a reload:
- *  - if the file exists, watch it directly (catches edits);
- *  - if its parent directory exists, watch the directory (catches creation
- *    and editor-style replace-and-rename), filtered to the file name;
- *  - otherwise watch the nearest existing ancestor directory with
- *    recursive:true when supported (Windows/macOS), falling back to a
- *    non-recursive watch.
+ * Safely watch a filesystem target without recursion. Attaches an 'error'
+ * listener immediately so ENOSPC/ENOENT/EPERM never crash the Node process
+ * via an unhandled exception.
+ */
+function safeWatch(
+  target: string,
+  listener: (event: string, filename: string | null) => void,
+  watchers: FSWatcher[],
+  hooks?: WatchConfigHooks,
+  onError?: (watcher: FSWatcher) => void,
+): FSWatcher | null {
+  try {
+    const watcher = watch(target, listener);
+    watcher.on("error", () => {
+      try {
+        watcher.close();
+      } catch {
+        // Ignore close failures
+      }
+      const idx = watchers.indexOf(watcher);
+      if (idx !== -1) {
+        watchers.splice(idx, 1);
+      }
+      onError?.(watcher);
+    });
+    watchers.push(watcher);
+    hooks?.onWatcher?.(watcher, target);
+    return watcher;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Watch a config file so later creation or edits trigger a reload without
+ * exhausting system inotify handles:
+ *  - if the file exists, watch it directly (catches in-place edits);
+ *  - if its container directory exists, watch it non-recursively (catches
+ *    creation and editor-style replace-and-rename);
+ *  - if the container directory does not exist yet, watch at most its
+ *    immediate parent (e.g. ~/.pi/agent or <cwd>/.pi) non-recursively.
+ *
+ * Neither recursive watching nor climbing beyond the immediate parent is used,
+ * preventing inotify table exhaustion over large trees like node_modules or sessions.
+ * Returns a refresh function to promote watchers when newly created files/directories
+ * are detected.
  */
 function watchConfigFile(
   configPath: string,
   handleChange: () => void,
-  watchers: FSWatcher[]
-): void {
+  watchers: FSWatcher[],
+  hooks?: WatchConfigHooks,
+): () => void {
   const configDir = dirname(configPath);
+  const parentDir = dirname(configDir);
   const fileName = basename(configPath);
-  const expectedSuffix = join("pi-data-masking", fileName).split("\\").join("/");
+  const dirName = basename(configDir);
+  const expectedSuffix = join(dirName, fileName).split("\\").join("/");
 
-  function matches(filename: unknown): boolean {
-    if (filename === null || filename === undefined) return false;
+  let fileWatcher: FSWatcher | null = null;
+  let dirWatcher: FSWatcher | null = null;
+  let parentWatcher: FSWatcher | null = null;
+
+  function matchesFile(filename: unknown): boolean {
+    if (filename === null || filename === undefined) return true;
     const normalized = String(filename).split("\\").join("/");
     return (
       normalized === fileName ||
@@ -1204,66 +1255,132 @@ function watchConfigFile(
     );
   }
 
-  // 1. Watch the file itself when it already exists (covers in-place edits).
-  if (existsSync(configPath)) {
-    try {
-      watchers.push(watch(configPath, () => handleChange()));
-    } catch {
-      // ignore — the directory watcher below still covers most cases
+  function matchesDir(filename: unknown): boolean {
+    if (filename === null || filename === undefined) return true;
+    const normalized = String(filename).split("\\").join("/");
+    return (
+      normalized === dirName ||
+      normalized === expectedSuffix ||
+      normalized.endsWith("/" + dirName) ||
+      normalized.endsWith("/" + expectedSuffix)
+    );
+  }
+
+  function attachFileWatcher(): void {
+    if (fileWatcher || !existsSync(configPath)) return;
+    fileWatcher = safeWatch(
+      configPath,
+      (event) => {
+        if (event === "rename") {
+          reattachFileWatcher();
+        }
+        handleChange();
+      },
+      watchers,
+      hooks,
+      (w) => {
+        if (fileWatcher === w) fileWatcher = null;
+      },
+    );
+  }
+
+  function reattachFileWatcher(): void {
+    if (fileWatcher) {
+      try {
+        fileWatcher.close();
+      } catch {
+        // Ignore close failures
+      }
+      const idx = watchers.indexOf(fileWatcher);
+      if (idx !== -1) watchers.splice(idx, 1);
+      fileWatcher = null;
+    }
+    attachFileWatcher();
+  }
+
+  function attachDirWatcher(): void {
+    if (dirWatcher || !existsSync(configDir)) return;
+    dirWatcher = safeWatch(
+      configDir,
+      (_event, filename) => {
+        if (matchesFile(filename)) {
+          reattachFileWatcher();
+          handleChange();
+        }
+      },
+      watchers,
+      hooks,
+      (w) => {
+        if (dirWatcher === w) dirWatcher = null;
+      },
+    );
+  }
+
+  function attachParentWatcher(): void {
+    if (parentWatcher || dirWatcher || !existsSync(parentDir) || parentDir === configDir) return;
+    parentWatcher = safeWatch(
+      parentDir,
+      (_event, filename) => {
+        if (matchesDir(filename)) {
+          if (existsSync(configDir)) {
+            attachDirWatcher();
+            if (parentWatcher) {
+              try {
+                parentWatcher.close();
+              } catch {
+                // Ignore close failures
+              }
+              const idx = watchers.indexOf(parentWatcher);
+              if (idx !== -1) watchers.splice(idx, 1);
+              parentWatcher = null;
+            }
+            if (existsSync(configPath)) {
+              attachFileWatcher();
+              handleChange();
+            }
+          }
+        }
+      },
+      watchers,
+      hooks,
+      (w) => {
+        if (parentWatcher === w) parentWatcher = null;
+      },
+    );
+  }
+
+  function refresh(): void {
+    reattachFileWatcher();
+    attachDirWatcher();
+    if (!dirWatcher) {
+      attachParentWatcher();
     }
   }
 
-  // 2. Watch the direct parent directory when it exists (covers creation).
-  if (existsSync(configDir)) {
-    try {
-      watchers.push(watch(configDir, (_event, filename) => {
-        if (matches(filename)) handleChange();
-      }));
-      return;
-    } catch {
-      // ignore — fall through to the ancestor watch
-    }
-  }
-
-  // 3. Nearest existing ancestor (covers the whole directory chain being
-  //    created after session start). Prefer recursive where supported.
-  let target = configDir;
-  while (!existsSync(target)) {
-    const parent = dirname(target);
-    if (parent === target) return; // filesystem root; nothing to watch
-    target = parent;
-  }
-  try {
-    const watcher = watch(target, { recursive: true }, (_event, filename) => {
-      if (matches(filename)) handleChange();
-    });
-    watchers.push(watcher);
-  } catch {
-    try {
-      watchers.push(watch(target, (_event, filename) => {
-        if (matches(filename)) handleChange();
-      }));
-    } catch {
-      // Silently ignore if watching is unsupported for this directory
-    }
-  }
+  refresh();
+  return refresh;
 }
 
 export function watchConfigPaths(
   globalPath: string,
   projectPath: string,
-  onChange: () => void
+  onChange: () => void,
+  hooks?: WatchConfigHooks,
 ): () => void {
+  let stopped = false;
   const watchers: FSWatcher[] = [];
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   function handleChange() {
+    if (stopped) return;
     if (timer) clearTimeout(timer);
-    timer = setTimeout(onChange, 300);
+    timer = setTimeout(() => {
+      if (!stopped) onChange();
+    }, 300);
   }
 
-  watchConfigFile(globalPath, handleChange, watchers);
-  watchConfigFile(projectPath, handleChange, watchers);
+  const refreshGlobal = watchConfigFile(globalPath, handleChange, watchers, hooks);
+  const refreshProject = watchConfigFile(projectPath, handleChange, watchers, hooks);
 
   // fs.watch can miss a file created immediately after a watcher is
   // registered (notably on Linux/inotify). Polling the two small config files
@@ -1280,19 +1397,30 @@ export function watchConfigPaths(
   let globalSignature = fileSignature(globalPath);
   let projectSignature = fileSignature(projectPath);
   const poller = setInterval(() => {
+    if (stopped) return;
     const nextGlobalSignature = fileSignature(globalPath);
     const nextProjectSignature = fileSignature(projectPath);
     if (nextGlobalSignature !== globalSignature || nextProjectSignature !== projectSignature) {
       globalSignature = nextGlobalSignature;
       projectSignature = nextProjectSignature;
+      refreshGlobal();
+      refreshProject();
       handleChange();
     }
   }, 250);
 
   return () => {
+    stopped = true;
     if (timer) clearTimeout(timer);
     clearInterval(poller);
-    watchers.forEach((w) => w.close());
+    for (const watcher of [...watchers]) {
+      try {
+        watcher.close();
+      } catch {
+        // Ignore close failures
+      }
+    }
+    watchers.length = 0;
   };
 }
 
@@ -1301,6 +1429,10 @@ export function watchConfigPaths(
  * before calling onChange. Returns a stop() function to call on
  * session_shutdown.
  */
-export function watchConfigs(cwd: string, onChange: () => void): () => void {
-  return watchConfigPaths(GLOBAL_CONFIG_PATH, getProjectConfigPath(cwd), onChange);
+export function watchConfigs(
+  cwd: string,
+  onChange: () => void,
+  hooks?: WatchConfigHooks,
+): () => void {
+  return watchConfigPaths(GLOBAL_CONFIG_PATH, getProjectConfigPath(cwd), onChange, hooks);
 }
