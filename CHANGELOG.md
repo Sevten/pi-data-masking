@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/masking-history`: press `/` to search the transcript. Typing jumps
+  incrementally to the first match at or after the viewport, Enter cycles
+  focus forward and Ctrl+R backward through every occurrence (both wrap),
+  Backspace edits the query, and the prompt shows the total match count.
+  All visible matches are inverse-highlighted, with the focused occurrence
+  additionally bolded. In side-by-side compare view only one column is
+  searched — the lens active before pressing "c" (LOCAL or MODEL) — so
+  unchanged context is not double-counted; the prompt names the column. Esc
+  or the cancel keybinding closes search mode. While search is open the epoch
+  wrapper no longer intercepts its own shortcuts (", ], r), so query letters
+  like "r" are typed into the search instead of opening the rules view.
+
 ### Changed
 
 - Rule Builder: keyboard hints (and any pending confirmation) now sit at the

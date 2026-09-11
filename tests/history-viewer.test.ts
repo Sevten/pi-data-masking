@@ -285,7 +285,9 @@ test("M toggles original and masked views while Ctrl+M is not captured", () => {
   assert.match(original, /M original\/masked · C side-by-side compare/);
 
   const narrowLines = viewer.render(40);
-  const narrow = narrowLines.join("\n");
+  // Footer text wraps at narrow widths, so join wrapped lines with spaces to
+  // keep phrase-level assertions independent of the wrap points.
+  const narrow = narrowLines.join(" ");
   assert.match(narrow, /↑↓\/PgUp\/PgDn scroll/);
   assert.match(narrow, /M original\/masked/);
   assert.match(narrow, /C side-by-side compare/);
@@ -310,7 +312,135 @@ test("M toggles original and masked views while Ctrl+M is not captured", () => {
   assert.equal(renderRequests, 2);
 });
 
-test("selected replacement styling does not reset the surrounding message background", () => {
+test("/ search jumps between text matches incrementally", () => {
+  const renderRequests: string[] = [];
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (_color: unknown, text: string) => text,
+    bold: (text: string) => `[b]${text}[/b]`,
+    italic: (text: string) => text,
+    inverse: (text: string) => `[inv]${text}[/inv]`,
+    underline: (text: string) => text,
+  };
+  const keybindings = { matches: (data: string, keybinding: string) => data === keybinding };
+  const entry = (key: string, text: string) => ({
+    key,
+    original: { role: "user", content: text },
+    masked: { role: "user", content: text },
+    capturedAt: 1,
+  });
+  const viewer = createHistoryViewer(
+    { terminal: { rows: 10 }, requestRender: () => { renderRequests.push("r"); } },
+    theme,
+    keybindings,
+    [entry("user:1", "first needle here"), entry("user:2", "second needle here")],
+    () => undefined,
+  );
+  viewer.render(80);
+
+  // Opening search shows a prompt; typing jumps to the first match at or
+  // after the live-edge viewport, i.e. the second entry here.
+  viewer.handleInput?.("/");
+  assert.match(viewer.render(80).join("\n"), /Search: ▏/);
+  viewer.handleInput?.("n");
+  viewer.handleInput?.("e");
+  viewer.handleInput?.("e");
+  const firstHit = viewer.render(80).join("\n");
+  assert.match(firstHit, /Search: nee▏/);
+  assert.match(firstHit, /2 matches/);
+  // Highlight markup splits the matched word, so match around it.
+  assert.match(firstHit, /second \[b\]\[inv\]nee\[\/inv\]\[\/b\]dle/);
+  assert.doesNotMatch(firstHit, /first/);
+  // Matches are inverse-highlighted; the focused hit is also bolded.
+  assert.match(firstHit, /\[inv\]nee\[\/inv\]/);
+  assert.match(firstHit, /\[b\]\[inv\]nee\[\/inv\]\[\/b\]/);
+
+  // Enter advances and wraps past the end; focus styling moves with it.
+  viewer.handleInput?.("\r");
+  const wrapped = viewer.render(80).join("\n");
+  assert.match(wrapped, /first \[b\]\[inv\]nee\[\/inv\]\[\/b\]dle/);
+  viewer.handleInput?.("\r");
+  assert.match(viewer.render(80).join("\n"), /second \[b\]\[inv\]nee\[\/inv\]\[\/b\]dle/);
+
+  // Ctrl+R cycles focus backward (readline-style reverse search).
+  viewer.handleInput?.("\x12");
+  assert.match(viewer.render(80).join("\n"), /first \[b\]\[inv\]nee\[\/inv\]\[\/b\]dle/);
+
+  // Backspace edits the query; Esc closes search mode and restores the footer.
+  viewer.handleInput?.("\x7f");
+  viewer.handleInput?.("\x7f");
+  viewer.handleInput?.("\x7f");
+  assert.match(viewer.render(80).join("\n"), /Search: ▏/);
+  viewer.handleInput?.("tui.select.cancel");
+  const closed = viewer.render(80).join("\n");
+  assert.doesNotMatch(closed, /Search:/);
+  assert.match(closed, /Esc close/);
+  assert.ok(renderRequests.length > 0);
+});
+
+test("compare-view search targets the column of the pre-compare lens", () => {
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (_color: unknown, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    inverse: (text: string) => text,
+    underline: (text: string) => text,
+  };
+  const keybindings = { matches: (data: string, keybinding: string) => data === keybinding };
+  const entry = {
+    key: "user:1",
+    original: { role: "user", content: "needle alpha" },
+    masked: { role: "user", content: "token alpha" },
+    capturedAt: 1,
+  };
+  const viewer = createHistoryViewer(
+    { terminal: { rows: 20 }, requestRender: () => {} },
+    theme,
+    keybindings,
+    [entry],
+    () => undefined,
+  );
+  viewer.render(120);
+
+  const searchCount = (query: string, width = 120) => {
+    viewer.handleInput?.("/");
+    // A previous search may have left a query behind; clear it first.
+    for (let i = 0; i < 40; i++) viewer.handleInput?.("\x7f");
+    for (const ch of query) viewer.handleInput?.(ch);
+    const output = viewer.render(width).join("\n");
+    viewer.handleInput?.("tui.select.cancel");
+    const match = /Search[^\n]*?(\d+) match/.exec(output);
+    return match ? Number(match[1]) : null;
+  };
+
+  // From original view, "c" compares with LOCAL as the search column: the
+  // real value hits once, the placeholder is invisible, and shared context
+  // ("alpha", present in both columns) is counted once instead of twice.
+  viewer.handleInput?.("c");
+  assert.equal(searchCount("needle"), 1);
+  assert.equal(searchCount("token"), 0);
+  assert.equal(searchCount("alpha"), 1);
+
+  // From model view, "c" compares with MODEL as the search column, and the
+  // prompt names the scoped column.
+  viewer.handleInput?.("m");
+  viewer.handleInput?.("c");
+  assert.equal(searchCount("token"), 1);
+  assert.equal(searchCount("needle"), 0);
+  viewer.handleInput?.("/");
+  for (let i = 0; i < 40; i++) viewer.handleInput?.("\x7f");
+  viewer.handleInput?.("t");
+  assert.match(viewer.render(120).join("\n"), /Search · MODEL column: t▏/);
+  viewer.handleInput?.("tui.select.cancel");
+
+  // Narrow stacked layout keeps the same one-column semantics.
+  viewer.render(80);
+  assert.equal(searchCount("needle"), 0);
+  assert.equal(searchCount("token"), 1);
+});
+
+ test("selected replacement styling does not reset the surrounding message background", () => {
   const calls: string[] = [];
   const theme = {
     fg: (_color: unknown, text: string) => text,
@@ -476,6 +606,67 @@ test("epoch history defaults to the latest factual version and switches without 
   assert.match(previous, /SIDE-BY-SIDE COMPARE/);
   assert.equal(renderRequests, 4);
 });
+
+test("epoch wrapper passes keystrokes to an active transcript search", () => {
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (_color: unknown, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    inverse: (text: string) => text,
+    underline: (text: string) => text,
+  };
+  const keybindings = { matches: (data: string, keybinding: string) => data === keybinding };
+  const epoch = {
+    version: 1,
+    epochId: 1,
+    activatedAt: 1,
+    behaviorFingerprint: "fp",
+    enabled: true,
+    caseSensitive: true,
+    systemPromptGuidance: false,
+    disclosePlaceholders: false,
+    reason: "session_start",
+    rules: [],
+    changes: [],
+  } as unknown as RuleEpoch;
+  const entry = {
+    key: "user:1",
+    original: { role: "user", content: "needle" },
+    masked: { role: "user", content: "needle" },
+    capturedAt: 1,
+  };
+  const viewer = createEpochHistoryViewer(
+    { terminal: { rows: 20 }, requestRender: () => {} },
+    theme,
+    keybindings,
+    [{ epoch, entries: [entry] }],
+    () => undefined,
+  );
+  viewer.render(120);
+
+  // Typing a query that includes wrapper shortcut letters must edit the
+  // query, not trigger "view version rules" or version switching.
+  viewer.handleInput?.("/");
+  viewer.handleInput?.("e");
+  viewer.handleInput?.("r");
+  viewer.handleInput?.("]");
+  viewer.handleInput?.("n");
+  const searching = viewer.render(120).join("\n");
+  assert.match(searching, /Search: er\]n▏/);
+  assert.doesNotMatch(searching, /Rules for history version/);
+
+  // Clearing to a real query still finds the text.
+  for (let i = 0; i < 4; i++) viewer.handleInput?.("\x7f");
+  for (const ch of "needle") viewer.handleInput?.(ch);
+  assert.match(viewer.render(120).join("\n"), /1 match/);
+
+  // Once search closes, the shortcuts work again.
+  viewer.handleInput?.("tui.select.cancel");
+  viewer.handleInput?.("r");
+  assert.match(viewer.render(120).join("\n"), /Rules for history version/);
+});
+
 
 test("version rules show read-only rule metadata and net changes", () => {
   const theme = {

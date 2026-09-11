@@ -662,6 +662,18 @@ function wheelDelta(data: string): number | undefined {
 }
 
 /** A full-screen, read-only transcript viewer with Pi-compatible global toggles. */
+export interface HistoryViewerComponent extends Component {
+  /** True while the transcript search prompt is open; wrappers must then hand
+   *  every keystroke straight to this component instead of acting on shortcuts. */
+  isSearchActive?(): boolean;
+}
+
+function activeRuleCount(view: EpochHistoryView): number {
+  if (!view.epoch.enabled) return 0;
+  return view.epoch.rules.filter((rule) => rule.enabled && rule.available).length;
+}
+
+/** A full-screen, read-only transcript viewer with Pi-compatible global toggles. */
 export function createHistoryViewer(
   tui: HistoryTui,
   theme: HistoryTheme,
@@ -669,7 +681,7 @@ export function createHistoryViewer(
   entries: readonly TranscriptEntry[],
   done: () => void,
   options: HistoryViewerOptions = {},
-): Component {
+): HistoryViewerComponent {
   let toolsExpanded = false;
   let thinkingVisible = true;
   let viewMode: HistoryViewMode = options.viewState?.mode ?? "original";
@@ -678,6 +690,152 @@ export function createHistoryViewer(
   let lastWidth = 80;
   let cacheVersion = 0;
   let revealSelectedOccurrence = false;
+  let searchMode = false;
+  let searchQuery = "";
+  interface SearchHit { entry: number; line: number; col: number }
+  let searchMatches: SearchHit[] = [];
+  let searchCursor: SearchHit = { entry: 0, line: 0, col: -1 };
+  let searchComputedFor = "";
+
+  const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;:]*[A-Za-z]/g, "");
+
+  const sameHit = (a: SearchHit, b: SearchHit) =>
+    a.entry === b.entry && a.line === b.line && a.col === b.col;
+
+  /**
+   * In compare view both columns render the same message, so search targets
+   * only the column matching the lens the user came from (LOCAL after "c"
+   * from original view, MODEL after "c" from model view). Wide layout keeps
+   * the left column left of the 3-column gap; the narrow stacked layout
+   * splits sections under LOCAL/MODEL labels.
+   */
+  const searchSideFilter = (): ((entry: number, line: number, plain: string, col: number) => boolean) => {
+    if (viewMode !== "compare") return () => true;
+    const side = modeBeforeCompare;
+    if (lastWidth >= 90) {
+      // Mirrors comparisonText(): columnWidth = max(20, (width - gap) / 2).
+      const columnWidth = Math.max(20, Math.floor((lastWidth - 3) / 2));
+      return (_entry, _line, _plain, col) =>
+        side === "original" ? col < columnWidth : col >= columnWidth + 3;
+    }
+    // Narrow stacked layout: attribution needs the section, which depends on
+    // preceding label lines, so resolve sections once per entry.
+    const sectionsByEntry = new Map<number, boolean[]>();
+    const sectionOf = (entry: number, line: number): boolean => {
+      let sections = sectionsByEntry.get(entry);
+      if (!sections) {
+        sections = [];
+        let inModel = false;
+        for (const rendered of entryLines(entry, lastWidth)) {
+          const trimmed = stripAnsi(rendered).trim();
+          if (trimmed === "MODEL INPUT") inModel = true;
+          else if (trimmed === "LOCAL ORIGINAL") inModel = false;
+          sections.push(inModel);
+        }
+        sectionsByEntry.set(entry, sections);
+      }
+      return sections[line] ?? false;
+    };
+    return (entry, line) => (side === "model" ? sectionOf(entry, line) : !sectionOf(entry, line));
+  };
+
+  const recomputeSearchMatches = () => {
+    const signature = `${searchQuery}\u0000${cacheVersion}\u0000${lastWidth}\u0000${toolsExpanded}\u0000${thinkingVisible}\u0000${viewMode}\u0000${modeBeforeCompare}`;
+    if (signature === searchComputedFor) return;
+    searchComputedFor = signature;
+    searchMatches = [];
+    if (!searchQuery) return;
+    const needle = searchQuery.toLowerCase();
+    const sideFilter = searchSideFilter();
+    for (let entry = 0; entry < displayEntries.length; entry++) {
+      const lines = entryLines(entry, lastWidth);
+      for (let line = 0; line < lines.length; line++) {
+        const plain = stripAnsi(lines[line]!).toLowerCase();
+        // Every occurrence is a separate focusable hit, so repeated words on
+        // one wrapped line can be cycled through individually.
+        for (
+          let col = plain.indexOf(needle);
+          col >= 0;
+          col = plain.indexOf(needle, col + Math.max(1, needle.length))
+        ) {
+          if (sideFilter(entry, line, plain, col)) {
+            searchMatches.push({ entry, line, col });
+          }
+        }
+      }
+    }
+  };
+
+  /**
+   * Jump to the first match at (inclusive) or strictly after the cursor,
+   * wrapping once. Typing uses inclusive mode so the target is deterministic
+   * from the current viewport; Enter uses strict mode to cycle focus.
+   */
+  const jumpToSearchMatch = (forward: boolean, inclusive = false) => {
+    recomputeSearchMatches();
+    if (searchMatches.length === 0) return;
+    const ordered = forward ? searchMatches : [...searchMatches].reverse();
+    const reaches = (match: SearchHit) => {
+      const compare = (a: number, b: number) => forward ? (inclusive ? a >= b : a > b) : (inclusive ? a <= b : a < b);
+      if (match.entry !== searchCursor.entry) return compare(match.entry, searchCursor.entry);
+      if (match.line !== searchCursor.line) return compare(match.line, searchCursor.line);
+      return compare(match.col, searchCursor.col);
+    };
+    const target = ordered.find(reaches) ?? ordered[0]!;
+    searchCursor = { ...target };
+    position = { entry: target.entry, line: Math.max(0, target.line - 1) };
+  };
+
+  const searchPromptLine = () => {
+    if (!searchMode) return undefined;
+    const count = searchQuery
+      ? (recomputeSearchMatches(), `${searchMatches.length} match${searchMatches.length === 1 ? "" : "es"}`)
+      : "type to search";
+    // In compare view only one column is searched; say which one.
+    const scope = viewMode === "compare"
+      ? ` · ${modeBeforeCompare === "original" ? "LOCAL" : "MODEL"} column`
+      : "";
+    return theme.fg("accent", `Search${scope}: ${searchQuery}▏  ${count} · Enter next · Ctrl+R previous · Esc close`);
+  };
+
+  /**
+   * Restyle rendered lines so every search hit is inverse-highlighted and the
+   * focused hit is additionally bolded. ANSI-aware: escape sequences never
+   * land inside a highlighted span's boundaries, and the plain-text match
+   * offsets come from the same stripping used to collect the matches.
+   */
+  const highlightSearchHits = (entryIndex: number, lineIndex: number, line: string): string => {
+    if (!searchMode || !searchQuery) return line;
+    recomputeSearchMatches();
+    const hits = searchMatches.filter((hit) => hit.entry === entryIndex && hit.line === lineIndex);
+    if (hits.length === 0) return line;
+    const plain = stripAnsi(line);
+    if (!plain) return line;
+    // Map each plain character index to its raw index in the styled line.
+    const rawAt: number[] = [];
+    let raw = 0;
+    for (let p = 0; p < plain.length; p++) {
+      while (raw < line.length && line[raw] === "\u001b") {
+        const escape = /^\u001b\[[0-9;:]*[A-Za-z]/.exec(line.slice(raw));
+        raw += escape ? escape[0].length : 1;
+      }
+      rawAt.push(raw++);
+    }
+    const invert = theme.inverse ?? theme.bold;
+    const focused = searchCursor;
+    let result = "";
+    let copied = 0;
+    for (const hit of hits) {
+      const start = rawAt[hit.col] ?? -1;
+      const end = (rawAt[hit.col + searchQuery.length - 1] ?? -2) + 1;
+      if (start < 0 || end <= start) continue;
+      const segment = line.slice(start, end);
+      const styled = sameHit(hit, focused) ? theme.bold(invert(segment)) : invert(segment);
+      result += line.slice(copied, start) + styled;
+      copied = end;
+    }
+    return result + line.slice(copied);
+  };
 
   const toolResults = new Map(entries
     .filter((entry) => entry.original.role === "toolResult")
@@ -820,7 +978,9 @@ export function createHistoryViewer(
       while (visible.length < pageSize() && cursor.entry < displayEntries.length) {
         const lines = entryLines(cursor.entry, width);
         const take = Math.min(pageSize() - visible.length, Math.max(0, lines.length - cursor.line));
-        visible.push(...lines.slice(cursor.line, cursor.line + take));
+        visible.push(...lines
+          .slice(cursor.line, cursor.line + take)
+          .map((line, offset) => highlightSearchHits(cursor.entry, cursor.line + offset, line)));
         cursor.line += take;
         if (cursor.line >= lines.length) cursor = { entry: cursor.entry + 1, line: 0 };
       }
@@ -858,17 +1018,19 @@ export function createHistoryViewer(
           : "Left: local original · Right: model input · Inverse highlight: selected occurrence";
       const footerPrefix = options.footerPrefix ? `${options.footerPrefix} · ` : "";
       const occurrenceControl = replacements.length > 1 ? " · N/P next/previous occurrence" : "";
-      const footerText = `${footerPrefix}↑↓/PgUp/PgDn scroll${occurrenceControl} · M original/masked · C side-by-side compare · Ctrl+O tools · Ctrl+T thinking · Esc close`;
+      const footerText = `${footerPrefix}↑↓/PgUp/PgDn scroll${occurrenceControl} · / search · M original/masked · C side-by-side compare · Ctrl+O tools · Ctrl+T thinking · Esc close`;
       const headerLines = wrapStyled(header);
       const subtitleLines = options.subtitle ? wrapStyled(theme.fg("muted", options.subtitle)) : [];
       const inspectorLines = [theme.fg("muted", truncateToWidth(inspector, safeWidth))];
       const legendLines = wrapStyled(theme.fg("dim", legend));
+      const searchPrompt = searchPromptLine();
+      const searchLines = searchPrompt === undefined ? [] : wrapStyled(truncateToWidth(searchPrompt, safeWidth));
 
       // Start without progress. If the complete transcript fits, a message
       // range such as "messages 1–3 of 3" adds no useful information.
       const controlFooterLines = wrapStyled(theme.fg("dim", footerText));
       let footerLines = controlFooterLines;
-      chromeRows = headerLines.length + subtitleLines.length + inspectorLines.length + legendLines.length + footerLines.length;
+      chromeRows = headerLines.length + subtitleLines.length + inspectorLines.length + legendLines.length + footerLines.length + searchLines.length;
       let page = visiblePage(safeWidth);
       const atLiveEdge = page.cursor.entry === displayEntries.length;
       const allMessagesVisible = displayEntries.length === 0 || (
@@ -879,7 +1041,7 @@ export function createHistoryViewer(
         const maximumProgress = `messages ${displayEntries.length}–${displayEntries.length} of ${displayEntries.length}`;
         const maximumProgressLines = wrapStyled(theme.fg("dim", maximumProgress));
         footerLines = [...controlFooterLines, ...maximumProgressLines];
-        chromeRows = headerLines.length + subtitleLines.length + inspectorLines.length + legendLines.length + footerLines.length;
+        chromeRows = headerLines.length + subtitleLines.length + inspectorLines.length + legendLines.length + footerLines.length + searchLines.length;
         // Adding the progress row shrinks the transcript. Preserve the live-edge
         // anchor instead of dropping the final message from the first render.
         if (atLiveEdge) position = { entry: displayEntries.length, line: 0 };
@@ -905,12 +1067,55 @@ export function createHistoryViewer(
         ...legendLines,
         ...page.visible,
         ...footerLines,
+        ...searchLines,
       ];
       return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
     },
     handleInput: (data) => {
+      if (searchMode) {
+        if (data === "\x12") {
+          // Ctrl+R: readline-style reverse incremental search.
+          jumpToSearchMatch(false);
+          tui.requestRender();
+          return;
+        }
+        if (data === "\r" || data === "\n") {
+          jumpToSearchMatch(true);
+          tui.requestRender();
+          return;
+        }
+        if (data === "\x7f" || data === "\b") {
+          searchQuery = searchQuery.slice(0, -1);
+          if (searchQuery) {
+            // Shortening the query may reveal earlier matches; restart from the top.
+            searchCursor = { entry: 0, line: -1, col: -1 };
+            jumpToSearchMatch(true, true);
+          }
+          tui.requestRender();
+          return;
+        }
+        if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
+          searchMode = false;
+          tui.requestRender();
+          return;
+        }
+        if (data.length === 1 && data >= " ") {
+          searchQuery += data;
+          // Extended queries re-target from the current viewport so repeated
+          // renders never change which match typing lands on.
+          searchCursor = { ...position, col: -1 };
+          jumpToSearchMatch(true, true);
+          tui.requestRender();
+          return;
+        }
+        return;
+      }
       const wheel = wheelDelta(data);
       if (wheel !== undefined) move(wheel);
+      else if (data === "/") {
+        searchMode = true;
+        searchCursor = { ...position, col: -1 };
+      }
       else if (keybindings.matches(data, "app.tools.expand")) {
         toolsExpanded = !toolsExpanded;
         cacheVersion++;
@@ -933,12 +1138,8 @@ export function createHistoryViewer(
       else return;
       tui.requestRender();
     },
+    isSearchActive: () => searchMode,
   };
-}
-
-function activeRuleCount(view: EpochHistoryView): number {
-  if (!view.epoch.enabled) return 0;
-  return view.epoch.rules.filter((rule) => rule.enabled && rule.available).length;
 }
 
 function epochLabel(view: EpochHistoryView, index: number, total: number): string {
@@ -1147,12 +1348,18 @@ export function createEpochHistoryViewer(
       },
     );
   };
-  let selected = createSelected();
+  let selected: HistoryViewerComponent = createSelected();
 
   return {
     invalidate: () => selected.invalidate?.(),
     render: (width) => selected.render(width),
     handleInput: (data) => {
+      // While the transcript search prompt is open, every keystroke belongs to
+      // the query — never let version/rules shortcuts (", ], r) steal it.
+      if (screen === "history" && selected.isSearchActive?.()) {
+        selected.handleInput?.(data);
+        return;
+      }
       const delta = data === "[" ? -1 : data === "]" ? 1 : 0;
       if (delta !== 0 && views.length > 1) {
         const next = Math.max(0, Math.min(views.length - 1, selectedIndex + delta));

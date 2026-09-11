@@ -105,7 +105,7 @@ The model must pass a placeholder verbatim. A placeholder that the model slices,
 
 ### Inspectable model view
 
-`/masking-history` shows only representations that actually reached the model, grouped into consecutive rule versions rather than hypothetical replays. It supports local original, exact model-facing, and comparison views with navigation across every masked occurrence.
+`/masking-history` shows only representations that actually reached the model, grouped into consecutive rule versions rather than hypothetical replays. It supports local original, exact model-facing, and comparison views with navigation across every masked occurrence. Press `/` to search the transcript: typing jumps to matches incrementally, Enter cycles focus forward and Ctrl+R backward (both wrap), and the prompt shows the total match count.
 
 Each version includes a read-only rule list and net changes. Unused intermediate edits are omitted, while persisted and compacted history remains associated with the version that processed it.
 
