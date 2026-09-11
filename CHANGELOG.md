@@ -5,7 +5,7 @@
 ### Added
 
 - New opt-in system-prompt guidance contract (`options.systemPromptGuidance`, now
-  editable in `/masking` → Settings): counters LLM secret-handling heuristics
+  editable in the `/masking` home screen's settings zone): counters LLM secret-handling heuristics
   (sampled head/tail/length comparison, encoding instead of comparing) by
   granting exact full-string equality, requiring verbatim passthrough into
   tool calls, routing transformations through tools, and ending with an escape

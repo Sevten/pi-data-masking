@@ -1240,7 +1240,7 @@ export default async function (pi: ExtensionAPI) {
 
     // One-time upgrade notice: only for existing-config users, only until
     // the marker records this notice version. The actual enablement lives
-    // in /masking → Settings; this never blocks or asks inline.
+    // in the /masking settings zone; this never blocks or asks inline.
     try {
       const statePath = migrationStatePath(getAgentDir());
       const state = readMigrationStateSync(statePath);
@@ -1250,7 +1250,7 @@ export default async function (pi: ExtensionAPI) {
         await writeMigrationState(statePath, markGuidanceNoticeShown(state));
         if (!persisted.config.options.systemPromptGuidance) {
           ctx.ui.notify(
-            "pi-data-masking: new in this version — a guidance note can tell the model how to work with masked values (compare, pass through, transform via tools). Open /masking and press S to enable it.",
+            "pi-data-masking: new in this version — a guidance note can tell the model how to work with masked values (compare, pass through, transform via tools). Open /masking, Tab to the settings zone to enable it.",
             "info",
           );
         }
@@ -3031,114 +3031,6 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
-  async function openMaskingSettings(ctx: ExtensionContext): Promise<void> {
-    const target = optionsEditTarget(ctx);
-    await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
-      const rows = ["guidance", "disclose"] as const;
-      let selected = 0;
-      let saving = false;
-      let message = "";
-
-      function desired(): { systemPromptGuidance: boolean; disclosePlaceholders: boolean } {
-        return {
-          systemPromptGuidance: config.options.systemPromptGuidance,
-          disclosePlaceholders: config.options.disclosePlaceholders,
-        };
-      }
-
-      async function toggle(row: (typeof rows)[number]): Promise<void> {
-        if (saving || !target) return;
-        const next = desired();
-        if (row === "guidance") {
-          // Coupling: turning guidance off also turns disclosure off; the
-          // three states (off / guidance-only / full) are the only ones.
-          if (next.systemPromptGuidance) {
-            next.systemPromptGuidance = false;
-            next.disclosePlaceholders = false;
-          } else {
-            next.systemPromptGuidance = true;
-          }
-        } else {
-          if (next.disclosePlaceholders) {
-            next.disclosePlaceholders = false;
-          } else {
-            // Coupling: enabling disclosure force-enables guidance.
-            next.disclosePlaceholders = true;
-            next.systemPromptGuidance = true;
-          }
-        }
-        if (next.systemPromptGuidance === config.options.systemPromptGuidance
-          && next.disclosePlaceholders === config.options.disclosePlaceholders) return;
-        saving = true;
-        message = "Saving…";
-        tui.requestRender();
-        const saved = await saveConfigOptionsUI(ctx, next);
-        saving = false;
-        if (saved && next.systemPromptGuidance) guidanceNoticePending = false;
-        message = saved ? "Saved · affects future requests" : "Save cancelled · no changes applied";
-        tui.requestRender();
-      }
-
-      const hints = "Space/Enter toggle · Esc close";
-      return {
-        render: (width) => {
-          const state = desired();
-          const literalCount = config.configuredRules.filter((configured) =>
-            configured.enabled && configured.available && configured.sourceKind === "literal").length;
-          const lines: string[] = [
-            theme.fg("accent", theme.bold(`Masking settings${message ? ` · ${message}` : ""}`)),
-            ...wrappedMaskingText(theme.fg("muted", target
-              ? `Options are saved to the ${target.scope} config · ${target.path}`
-              : "No project or global config exists yet; add a rule first"), width),
-            "",
-          ];
-          if (guidanceNoticePending && !state.systemPromptGuidance) {
-            lines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: the guidance note tells the model how to work with masked values — enable it below."), width));
-            lines.push("");
-          }
-          const rowsText = [
-            ["Guidance note", state.systemPromptGuidance ? "ON" : "OFF",
-              "Appends a behavioral contract for masked values to the system prompt (cache-impacting when enabled mid-session)"],
-            ["Disclose placeholders", state.disclosePlaceholders ? "ON" : "OFF",
-              `Lists literal-rule placeholder strings inside the guidance note (${literalCount} eligible rule${literalCount === 1 ? "" : "s"}); requires the guidance note and enables it automatically`],
-          ] as const;
-          rowsText.forEach(([label, value, description], index) => {
-            const marker = index === selected ? "▶" : " ";
-            const rendered = truncateToWidth(`${marker} ${label.padEnd(22)} [${value}]`, Math.max(1, width));
-            lines.push(index === selected ? theme.fg("accent", rendered) : rendered);
-            if (index === selected) {
-              lines.push(...wrappedMaskingText(theme.fg("dim", description), width));
-            }
-          });
-          lines.push("", "");
-          lines.push(...wrappedMaskingText(theme.fg("dim", hints), width));
-          return fillMaskingScreen(lines, width, tui.terminal.rows);
-        },
-        invalidate: () => {},
-        handleInput: (data) => {
-          if (saving) return;
-          if (keybindings.matches(data, "tui.select.up")) {
-            selected = (selected + rows.length - 1) % rows.length;
-            tui.requestRender();
-            return;
-          }
-          if (keybindings.matches(data, "tui.select.down")) {
-            selected = (selected + 1) % rows.length;
-            tui.requestRender();
-            return;
-          }
-          if (matchesKey(data, Key.space) || keybindings.matches(data, "tui.select.confirm")) {
-            void toggle(rows[selected]!);
-            return;
-          }
-          if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
-            done(undefined);
-          }
-        },
-      };
-    }, MASKING_SCREEN_OPTIONS);
-  }
-
   async function openMaskingConfig(ctx: ExtensionContext): Promise<void> {
     const filters = ["all", "enabled", "disabled", "project", "global", "literal", "regex", "preset"] as const;
     let filterIndex = 0;
@@ -3146,13 +3038,13 @@ export default async function (pi: ExtensionAPI) {
     let selectedRuleKey: string | undefined;
     let showExactValues = true;
     let homeTestText = "";
-    let homeFocus: "rules" | "test" = "rules";
+    let homeFocus: "settings" | "rules" | "test" = "rules";
     type ScreenAction =
       | { kind: "batch"; changes: RuleEnabledChange[] }
       | { kind: "edit"; rule: ConfiguredMaskingRule; initialMode?: "form" | "json" }
       | { kind: "delete"; rule: ConfiguredMaskingRule }
       | { kind: "add"; initialMode?: "form" | "json" }
-      | { kind: "import" | "export" | "help" | "settings" };
+      | { kind: "import" | "export" | "help" };
     await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
       let screenRules = config.configuredRules;
       let selectedIndex = 0;
@@ -3161,6 +3053,8 @@ export default async function (pi: ExtensionAPI) {
       let searchMode = false;
       let mutationInProgress = false;
       let mutationMessage = "";
+      const settingsRows = ["masking", "guidance", "disclose"] as const;
+      let settingsIndex = 0;
       const testEditorTheme: EditorTheme = {
         borderColor: (text) => theme.fg("accent", text),
         selectList: {
@@ -3261,6 +3155,40 @@ export default async function (pi: ExtensionAPI) {
         refresh();
       }
 
+      /** Coupled guidance/disclosure toggle (settings zone). Enabling
+       *  disclosure force-enables guidance; disabling guidance disables
+       *  both — off / guidance-only / full are the only reachable states. */
+      async function toggleGuidanceInPlace(): Promise<void> {
+        const next = {
+          systemPromptGuidance: config.options.systemPromptGuidance,
+          disclosePlaceholders: config.options.disclosePlaceholders,
+        };
+        if (settingsIndex === 2) {
+          if (next.disclosePlaceholders) next.disclosePlaceholders = false;
+          else {
+            next.disclosePlaceholders = true;
+            next.systemPromptGuidance = true;
+          }
+        } else {
+          if (next.systemPromptGuidance) {
+            next.systemPromptGuidance = false;
+            next.disclosePlaceholders = false;
+          } else {
+            next.systemPromptGuidance = true;
+          }
+        }
+        if (next.systemPromptGuidance === config.options.systemPromptGuidance
+          && next.disclosePlaceholders === config.options.disclosePlaceholders) return;
+        mutationInProgress = true;
+        mutationMessage = "Saving…";
+        refresh();
+        const saved = await saveConfigOptionsUI(ctx, next);
+        mutationInProgress = false;
+        if (saved && next.systemPromptGuidance) guidanceNoticePending = false;
+        mutationMessage = saved ? "Saved · affects future requests" : "Save cancelled · no changes applied";
+        refresh();
+      }
+
       async function toggleRuleInPlace(selected: ConfiguredMaskingRule): Promise<void> {
         const stableKey = configuredRuleStableKey(selected);
         const enabling = !selected.enabled;
@@ -3308,7 +3236,6 @@ export default async function (pi: ExtensionAPI) {
           : action.kind === "add" ? "Opening rule builder…"
           : action.kind === "delete" ? "Opening confirmation…"
           : action.kind === "help" ? "Opening help…"
-          : action.kind === "settings" ? "Opening settings…"
           : action.kind === "import" ? "Opening import…"
           : action.kind === "export" ? "Opening export…"
           : "Opening batch confirmation…";
@@ -3319,7 +3246,6 @@ export default async function (pi: ExtensionAPI) {
           else if (action.kind === "delete") await deleteConfigRule(ctx, action.rule);
           else if (action.kind === "add") await addConfigRule(ctx, undefined, { initialMode: action.initialMode });
           else if (action.kind === "help") await showRuleConfigurationHelp(ctx);
-          else if (action.kind === "settings") await openMaskingSettings(ctx);
           else if (action.kind === "import") await importConfigRules(ctx);
           else await exportConfigRules(ctx);
         } finally {
@@ -3338,12 +3264,41 @@ export default async function (pi: ExtensionAPI) {
           const maskingEnabled = desiredConfig.enabled;
           const maskingActivationPending = pendingConfigActivation !== null && desiredConfig.enabled !== config.enabled;
           const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
-          const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · S settings · Tab test · M masking · H help · Esc close`), width);
-          const globalState = `GLOBAL MASKING [${maskingEnabled ? "ON" : "OFF"}] · M turn ${maskingEnabled ? "off" : "on"} · saved across projects and future sessions${maskingActivationPending ? " · activates next run" : ""}`;
+          const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
+          const literalEligible = screenRules.filter((configured) =>
+            configured.enabled && configured.available && configured.sourceKind === "literal").length;
+          const settingsDivider = theme.fg(homeFocus === "settings" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
+          const settingRow = (index: number, label: string, value: boolean, description: string): string => {
+            const selected = homeFocus === "settings" && index === settingsIndex;
+            const marker = selected ? "▶" : " ";
+            const plain = `${marker} ${label}${" ".repeat(Math.max(0, 16 - label.length))} [${value ? "ON" : "OFF"}]`;
+            const descriptionWidth = Math.max(0, width - visibleWidth(plain) - 2);
+            const desc = truncateToWidth(description, descriptionWidth);
+            const rowBody = homeFocus === "settings"
+              ? (selected ? theme.fg("accent", plain) : plain)
+              : theme.fg("dim", plain);
+            return truncateToWidth(rowBody + "  " + theme.fg("dim", desc), width);
+          };
+          const settingsLines: string[] = [
+            homeFocus === "settings"
+              ? theme.fg("accent", theme.bold("SETTINGS · focused"))
+              : theme.fg("muted", "SETTINGS · Tab to focus"),
+            settingsDivider,
+            settingRow(0, "Masking", maskingEnabled,
+              maskingActivationPending ? "saved · activates next run" : "saved across projects and future sessions"),
+            settingRow(1, "Guidance note", config.options.systemPromptGuidance,
+              "tell the model how to work with masked values (compare, pass through, transform via tools)"),
+            settingRow(2, "Disclose", config.options.disclosePlaceholders,
+              `list literal-rule placeholders inside the guidance note (${literalEligible} eligible${config.options.disclosePlaceholders ? "" : " · requires the guidance note"})`),
+          ];
+          if (guidanceNoticePending && !config.options.systemPromptGuidance) {
+            settingsLines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: the guidance note tells the model how to work with masked values — enable it above."), width));
+          }
           const lines: string[] = [
             theme.fg("accent", theme.bold(`Masking configuration${mutationMessage ? ` · ${mutationMessage}` : ""}`)),
-            ...wrappedMaskingText(maskingEnabled ? theme.fg("success", globalState) : theme.fg("warning", globalState), width),
             ...wrappedMaskingText(theme.fg("muted", `${active} enabled / ${screenRules.length} configured · filter: ${filters[filterIndex]}${searchQuery ? ` · search: ${searchQuery}` : ""}`), width),
+            "",
+            ...settingsLines,
             "",
             homeFocus === "rules"
               ? theme.fg("accent", theme.bold("RULES · focused"))
@@ -3365,7 +3320,7 @@ export default async function (pi: ExtensionAPI) {
           } else {
             const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
             lines.push(theme.fg("dim", truncateToWidth(header, Math.max(1, width))));
-            const reservedRows = 21 + browseHints.length;
+            const reservedRows = 21 + settingsLines.length + browseHints.length;
             const rowCount = visibleRulesNow.length + 1;
             const listHeight = Math.max(3, Math.min(rowCount, tui.terminal.rows - reservedRows));
             rulePageSize = listHeight;
@@ -3470,7 +3425,7 @@ export default async function (pi: ExtensionAPI) {
 
           if (homeFocus === "test") {
             if (matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab"))) {
-              homeFocus = "rules";
+              homeFocus = "settings";
               refresh();
             } else if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
               homeFocus = "rules";
@@ -3480,8 +3435,50 @@ export default async function (pi: ExtensionAPI) {
             }
             return;
           }
+
+          if (homeFocus === "settings") {
+            if (matchesKey(data, Key.tab)) {
+              homeFocus = "rules";
+              refresh();
+              return;
+            }
+            if (matchesKey(data, Key.shift("tab"))) {
+              homeFocus = "test";
+              refresh();
+              return;
+            }
+            if (keybindings.matches(data, "tui.select.up")) {
+              settingsIndex = (settingsIndex + settingsRows.length - 1) % settingsRows.length;
+              refresh();
+              return;
+            }
+            if (keybindings.matches(data, "tui.select.down")) {
+              settingsIndex = (settingsIndex + 1) % settingsRows.length;
+              refresh();
+              return;
+            }
+            if (matchesKey(data, Key.space) || keybindings.matches(data, "tui.select.confirm")) {
+              if (settingsIndex === 0) void toggleMaskingInPlace();
+              else void toggleGuidanceInPlace();
+              return;
+            }
+            if (matchesKey(data, "m") || data === "M") {
+              void toggleMaskingInPlace();
+              return;
+            }
+            if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
+              homeFocus = "rules";
+              refresh();
+            }
+            return;
+          }
           if (matchesKey(data, Key.tab)) {
             homeFocus = "test";
+            refresh();
+            return;
+          }
+          if (matchesKey(data, Key.shift("tab"))) {
+            homeFocus = "settings";
             refresh();
             return;
           }
@@ -3559,7 +3556,6 @@ export default async function (pi: ExtensionAPI) {
           if (matchesKey(data, "i")) return void runScreenAction({ kind: "import" });
           if (matchesKey(data, "x")) return void runScreenAction({ kind: "export" });
           if (matchesKey(data, "h")) return void runScreenAction({ kind: "help" });
-          if (matchesKey(data, "s")) return void runScreenAction({ kind: "settings" });
           if (matchesKey(data, "f")) {
             filterIndex = (filterIndex + 1) % filters.length;
             selectedIndex = 0;

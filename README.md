@@ -237,7 +237,7 @@ A sliced, concatenated, hashed, or otherwise transformed placeholder cannot be m
 
 ### Can the model be told which values are placeholders?
 
-Yes, opt-in. `options.disclosePlaceholders` (or a per-rule `disclosePlaceholder` override, literal rules only) lists the session's actual placeholder strings inside the guidance note, grouped into "generated" (structure preserved) and "custom" (structure not preserved) substitutes. Disclosure requires `systemPromptGuidance` and enables it automatically. Regex-discovered placeholders are never listed: they appear lazily mid-session, and listing them would invalidate the provider prefix cache on every discovery. A disclosed list also does not certify that everything unlisted is real — a value that escaped masking never gains credibility from not being listed. Toggle both switches in `/masking` → Settings (press `S`).
+Yes, opt-in. `options.disclosePlaceholders` (or a per-rule `disclosePlaceholder` override, literal rules only) lists the session's actual placeholder strings inside the guidance note, grouped into "generated" (structure preserved) and "custom" (structure not preserved) substitutes. Disclosure requires `systemPromptGuidance` and enables it automatically. Regex-discovered placeholders are never listed: they appear lazily mid-session, and listing them would invalidate the provider prefix cache on every discovery. A disclosed list also does not certify that everything unlisted is real — a value that escaped masking never gains credibility from not being listed. Toggle both switches in the `/masking` home screen's settings zone (top block, Tab to focus).
 
 ## Development
 

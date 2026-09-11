@@ -183,7 +183,7 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.doesNotMatch(narrow, /I\s+import/);
     assert.doesNotMatch(narrow, /X export/);
     assert.match(narrow, /Esc\s+close/);
-    assert.ok(component.render(100).some((line) => line.includes("GLOBAL MASKING [ON]")));
+    assert.ok(component.render(100).some((line) => /Masking\s+\[ON\]/.test(line)));
     const focusedDetails = component.render(100);
     assert.ok(focusedDetails.includes("Description: —"));
     assert.ok(focusedDetails.includes('Exact value: "first-secret-value"'));
@@ -210,9 +210,9 @@ test("configuration home toggles and reorders in place while retaining selection
     component.handleInput("r");
     assert.ok(component.render(100).includes('Exact value: "first-secret-value"'));
     component.handleInput("M");
-    await waitFor(() => component.render(100).some((line) => line.includes("GLOBAL MASKING [OFF]")));
+    await waitFor(() => component.render(100).some((line) => /Masking\s+\[OFF\]/.test(line)));
     component.handleInput("m");
-    await waitFor(() => component.render(100).some((line) => line.includes("GLOBAL MASKING [ON]")));
+    await waitFor(() => component.render(100).some((line) => /Masking\s+\[ON\]/.test(line)));
     component.handleInput(INPUT.tab);
     assert.ok(component.render(100).some((line) => line.includes("TEST ACTIVE RULES · focused")));
     styleCalls.length = 0;
@@ -224,7 +224,15 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.equal(unfocusedDetails.length, 3);
     assert.ok(unfocusedDetails.every((call) => call.color === "dim"));
     component.handleInput(INPUT.tab);
+    assert.ok(component.render(100).some((line) => line.includes("SETTINGS · focused")));
+    // Settings zone: arrows move between rows, Escape falls back to rules.
+    component.handleInput(INPUT.down);
+    component.handleInput("\u001B[A");
+    component.handleInput(INPUT.escape);
     assert.ok(component.render(100).some((line) => line.includes("RULES · focused")));
+    component.handleInput("\u001B[Z");
+    assert.ok(component.render(100).some((line) => line.includes("SETTINGS · focused")));
+    component.handleInput(INPUT.tab);
     component.handleInput(INPUT.space);
     await waitFor(() => configRules(projectPath)[0]?.enabled === false);
     await waitFor(() => component.render(100).some((line) => line.includes("[OFF ]") && line.includes("First rule")));
