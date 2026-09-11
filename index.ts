@@ -78,10 +78,12 @@ import {
   loadConfigFromSnapshot,
   loadPersistentToggle,
   previewConfigRuleMutations,
+  previewConfigOptionChanges,
   previewRuleEnabledChanges,
   readRawConfigFile,
   redactRawConfigFile,
   saveConfigRuleMutations,
+  saveConfigOptionChanges,
   savePersistentToggle,
   saveRuleEnabledChanges,
   validateConfig,
@@ -93,6 +95,7 @@ import type {
   ConfigScope,
   ConfigSourceSnapshot,
   MaskingConfig,
+  MaskingOptions,
   RawConfigRule,
   RuleEnabledChange,
 } from "./config-loader.ts";
@@ -471,6 +474,11 @@ export default async function (pi: ExtensionAPI) {
   // session (including config hot reloads). Pre-initialized to a valid value to
   // avoid a null pointer if another event fires before session_start.
   let sessionKey: Buffer = generateSessionKey();
+
+  // Upgrade notice state: set at startup for existing-config users who have
+  // not seen (or enabled) the guidance note; cleared once the marker file is
+  // written and after the user enables guidance. See migration.ts.
+  let guidanceNoticePending = false;
 
   // Dynamic placeholder map (regex-discovered values only): created and
   // cleared on session_start, reused everywhere else — see file header.
@@ -1977,7 +1985,7 @@ export default async function (pi: ExtensionAPI) {
     }
 
     type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
-    type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "env" | "real" | "replacement" | "placeholder" | "json" | "test";
+    type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "json" | "test";
     const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
     let selectedSource: (typeof sources)[number] = sources.find((source) => source.scope === "global")!;
     let selectedType: BuilderType | undefined;
@@ -2087,6 +2095,9 @@ export default async function (pi: ExtensionAPI) {
       let discardConfirmation = false;
       let builderType: BuilderType = selectedType;
       let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
+      // Tri-state disclosure for literal rules: inherit / always / never.
+      let discloseIndex = editing && editing.initial.disclosePlaceholder === true ? 1
+        : editing && editing.initial.disclosePlaceholder === false ? 2 : 0;
       let mode: "form" | "json" = options.initialMode ?? "form";
       let focusIndex = !editing && mode === "form" ? 2 : 0;
       let lastFormField: BuilderField = !editing && mode === "form" ? "name" : "type";
@@ -2185,10 +2196,12 @@ export default async function (pi: ExtensionAPI) {
         else if (currentType() === "Literal from environment") {
           common.push("env", "replacement");
           if (replacementIndex === 1) common.push("placeholder");
+          common.push("disclose");
         }
         else {
           common.push("real", "replacement");
           if (replacementIndex === 1) common.push("placeholder");
+          common.push("disclose");
         }
         common.push("test");
         return common;
@@ -2260,6 +2273,7 @@ export default async function (pi: ExtensionAPI) {
           delete regexRule.realFromEnv;
           delete regexRule.placeholder;
           delete regexRule.preset;
+          delete regexRule.disclosePlaceholder;
           return regexRule;
         }
         if (currentType() === "Literal from environment") {
@@ -2267,6 +2281,7 @@ export default async function (pi: ExtensionAPI) {
             ...base,
             realFromEnv: editors.env.getExpandedText().trim(),
             placeholder: replacementIndex === 0 ? "auto" : editors.placeholder.getExpandedText(),
+            ...(discloseIndex === 1 ? { disclosePlaceholder: true } : discloseIndex === 2 ? { disclosePlaceholder: false } : {}),
           };
           delete envRule.type;
           delete envRule.pattern;
@@ -2279,6 +2294,7 @@ export default async function (pi: ExtensionAPI) {
           ...base,
           real: editors.real.getExpandedText(),
           placeholder: replacementIndex === 0 ? "auto" : editors.placeholder.getExpandedText(),
+          ...(discloseIndex === 1 ? { disclosePlaceholder: true } : discloseIndex === 2 ? { disclosePlaceholder: false } : {}),
         };
         delete literalRule.pattern;
         delete literalRule.flags;
@@ -2333,6 +2349,7 @@ export default async function (pi: ExtensionAPI) {
         }
         builderType = isRegex ? "Custom regex" : hasEnv ? "Literal from environment" : "Exact literal value";
         advancedFields = { ...rule };
+        discloseIndex = rule.disclosePlaceholder === true ? 1 : rule.disclosePlaceholder === false ? 2 : 0;
         explicitId = typeof rule.id === "string" ? rule.id : undefined;
         editors.name.setText(typeof rule.name === "string" ? rule.name : "");
         editors.description.setText(typeof rule.description === "string" ? rule.description : "");
@@ -2599,10 +2616,12 @@ export default async function (pi: ExtensionAPI) {
               renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
               renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
               if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
+              renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "←/→ or Space cycles whether this placeholder is listed in the guidance note");
             } else {
               renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
               renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
               if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
+              renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "←/→ or Space cycles whether this placeholder is listed in the guidance note");
             }
             const fixedFieldRowCount = 8;
             while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
@@ -2708,6 +2727,8 @@ export default async function (pi: ExtensionAPI) {
             } else if (field === "replacement") {
               replacementIndex = replacementIndex === 0 ? 1 : 0;
               focusIndex = Math.min(focusIndex, fields().length - 1);
+            } else if (field === "disclose") {
+              discloseIndex = (discloseIndex + (selectorDirection < 0 ? 2 : 1)) % 3;
             } else {
               editorForField(field)?.handleInput(data);
               return;
@@ -2945,6 +2966,150 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
+  /** Which config file option edits target: the project config when it
+   *  exists (its options override the global file's), else the global one. */
+  function optionsEditTarget(ctx: ExtensionContext): { scope: ConfigScope; path: string } | undefined {
+    const projectPath = getProjectConfigPath(ctx.cwd);
+    if (existsSync(projectPath)) return { scope: "project", path: projectPath };
+    if (existsSync(GLOBAL_CONFIG_PATH)) return { scope: "global", path: GLOBAL_CONFIG_PATH };
+    return undefined;
+  }
+
+  /** Save options changes with the same cache-impact preflight as rule edits. */
+  async function saveConfigOptionsUI(
+    ctx: ExtensionContext,
+    options: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders">>,
+  ): Promise<boolean> {
+    const target = optionsEditTarget(ctx);
+    if (!target) {
+      ctx.ui.notify("Add a rule first to create a project or global config", "warning");
+      return false;
+    }
+    try {
+      const preview = await previewConfigOptionChanges(target.path, options);
+      const candidate = await candidateConfigFromSources(ctx, preview.sources);
+      if (!await confirmConfigSave(
+        ctx,
+        candidate.config,
+        { title: "Save masking options?", warning: `Options are written to the ${target.scope} config (${target.path}).` },
+      )) return false;
+      await saveConfigOptionChanges(target.path, options);
+      notifyWarnings(ctx, candidate.warnings);
+      await reloadConfigNow(ctx);
+      return true;
+    } catch (err) {
+      ctx.ui.notify(`Failed to update masking options: ${(err as Error).message}`, "error");
+      return false;
+    }
+  }
+
+  async function openMaskingSettings(ctx: ExtensionContext): Promise<void> {
+    const target = optionsEditTarget(ctx);
+    await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
+      const rows = ["guidance", "disclose"] as const;
+      let selected = 0;
+      let saving = false;
+      let message = "";
+
+      function desired(): { systemPromptGuidance: boolean; disclosePlaceholders: boolean } {
+        return {
+          systemPromptGuidance: config.options.systemPromptGuidance,
+          disclosePlaceholders: config.options.disclosePlaceholders,
+        };
+      }
+
+      async function toggle(row: (typeof rows)[number]): Promise<void> {
+        if (saving || !target) return;
+        const next = desired();
+        if (row === "guidance") {
+          // Coupling: turning guidance off also turns disclosure off; the
+          // three states (off / guidance-only / full) are the only ones.
+          if (next.systemPromptGuidance) {
+            next.systemPromptGuidance = false;
+            next.disclosePlaceholders = false;
+          } else {
+            next.systemPromptGuidance = true;
+          }
+        } else {
+          if (next.disclosePlaceholders) {
+            next.disclosePlaceholders = false;
+          } else {
+            // Coupling: enabling disclosure force-enables guidance.
+            next.disclosePlaceholders = true;
+            next.systemPromptGuidance = true;
+          }
+        }
+        if (next.systemPromptGuidance === config.options.systemPromptGuidance
+          && next.disclosePlaceholders === config.options.disclosePlaceholders) return;
+        saving = true;
+        message = "Saving…";
+        tui.requestRender();
+        const saved = await saveConfigOptionsUI(ctx, next);
+        saving = false;
+        message = saved ? "Saved · affects future requests" : "Save cancelled · no changes applied";
+        tui.requestRender();
+      }
+
+      const hints = "Space/Enter toggle · Esc close";
+      return {
+        render: (width) => {
+          const state = desired();
+          const literalCount = config.configuredRules.filter((configured) =>
+            configured.enabled && configured.available && configured.sourceKind === "literal").length;
+          const lines: string[] = [
+            theme.fg("accent", theme.bold(`Masking settings${message ? ` · ${message}` : ""}`)),
+            ...wrappedMaskingText(theme.fg("muted", target
+              ? `Options are saved to the ${target.scope} config · ${target.path}`
+              : "No project or global config exists yet; add a rule first"), width),
+            "",
+          ];
+          if (guidanceNoticePending && !state.systemPromptGuidance) {
+            lines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: the guidance note tells the model how to work with masked values — enable it below."), width));
+            lines.push("");
+          }
+          const rowsText = [
+            ["Guidance note", state.systemPromptGuidance ? "ON" : "OFF",
+              "Appends a behavioral contract for masked values to the system prompt (cache-impacting when enabled mid-session)"],
+            ["Disclose placeholders", state.disclosePlaceholders ? "ON" : "OFF",
+              `Lists literal-rule placeholder strings inside the guidance note (${literalCount} eligible rule${literalCount === 1 ? "" : "s"}); requires the guidance note and enables it automatically`],
+          ] as const;
+          rowsText.forEach(([label, value, description], index) => {
+            const marker = index === selected ? "▶" : " ";
+            const rendered = truncateToWidth(`${marker} ${label.padEnd(22)} [${value}]`, Math.max(1, width));
+            lines.push(index === selected ? theme.fg("accent", rendered) : rendered);
+            if (index === selected) {
+              lines.push(...wrappedMaskingText(theme.fg("dim", description), width));
+            }
+          });
+          lines.push("", "");
+          lines.push(...wrappedMaskingText(theme.fg("dim", hints), width));
+          return fillMaskingScreen(lines, width, tui.terminal.rows);
+        },
+        invalidate: () => {},
+        handleInput: (data) => {
+          if (saving) return;
+          if (keybindings.matches(data, "tui.select.up")) {
+            selected = (selected + rows.length - 1) % rows.length;
+            tui.requestRender();
+            return;
+          }
+          if (keybindings.matches(data, "tui.select.down")) {
+            selected = (selected + 1) % rows.length;
+            tui.requestRender();
+            return;
+          }
+          if (matchesKey(data, Key.space) || keybindings.matches(data, "tui.select.confirm")) {
+            void toggle(rows[selected]!);
+            return;
+          }
+          if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
+            done(undefined);
+          }
+        },
+      };
+    }, MASKING_SCREEN_OPTIONS);
+  }
+
   async function openMaskingConfig(ctx: ExtensionContext): Promise<void> {
     const filters = ["all", "enabled", "disabled", "project", "global", "literal", "regex", "preset"] as const;
     let filterIndex = 0;
@@ -2958,7 +3123,7 @@ export default async function (pi: ExtensionAPI) {
       | { kind: "edit"; rule: ConfiguredMaskingRule; initialMode?: "form" | "json" }
       | { kind: "delete"; rule: ConfiguredMaskingRule }
       | { kind: "add"; initialMode?: "form" | "json" }
-      | { kind: "import" | "export" | "help" };
+      | { kind: "import" | "export" | "help" | "settings" };
     await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
       let screenRules = config.configuredRules;
       let selectedIndex = 0;
@@ -3114,6 +3279,7 @@ export default async function (pi: ExtensionAPI) {
           : action.kind === "add" ? "Opening rule builder…"
           : action.kind === "delete" ? "Opening confirmation…"
           : action.kind === "help" ? "Opening help…"
+          : action.kind === "settings" ? "Opening settings…"
           : action.kind === "import" ? "Opening import…"
           : action.kind === "export" ? "Opening export…"
           : "Opening batch confirmation…";
@@ -3124,6 +3290,7 @@ export default async function (pi: ExtensionAPI) {
           else if (action.kind === "delete") await deleteConfigRule(ctx, action.rule);
           else if (action.kind === "add") await addConfigRule(ctx, undefined, { initialMode: action.initialMode });
           else if (action.kind === "help") await showRuleConfigurationHelp(ctx);
+          else if (action.kind === "settings") await openMaskingSettings(ctx);
           else if (action.kind === "import") await importConfigRules(ctx);
           else await exportConfigRules(ctx);
         } finally {
@@ -3142,7 +3309,7 @@ export default async function (pi: ExtensionAPI) {
           const maskingEnabled = desiredConfig.enabled;
           const maskingActivationPending = pendingConfigActivation !== null && desiredConfig.enabled !== config.enabled;
           const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
-          const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab test · M masking · H help · Esc close`), width);
+          const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · S settings · Tab test · M masking · H help · Esc close`), width);
           const globalState = `GLOBAL MASKING [${maskingEnabled ? "ON" : "OFF"}] · M turn ${maskingEnabled ? "off" : "on"} · saved across projects and future sessions${maskingActivationPending ? " · activates next run" : ""}`;
           const lines: string[] = [
             theme.fg("accent", theme.bold(`Masking configuration${mutationMessage ? ` · ${mutationMessage}` : ""}`)),
@@ -3363,6 +3530,7 @@ export default async function (pi: ExtensionAPI) {
           if (matchesKey(data, "i")) return void runScreenAction({ kind: "import" });
           if (matchesKey(data, "x")) return void runScreenAction({ kind: "export" });
           if (matchesKey(data, "h")) return void runScreenAction({ kind: "help" });
+          if (matchesKey(data, "s")) return void runScreenAction({ kind: "settings" });
           if (matchesKey(data, "f")) {
             filterIndex = (filterIndex + 1) % filters.length;
             selectedIndex = 0;

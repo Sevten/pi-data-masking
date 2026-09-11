@@ -83,6 +83,8 @@ interface ConfigCommitHooks {
 
 export type RawConfigRule = Record<string, unknown>;
 
+export type RawConfigOptions = Record<string, unknown>;
+
 export type ConfigRuleMutation =
   | { kind: "append"; path: string; rule: RawConfigRule }
   | { kind: "replace"; path: string; sourceIndex: number; id: string; rule: RawConfigRule }
@@ -1059,6 +1061,28 @@ async function publishConfigWrites(
   await Promise.all([...backups].map(async (backupPath) => {
     try { await unlink(backupPath); } catch { /* A stale backup is safer than reporting a false write failure. */ }
   }));
+}
+
+/** Prepare options changes in memory without writing any file. */
+export async function previewConfigOptionChanges(
+  path: string,
+  options: Partial<MaskingOptions>,
+): Promise<ConfigChangePreview> {
+  const data = await readRawConfigFile(path);
+  data.options = { ...(data.options as RawConfigOptions | undefined), ...options };
+  return { warnings: [], sources: [{ path, data }] };
+}
+
+/** Atomically persist options changes to one config file. */
+export async function saveConfigOptionChanges(
+  path: string,
+  options: Partial<MaskingOptions>,
+): Promise<void> {
+  const preview = await previewConfigOptionChanges(path, options);
+  await publishConfigWrites(preview.sources.map(({ path, data }) => ({
+    path,
+    content: `${JSON.stringify(data, null, 2)}\n`,
+  })));
 }
 
 export function validateRawConfigRule(rule: RawConfigRule): string[] {
