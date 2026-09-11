@@ -867,7 +867,45 @@ export default async function (pi: ExtensionAPI) {
    * (shown by /masking-history) pointing at the previous branch. Returns the
    * restored history so callers can replay messages with the activated config.
    */
+  /** Reset every session-scoped mutable field to its fresh-session default.
+   *  restoreBranchState() calls this before applying branch-derived state and
+   *  session_shutdown() so nothing stale survives the session — the field
+   *  list exists exactly once, here, so the two paths cannot drift apart.
+   *  Not reset: stopWatching (watcher lifecycle), config/masker/configSnapshot
+   *  (config lifecycle), sessionKey (re-derived per branch),
+   *  guidanceNoticePending (session_start migration flow). */
+  function resetSessionState(): void {
+    transcript = [];
+    snapshotSignatures = new Map();
+    snapshotContentHashes = new Map();
+    requestSequence = 0;
+    sessionStatePersisted = false;
+    dynamicPlaceholderMap = new Map();
+    llmInventedValues = new Set();
+    protectedValues = new Set();
+    ruleEpochs = [];
+    epochTranscripts = new Map();
+    activeRuleEpoch = undefined;
+    activeEpochConfig = undefined;
+    persistedEpochIds = new Set();
+    pendingSystemSourceHash = undefined;
+    pendingSystemSourceText = undefined;
+    latestModelInput = [];
+    latestSystemPrefix = undefined;
+    impactPreviewKeys = new Set();
+    agentRunActive = false;
+    pendingConfigActivation = null;
+    sessionMaskedOutbound = false;
+    invalidateMaskedCaches();
+    fallbackNotifiedThisTurn = false;
+    systemPromptWarned = false;
+    dynamicMapWarned = false;
+    inventedMapWarned = false;
+    persistenceWarned = false;
+  }
+
   const restoreBranchState = (ctx: ExtensionContext): RestoredHistory => {
+    resetSessionState();
     const branchEntries = ctx.sessionManager.getBranch() as unknown as SessionEntryLike[];
     const restored = restoreHistory(branchEntries);
     transcript = restored.transcript;
@@ -888,30 +926,10 @@ export default async function (pi: ExtensionAPI) {
     activeRuleEpoch = ruleEpochs.at(-1);
     activeEpochConfig = undefined;
     persistedEpochIds = new Set(ruleEpochs.map((epoch) => epoch.epochId));
-    pendingSystemSourceHash = undefined;
-    pendingSystemSourceText = undefined;
     latestModelInput = transcript.map((entry) => ({
       original: structuredClone(entry.original),
       maskedHash: hashMessage(entry.masked),
     }));
-    latestSystemPrefix = undefined;
-    impactPreviewKeys = new Set();
-    agentRunActive = false;
-    pendingConfigActivation = null;
-    sessionMaskedOutbound = false;
-    dynamicPlaceholderMap = new Map();
-    llmInventedValues = new Set();
-    protectedValues = new Set();
-    snapshotContentHashes = new Map();
-    // Fresh sessionKey and provenance sets — cached masked outputs from any
-    // prior state must not survive. (activateConfig() below clears again; this also
-    // covers paths that never reach it.)
-    invalidateMaskedCaches();
-    fallbackNotifiedThisTurn = false;
-    systemPromptWarned = false;
-    dynamicMapWarned = false;
-    inventedMapWarned = false;
-    persistenceWarned = false;
     return restored;
   };
 
@@ -1003,13 +1021,7 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     stopWatching?.();
     stopWatching = null;
-    agentRunActive = false;
-    pendingConfigActivation = null;
-    pendingSystemSourceHash = undefined;
-    pendingSystemSourceText = undefined;
-    latestModelInput = [];
-    latestSystemPrefix = undefined;
-    impactPreviewKeys.clear();
+    resetSessionState();
   });
 
   // ── Hook 1: context — outbound masking ────────────────────────────────────
