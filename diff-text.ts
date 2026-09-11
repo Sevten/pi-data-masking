@@ -60,27 +60,43 @@ export function diffText(original: string, masked: string): DiffSegment[] {
       return segments;
     }
 
-    // Look for the next sufficiently useful shared fragment. The cap keeps a
-    // long tool result from turning history rendering into quadratic work.
+    // Look for the next sufficiently useful shared fragment. Two discovery
+    // passes trade sensitivity against safety:
+    //  - tight: short 6-char fragments within a small drift. This finds the
+    //    small stable context right after a replaced value (the " keep " in
+    //    `secret keep secret` → `masked keep masked`), where offsets shifted
+    //    only by the placeholder's length delta.
+    //  - loose: long 16-char fragments within a larger drift, for replacements
+    //    that changed the length substantially. A 16-char run is unlikely to
+    //    repeat by accident; a 6-char one is — "netbir" taken from inside a
+    //    replaced value also matches a bare `netbird status` command later in
+    //    the same document, which used to drag the anchor far ahead and swell
+    //    the changed span to everything in between.
+    // The scan cap keeps a long tool result from turning rendering into
+    // quadratic work.
     let anchorOriginal = -1;
     let anchorMasked = -1;
     const scan = Math.min(before.length, 2_000);
-    for (let start = 0; start < scan; start++) {
-      const fragment = before.slice(start, start + 6);
-      if (fragment.length < 3) break;
-      const found = after.indexOf(fragment);
-      // Prefix rewinding can leave the same shared fragment at offset zero in
-      // both strings. Accepting that (0, 0) anchor would slice away nothing
-      // and repeat this loop forever, so every anchor must advance at least
-      // one side of the comparison.
-      if (
-        found >= 0 && (start > 0 || found > 0) &&
-        isContextAnchor(before, start) && isContextAnchor(after, found)
-      ) {
-        anchorOriginal = start;
-        anchorMasked = found;
-        break;
+    for (const pass of ANCHOR_PASSES) {
+      // Anchors at start = 0 are skipped by construction: the fragment at the
+      // divergence point is the head of the replaced value itself, so any hit
+      // elsewhere is an unrelated repetition of that value (the exact
+      // "netbird status" failure this scan guards against). A legitimate
+      // resync always has a candidate at start ≥ 1.
+      for (let start = 1; start < scan; start++) {
+        const fragment = before.slice(start, start + pass.fragmentLength);
+        if (fragment.length < 3) break;
+        let found = after.indexOf(fragment);
+        while (found >= 0 && Math.abs(found - start) > pass.maxDrift) {
+          found = after.indexOf(fragment, found + 1);
+        }
+        if (found >= 0 && isContextAnchor(before, start) && isContextAnchor(after, found)) {
+          anchorOriginal = start;
+          anchorMasked = found;
+          break;
+        }
       }
+      if (anchorOriginal >= 0) break;
     }
     if (anchorOriginal < 0) {
       // Short closing delimiters (for example the final backtick in
@@ -106,6 +122,12 @@ export function diffText(original: string, masked: string): DiffSegment[] {
 }
 
 const WORD_CHARACTER = /[\p{L}\p{N}_]/u;
+
+/** Anchor discovery passes for diffText: tried in order, first hit wins. */
+const ANCHOR_PASSES = [
+  { fragmentLength: 6, maxDrift: 64 },
+  { fragmentLength: 16, maxDrift: 512 },
+] as const;
 
 /**
  * Shared text inside a replacement is not unchanged context. Only use an

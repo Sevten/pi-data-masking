@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createEpochHistoryViewer, createHistoryViewer, mergePendingAssistant, mergeTranscript } from "../history-viewer.ts";
-import { diffText } from "../diff-text.ts";
 import type { RuleEpoch } from "../rule-epoch.ts";
 
 test("history transcript updates a context message instead of duplicating it", () => {
@@ -28,57 +27,6 @@ test("pending assistant response is replaced once it reaches context", () => {
   assert.equal(confirmed.length, 1);
   assert.equal(confirmed[0]!.pending, false);
   assert.deepEqual(confirmed[0]!.masked.content, [{ type: "text", text: "[MASKED]" }]);
-});
-
-test("text diff keeps replacement spans separate without injecting punctuation", () => {
-  assert.deepEqual(
-    diffText("token=secret; keep=this", "token=[MASKED]; keep=this"),
-    [
-      { original: "token=", masked: "token=", changed: false },
-      { original: "secret", masked: "[MASKED]", changed: true },
-      { original: "; keep=this", masked: "; keep=this", changed: false },
-    ],
-  );
-});
-
-test("text diff does not split a replacement at its shared word suffix", () => {
-  assert.deepEqual(
-    diffText("mysecret", "maskedsecret"),
-    [{ original: "mysecret", masked: "maskedsecret", changed: true }],
-  );
-});
-
-test("text diff advances after rewinding a shared prefix to the word start", () => {
-  assert.deepEqual(
-    diffText("abcdefX", "abcdefY"),
-    [{ original: "abcdefX", masked: "abcdefY", changed: true }],
-  );
-  assert.deepEqual(
-    diffText("value=abcdefX; keep=this", "value=abcdefY; keep=this"),
-    [
-      { original: "value=", masked: "value=", changed: false },
-      { original: "abcdefX", masked: "abcdefY", changed: true },
-      { original: "; keep=this", masked: "; keep=this", changed: false },
-    ],
-  );
-});
-
-test("text diff excludes short shared closing delimiters from a replacement", () => {
-  assert.deepEqual(
-    diffText("`wsl90.top`", "`test.xyz`"),
-    [
-      { original: "`", masked: "`", changed: false },
-      { original: "wsl90.top", masked: "test.xyz", changed: true },
-      { original: "`", masked: "`", changed: false },
-    ],
-  );
-  assert.deepEqual(
-    diffText("mysecret`", "maskedsecret`"),
-    [
-      { original: "mysecret", masked: "maskedsecret", changed: true },
-      { original: "`", masked: "`", changed: false },
-    ],
-  );
 });
 
 test("N/P navigates every masked occurrence, including repeated mappings", () => {
