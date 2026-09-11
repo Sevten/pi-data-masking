@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Rule Builder: keyboard hints (and any pending confirmation) now sit at the
+  very bottom of the terminal window instead of directly under the content.
+- Removed "No provider request has been sent for this check." from the
+  save-time impact confirmation, and both confirm choices are now rendered
+  highlighted with a ▶ selection marker.
+- Rule enable/disable (single and batch) with cache impact now confirms
+  inline in the `/masking` home screen — in place of the rule details block
+  — instead of stacking a second overlay window.
+- `/masking`: the "N enabled / M configured · filter …" summary moved onto
+  the first header line to save a row.
+- `/masking` rules-list details: the exact value is shown without surrounding
+  quotes, and a `Disclose:` line reports the rule's effective disclosure mode
+  (always / never / inherit with the current global value).
+- `/masking` rules list now grows to fill the terminal down to the hint bar
+  instead of leaving blank rows below it.
+- New settings row `Status line` toggles the masking summary shown at the
+  bottom of the main chat window (`options.showStatusBar`).
+- Esc closes `/masking` from any zone (settings, test area, rules list);
+  it no longer first returns focus to the rules list.
+- Rule edits with cache impact confirm inline inside the Rule Builder screen
+  instead of stacking a second overlay window.
+- The save-time impact confirmation now compares a fresh re-mask of the
+  candidate config against a fresh re-mask of the currently-active config,
+  instead of against recorded masked hashes — editing a rule that has never
+  fired on any message no longer triggers the confirmation.
+- Removed the noisy "Masking config reloaded (N active / M configured)"
+  notification after every rule change or enable/disable.
+
 ### Added
 
 - New opt-in system-prompt guidance contract (`options.systemPromptGuidance`, now
@@ -50,6 +80,12 @@
 
 ### Changed
 
+- Disabling global masking from the `/masking` home screen now confirms inline
+  (warning and Yes/No selector rendered inside the same screen, `←→` select ·
+  `Enter` confirm · `Esc` cancel) instead of opening a separate overlay window.
+  The confirmation only appears when the session's model-bound context has
+  actually been masked — i.e. disabling would change the outbound prefix and
+  drop provider prefix-cache reuse; otherwise the toggle applies immediately.
 - The `/masking` configuration home is faster to navigate, with direct JSON
   editing, sensitive-value visibility controls, and clearer compact layouts.
 - Creating a global rule is simpler: global scope by default, generated IDs,

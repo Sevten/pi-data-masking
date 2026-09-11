@@ -210,7 +210,11 @@ function configuredRuleDisplayName(configured: ConfiguredMaskingRule): string {
     || configured.rule.id;
 }
 
-function configuredRuleDetail(configured: ConfiguredMaskingRule, showExactValues: boolean): string[] {
+function configuredRuleDetail(
+  configured: ConfiguredMaskingRule,
+  showExactValues: boolean,
+  globalDisclose: boolean,
+): string[] {
   const rule = configured.rule;
   const lines = [
     `Description: ${rule.description?.trim() || "—"}`,
@@ -228,7 +232,7 @@ function configuredRuleDetail(configured: ConfiguredMaskingRule, showExactValues
       }
     } else {
       lines.push(showExactValues
-        ? `Exact value: ${JSON.stringify(rule.real)}`
+        ? `Exact value: ${rule.real ?? ""}`
         : "Exact value: <hidden> · R to show");
     }
     if (configured.placeholderMode === "custom") {
@@ -238,6 +242,8 @@ function configuredRuleDetail(configured: ConfiguredMaskingRule, showExactValues
     } else {
       lines.push("Placeholder: automatic");
     }
+    const disclose = (rule as { disclosePlaceholder?: boolean }).disclosePlaceholder;
+    lines.push(`Disclose: ${disclose === true ? "always" : disclose === false ? "never" : `inherit (${globalDisclose ? "on" : "off"})`}`);
   }
   return lines;
 }
@@ -541,6 +547,14 @@ export default async function (pi: ExtensionAPI) {
   let inventedMapWarned = false;
   let persistenceWarned = false;
 
+  /** True once the session's model-bound transcript actually contains masked
+   *  content (original ≠ masked fingerprints seen in resolveMaskedMessage,
+   *  including restored history priming). Disabling masking then changes what
+   *  the next request sends, invalidating provider prefix cache from the
+   *  earliest changed component. When nothing was masked yet, disabling has
+   *  no prefix-cache impact and needs no second confirmation. */
+  let sessionMaskedOutbound = false;
+
   // ── Internal helpers ──────────────────────────────────────────────────────
 
   /** Build a Masker from one immutable config and the session-wide mapping state. */
@@ -592,6 +606,7 @@ export default async function (pi: ExtensionAPI) {
       // stored masked-output hash (provider boundary re-checks the context
       // hook's output), and pair.original must stay the un-masked
       // fingerprint either way.
+      if (cached.hash !== cached.maskedHash) sessionMaskedOutbound = true;
       return {
         masked: cached.masked,
         pair: { original: cached.hash, masked: cached.maskedHash },
@@ -603,6 +618,7 @@ export default async function (pi: ExtensionAPI) {
     const r = masker.maskValue(message, maskOptionsForRole(role));
     const maskedHash = hashMessage(r.value);
     maskedCache.record(key, hash, maskedHash, r.value);
+    if (hash !== maskedHash) sessionMaskedOutbound = true;
     return {
       masked: r.value,
       pair: { original: hash, masked: maskedHash },
@@ -775,16 +791,19 @@ export default async function (pi: ExtensionAPI) {
    * Mutable Masker inputs are cloned, so previewing cannot reserve a
    * placeholder or alter first-seen provenance. Compaction, later extensions,
    * serialization, and provider policy remain outside this local estimate.
+   *
+   * Both sides of every comparison are fresh re-masks (candidate vs the
+   * config that is currently slated to run), never the recorded maskedHash.
+   * Re-masking with the current config cancels out recorder drift (stale
+   * cache entries, restored sessions, changed toggles), so a rule that has
+   * never fired on any message produces no diff and no confirmation prompt.
    */
   function previewConfigImpact(cfg: MaskingConfig): ConfigImpactPreview | undefined {
-    // Compare with the last input that actually crossed the local masking
-    // boundary, even if one or more newly saved epochs have not sent a request
-    // yet. That factual input is still the provider-cache baseline users are
-    // deciding whether to preserve during repeated edits.
     if (latestModelInput.length === 0 && !latestSystemPrefix) return undefined;
-    const previewMasker = new Masker(
-      cfg.enabled ? cfg.rules : [],
-      cfg.options.caseSensitive,
+    const baseCfg = pendingConfigActivation?.config ?? config;
+    const previewMaskerFor = (c: MaskingConfig) => new Masker(
+      c.enabled ? c.rules : [],
+      c.options.caseSensitive,
       sessionKey,
       new Map(dynamicPlaceholderMap),
       new Set(llmInventedValues),
@@ -793,24 +812,28 @@ export default async function (pi: ExtensionAPI) {
 
     let systemChanged = false;
     if (latestSystemPrefix) {
-      let emitted = latestSystemPrefix.source;
-      if (cfg.enabled && cfg.rules.length > 0) {
-        emitted = previewMasker.mask(emitted, { discover: true }).text;
-        const guidanceNote = guidanceNoteForConfig(cfg);
-        if (guidanceNote) emitted += "\n\n" + guidanceNote;
-      }
-      systemChanged = emitted !== latestSystemPrefix.emitted;
+      const emittedWith = (c: MaskingConfig) => {
+        let emitted = latestSystemPrefix!.source;
+        if (c.enabled && c.rules.length > 0) {
+          emitted = previewMaskerFor(c).mask(emitted, { discover: true }).text;
+          const guidanceNote = guidanceNoteForConfig(c);
+          if (guidanceNote) emitted += "\n\n" + guidanceNote;
+        }
+        return emitted;
+      };
+      systemChanged = emittedWith(cfg) !== emittedWith(baseCfg);
     }
 
+    const baselineMasker = previewMaskerFor(baseCfg);
+    const candidateMasker = previewMaskerFor(cfg);
     let changedMessageCount = 0;
     let firstChangedIndex = -1;
     for (let index = 0; index < latestModelInput.length; index++) {
       const entry = latestModelInput[index]!;
       const role = (entry.original as { role?: string }).role;
-      const candidate = cfg.enabled && cfg.rules.length > 0
-        ? previewMasker.maskValue(entry.original, maskOptionsForRole(role)).value
-        : entry.original;
-      if (hashMessage(candidate) === entry.maskedHash) continue;
+      const options = maskOptionsForRole(role);
+      const remask = (masker: Masker) => masker.maskValue(entry.original, options).value;
+      if (hashMessage(remask(candidateMasker)) === hashMessage(remask(baselineMasker))) continue;
       changedMessageCount++;
       if (firstChangedIndex < 0) firstChangedIndex = index;
     }
@@ -863,25 +886,25 @@ export default async function (pi: ExtensionAPI) {
     const activation = agentRunActive
       ? "\n\nThe active agent run keeps its current rules; this estimate applies when the pending change activates."
       : "";
-    return `Local preflight expects this change to alter ${target}. Provider prefix cache reuse may decrease from the earliest changed component.${activation}\n\nNo provider request has been sent for this check.`;
+    return `Local preflight expects this change to alter ${target}. Provider prefix cache reuse may decrease from the earliest changed component.${activation}`;
   }
 
   async function confirmConfigSave(
     ctx: ExtensionContext,
     cfg: MaskingConfig,
     options: { title?: string; warning?: string; force?: boolean } = {},
+    ask?: (title: string, message: string) => Promise<boolean>,
   ): Promise<boolean> {
     const behaviorChanged = activeRuleEpoch?.behaviorFingerprint !== ruleBehaviorFingerprint(cfg, sessionKey);
     const prediction = behaviorChanged ? previewConfigImpact(cfg) : undefined;
     if (!prediction && !options.force) return true;
     const sections = [options.warning, prediction ? configImpactMessage(prediction) : undefined]
       .filter((section): section is string => Boolean(section));
-    const choice = await selectMaskingOption(
-      ctx,
-      options.title ?? "Save masking changes?",
-      ["Save anyway", "Back to editing"],
-      sections.join("\n\n"),
-    );
+    const title = options.title ?? "Save masking changes?";
+    const message = sections.join("\n\n");
+    const choice = ask
+      ? await ask(title, message) ? "Save anyway" : "Back to editing"
+      : await selectMaskingOption(ctx, title, ["Save anyway", "Back to editing"], message);
     if (choice !== "Save anyway") return false;
     if (prediction) impactPreviewKeys.add(configImpactPreviewKey(cfg));
     return true;
@@ -1191,6 +1214,7 @@ export default async function (pi: ExtensionAPI) {
     impactPreviewKeys = new Set();
     agentRunActive = false;
     pendingConfigActivation = null;
+    sessionMaskedOutbound = false;
     dynamicPlaceholderMap = new Map();
     llmInventedValues = new Set();
     protectedValues = new Set();
@@ -1271,12 +1295,12 @@ export default async function (pi: ExtensionAPI) {
         [...reloaded.warnings, ...persistedReload.warnings],
       );
       if (disposition === "activated") ensureSessionStatePersisted(ctx);
-      ctx.ui.notify(
-        disposition === "queued"
-          ? "🔒 Masking config reload saved; the active run keeps its current rules, the reload activates before the next run, and recorded history is not rewritten"
-          : `🔒 Masking config reloaded (${persistedReload.config.rules.length} active / ${persistedReload.config.configuredRules.length} configured); recorded history remains unchanged`,
-        "info"
-      );
+      if (disposition === "queued") {
+        ctx.ui.notify(
+          "🔒 Masking config reload saved; the active run keeps its current rules, the reload activates before the next run, and recorded history is not rewritten",
+          "info"
+        );
+      }
     });
 
     updateStatus(ctx);
@@ -1752,10 +1776,11 @@ export default async function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     changes: RuleEnabledChange[],
     confirmation: ConfigSaveConfirmation = {},
+    ask?: (title: string, message: string) => Promise<boolean>,
   ): Promise<boolean> {
     const preview = await previewRuleEnabledChanges(changes);
     const candidate = await candidateConfigFromSources(ctx, preview.sources);
-    if (!await confirmConfigSave(ctx, candidate.config, confirmation)) return false;
+    if (!await confirmConfigSave(ctx, candidate.config, confirmation, ask)) return false;
     await saveRuleEnabledChanges(changes);
     await reloadConfigNow(ctx);
     return true;
@@ -2074,7 +2099,11 @@ export default async function (pi: ExtensionAPI) {
     type BuiltRule = { source: typeof sources[number]; rule: RawConfigRule; createdSource: boolean };
     let sourceCreatedDuringBuilder = false;
 
-    async function persistBuilderDraft(source: typeof sources[number], rule: RawConfigRule): Promise<boolean> {
+      async function persistBuilderDraft(
+      source: typeof sources[number],
+      rule: RawConfigRule,
+      ask?: (title: string, message: string) => Promise<boolean>,
+    ): Promise<boolean> {
       if (!existsSync(source.path)) {
         const initial = buildInitialConfig([]);
         try {
@@ -2098,7 +2127,7 @@ export default async function (pi: ExtensionAPI) {
         : [{ kind: "append" as const, path: source.path, rule }];
       const preview = await previewConfigRuleMutations(mutations);
       const candidate = await candidateConfigFromSources(ctx, preview.sources);
-      if (!await confirmConfigSave(ctx, candidate.config)) return false;
+      if (!await confirmConfigSave(ctx, candidate.config, {}, ask)) return false;
       const saved = await saveConfigRuleMutations(mutations);
       notifyWarnings(ctx, saved.warnings);
       await reloadConfigNow(ctx);
@@ -2121,6 +2150,14 @@ export default async function (pi: ExtensionAPI) {
       let warningSignature = "";
       let saving = false;
       let discardConfirmation = false;
+      /** Inline cache-impact confirmation: rendered inside this builder
+       *  screen instead of stacking a second overlay window. */
+      let inlineConfirmState: { title: string; message: string; yes: boolean; resolve: (save: boolean) => void } | null = null;
+      const inlineConfirm = (title: string, message: string): Promise<boolean> =>
+        new Promise<boolean>((resolve) => {
+          inlineConfirmState = { title, message, yes: false, resolve };
+          tui.requestRender();
+        });
       let builderType: BuilderType = selectedType;
       let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
       // Tri-state disclosure for literal rules: inherit / always / never.
@@ -2597,7 +2634,7 @@ export default async function (pi: ExtensionAPI) {
         saveMessage = "Saving…";
         tui.requestRender();
         try {
-          const persisted = await persistBuilderDraft(currentSource(), draft.rule);
+          const persisted = await persistBuilderDraft(currentSource(), draft.rule, inlineConfirm);
           if (!persisted) {
             saving = false;
             saveMessage = "Save cancelled · draft retained";
@@ -2644,12 +2681,12 @@ export default async function (pi: ExtensionAPI) {
               renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
               renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
               if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
-              renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "←/→ or Space cycles whether this placeholder is listed in the guidance note");
+              renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "listed placeholders appear in the guidance note, labelled as substitutes — never the real value · ←/→ or Space cycles");
             } else {
               renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
               renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
               if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
-              renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "←/→ or Space cycles whether this placeholder is listed in the guidance note");
+              renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "listed placeholders appear in the guidance note, labelled as substitutes — never the real value · ←/→ or Space cycles");
             }
             const fixedFieldRowCount = 8;
             while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
@@ -2678,11 +2715,48 @@ export default async function (pi: ExtensionAPI) {
             lines.push(...wrappedMaskingText(theme.fg("warning", `Warning: ${warning}`), width));
           }
           lines.push("");
-          lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓ fields · Tab form/test · ←→ or Space change selection · F2 form/JSON · Enter save · Esc cancel"), width));
+          // Keyboard hints and any pending confirmation sit at the very
+          // bottom of the terminal window, not directly under the content.
+          const hintLines = wrappedMaskingText(theme.fg("dim", "↑↓ fields · Tab form/test · ←→ or Space change selection · F2 form/JSON · Enter save · Esc cancel"), width);
+          const confirmLines = inlineConfirmState
+            ? [
+              ...wrappedMaskingText(theme.fg("warning", theme.bold(inlineConfirmState.title)), width),
+              ...wrappedMaskingText(inlineConfirmState.message, width),
+              // Both choices are highlighted; the ▶ marker carries the selection.
+              theme.fg("accent", `${inlineConfirmState.yes ? "▶" : " "} Save anyway    ${inlineConfirmState.yes ? " " : "▶"} Back to editing`),
+              ...wrappedMaskingText(theme.fg("dim", "←→ select · Enter confirm · Esc back to editing"), width),
+            ]
+            : [];
+          const bottomPad = Math.max(1, tui.terminal.rows - lines.length - hintLines.length - confirmLines.length);
+          lines.push(...Array(bottomPad).fill(""));
+          lines.push(...hintLines);
+          lines.push(...confirmLines);
           return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => Object.values(editors).forEach((editor) => editor.invalidate()),
         handleInput: (data) => {
+          if (inlineConfirmState) {
+            const state = inlineConfirmState;
+            if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
+              state.yes = !state.yes;
+              tui.requestRender();
+              return;
+            }
+            if (keybindings.matches(data, "tui.select.confirm") || matchesKey(data, "y") || data === "Y") {
+              inlineConfirmState = null;
+              tui.requestRender();
+              state.resolve(true);
+              return;
+            }
+            if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")
+              || matchesKey(data, "n") || data === "N") {
+              inlineConfirmState = null;
+              tui.requestRender();
+              state.resolve(false);
+              return;
+            }
+            return;
+          }
           if (saving) return;
           if (discardConfirmation) {
             if (matchesKey(data, "y") || keybindings.matches(data, "tui.select.confirm")) {
@@ -2906,6 +2980,7 @@ export default async function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     configured: ConfiguredMaskingRule,
     notifySuccess = true,
+    ask?: (title: string, message: string) => Promise<boolean>,
   ): Promise<boolean> {
     const enabled = !configured.enabled;
     try {
@@ -2914,7 +2989,7 @@ export default async function (pi: ExtensionAPI) {
         sourceIndex: configured.sourceIndex,
         id: configured.rule.id,
         enabled,
-      }]);
+      }], {}, ask);
       if (!saved) return false;
       const state = enabled && !configured.available
         ? `enabled in config but waiting for environment variable ${configured.realFromEnv}`
@@ -2932,7 +3007,7 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
-  async function applyBatchRuleState(ctx: ExtensionContext, changes: RuleEnabledChange[]): Promise<void> {
+  async function applyBatchRuleState(ctx: ExtensionContext, changes: RuleEnabledChange[], ask?: (title: string, message: string) => Promise<boolean>): Promise<void> {
     if (changes.length === 0) return;
     const disabling = changes.filter((change) => !change.enabled).length;
     try {
@@ -2940,7 +3015,7 @@ export default async function (pi: ExtensionAPI) {
         title: "Apply batch rule changes?",
         force: true,
         warning: `${changes.length - disabling} rule(s) will be enabled and ${disabling} disabled.\nDisabled rules may expose matching values in future requests. Earlier context cannot be retracted.`,
-      })) return;
+      }, ask)) return;
       ctx.ui.notify(`Applied ${changes.length} rule state change(s) immediately`, "info");
     } catch (err) {
       ctx.ui.notify(`Failed to update rules: ${(err as Error).message}`, "error");
@@ -3006,7 +3081,7 @@ export default async function (pi: ExtensionAPI) {
   /** Save options changes with the same cache-impact preflight as rule edits. */
   async function saveConfigOptionsUI(
     ctx: ExtensionContext,
-    options: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders">>,
+    options: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders" | "showStatusBar">>,
   ): Promise<boolean> {
     const target = optionsEditTarget(ctx);
     if (!target) {
@@ -3053,7 +3128,10 @@ export default async function (pi: ExtensionAPI) {
       let searchMode = false;
       let mutationInProgress = false;
       let mutationMessage = "";
-      const settingsRows = ["masking", "guidance", "disclose"] as const;
+      /** Extra rows granted to the rules list so it fills the terminal
+       *  down to the hint bar; corrected each render from the shortfall. */
+      let listExtraRows = 0;
+      const settingsRows = ["masking", "guidance", "disclose", "status"] as const;
       let settingsIndex = 0;
       const testEditorTheme: EditorTheme = {
         borderColor: (text) => theme.fg("accent", text),
@@ -3124,22 +3202,48 @@ export default async function (pi: ExtensionAPI) {
         else selectedIndex = Math.max(0, Math.min(selectedIndex, visibleRules().length));
       }
 
-      async function toggleMaskingInPlace(): Promise<void> {
+      /** Inline second confirmation for disabling global masking: rendered
+       *  inside this screen (no separate overlay window). */
+      let confirmDisableMasking = false;
+      let confirmDisableYes = false;
+      /** Inline cache-impact confirmation for rule enable/disable (and batch
+       *  state changes): rendered in place of the rule details block. */
+      let inlineConfirmState: { title: string; message: string; yes: boolean; resolve: (save: boolean) => void } | null = null;
+      const inlineConfirm = (title: string, message: string): Promise<boolean> =>
+        new Promise<boolean>((resolve) => {
+          inlineConfirmState = { title, message, yes: false, resolve };
+          mutationMessage = "";
+          tui.requestRender();
+        });
+
+      function openConfirmDisableMasking(): void {
+        confirmDisableMasking = true;
+        confirmDisableYes = false;
+        mutationMessage = "";
+        refresh();
+      }
+
+      function toggleMaskingInPlace(): void {
+        const baseConfig = pendingConfigActivation?.config ?? config;
+        if (!baseConfig.enabled) {
+          performGlobalToggle();
+          return;
+        }
+        // Second confirmation only matters when earlier model-bound context
+        // was actually masked: disabling then changes the outbound prefix and
+        // drops provider cache reuse. With nothing masked yet there is no
+        // cache impact, so toggle directly.
+        if (!sessionMaskedOutbound) {
+          performGlobalToggle();
+          return;
+        }
+        openConfirmDisableMasking();
+      }
+
+      async function performGlobalToggle(): Promise<void> {
         const baseConfig = pendingConfigActivation?.config ?? config;
         const enabled = !baseConfig.enabled;
         mutationInProgress = true;
-        mutationMessage = enabled ? "Enabling masking…" : "Opening confirmation…";
-        tui.requestRender();
-        if (!enabled && !await confirmMaskingAction(
-          ctx,
-          "Disable masking?",
-          "Configured values may be exposed in future model requests. This setting persists across projects and future sessions; previously sent context cannot be retracted.",
-        )) {
-          mutationInProgress = false;
-          mutationMessage = "Global masking unchanged";
-          refresh();
-          return;
-        }
         mutationMessage = enabled ? "Enabling masking…" : "Disabling masking…";
         tui.requestRender();
         const result = await toggleGlobalMasking(ctx);
@@ -3157,13 +3261,16 @@ export default async function (pi: ExtensionAPI) {
 
       /** Coupled guidance/disclosure toggle (settings zone). Enabling
        *  disclosure force-enables guidance; disabling guidance disables
-       *  both — off / guidance-only / full are the only reachable states. */
+       *  both — off / guidance-only / full are the only reachable states.
+       *  The status-line row is an independent toggle. */
       async function toggleGuidanceInPlace(): Promise<void> {
-        const next = {
+        const next: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders" | "showStatusBar">> = {
           systemPromptGuidance: config.options.systemPromptGuidance,
           disclosePlaceholders: config.options.disclosePlaceholders,
         };
-        if (settingsIndex === 2) {
+        if (settingsIndex === 3) {
+          next.showStatusBar = !config.options.showStatusBar;
+        } else if (settingsIndex === 2) {
           if (next.disclosePlaceholders) next.disclosePlaceholders = false;
           else {
             next.disclosePlaceholders = true;
@@ -3178,14 +3285,19 @@ export default async function (pi: ExtensionAPI) {
           }
         }
         if (next.systemPromptGuidance === config.options.systemPromptGuidance
-          && next.disclosePlaceholders === config.options.disclosePlaceholders) return;
+          && next.disclosePlaceholders === config.options.disclosePlaceholders
+          && next.showStatusBar === config.options.showStatusBar) return;
         mutationInProgress = true;
         mutationMessage = "Saving…";
         refresh();
         const saved = await saveConfigOptionsUI(ctx, next);
         mutationInProgress = false;
         if (saved && next.systemPromptGuidance) guidanceNoticePending = false;
-        mutationMessage = saved ? "Saved · affects future requests" : "Save cancelled · no changes applied";
+        mutationMessage = saved
+          ? settingsIndex === 3
+            ? "Saved · status line updated"
+            : "Saved · affects future requests"
+          : "Save cancelled · no changes applied";
         refresh();
       }
 
@@ -3195,7 +3307,7 @@ export default async function (pi: ExtensionAPI) {
         mutationInProgress = true;
         mutationMessage = "Saving…";
         tui.requestRender();
-        const saved = await toggleConfigRule(ctx, selected, false);
+        const saved = await toggleConfigRule(ctx, selected, false, inlineConfirm);
         if (saved) {
           screenRules = config.configuredRules;
           retainSelectedRule(stableKey);
@@ -3241,7 +3353,7 @@ export default async function (pi: ExtensionAPI) {
           : "Opening batch confirmation…";
         tui.requestRender();
         try {
-          if (action.kind === "batch") await applyBatchRuleState(ctx, action.changes);
+          if (action.kind === "batch") await applyBatchRuleState(ctx, action.changes, inlineConfirm);
           else if (action.kind === "edit") await editConfigRule(ctx, action.rule, action.initialMode);
           else if (action.kind === "delete") await deleteConfigRule(ctx, action.rule);
           else if (action.kind === "add") await addConfigRule(ctx, undefined, { initialMode: action.initialMode });
@@ -3259,6 +3371,8 @@ export default async function (pi: ExtensionAPI) {
       return {
         render: (width) => {
           const visibleRulesNow = visibleRules();
+          let listRendered = false;
+          let listExtraCap = 0;
           const active = screenRules.filter((configured) => configured.enabled && configured.available).length;
           const desiredConfig = pendingConfigActivation?.config ?? config;
           const maskingEnabled = desiredConfig.enabled;
@@ -3290,15 +3404,29 @@ export default async function (pi: ExtensionAPI) {
               "tell the model how to work with masked values (compare, pass through, transform via tools)"),
             settingRow(2, "Disclose", config.options.disclosePlaceholders,
               `list literal-rule placeholders inside the guidance note (${literalEligible} eligible${config.options.disclosePlaceholders ? "" : " · requires the guidance note"})`),
+            settingRow(3, "Status line", config.options.showStatusBar,
+              "show the masking summary on the status line at the bottom of the chat window"),
           ];
           if (guidanceNoticePending && !config.options.systemPromptGuidance) {
             settingsLines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: the guidance note tells the model how to work with masked values — enable it above."), width));
           }
+          const confirmDisableLines = confirmDisableMasking
+            ? [
+              ...wrappedMaskingText(theme.fg("warning", theme.bold("Disable masking? Configured values may be exposed in future model requests.")), width),
+              ...wrappedMaskingText(theme.fg("warning", "This setting persists across projects and future sessions; previously sent context cannot be retracted."), width),
+              confirmDisableYes
+                ? theme.fg("accent", "▶ Yes · disable masking    No · keep masking")
+                : theme.fg("muted", "  Yes · disable masking  ▶ No · keep masking"),
+              ...wrappedMaskingText(theme.fg("dim", "←→ select · Enter confirm · Esc cancel"), width),
+            ]
+            : [];
+          const headerSummary = `${active} enabled / ${screenRules.length} configured · filter: ${filters[filterIndex]}${searchQuery ? ` · search: ${searchQuery}` : ""}`;
+          const headerTitle = theme.fg("accent", theme.bold(`Masking configuration${mutationMessage ? ` · ${mutationMessage}` : ""}`));
           const lines: string[] = [
-            theme.fg("accent", theme.bold(`Masking configuration${mutationMessage ? ` · ${mutationMessage}` : ""}`)),
-            ...wrappedMaskingText(theme.fg("muted", `${active} enabled / ${screenRules.length} configured · filter: ${filters[filterIndex]}${searchQuery ? ` · search: ${searchQuery}` : ""}`), width),
+            truncateToWidth(`${headerTitle}  ${theme.fg("muted", headerSummary)}`, Math.max(1, width)),
             "",
             ...settingsLines,
+            ...confirmDisableLines.length ? ["", ...confirmDisableLines] : [],
             "",
             homeFocus === "rules"
               ? theme.fg("accent", theme.bold("RULES · focused"))
@@ -3320,9 +3448,11 @@ export default async function (pi: ExtensionAPI) {
           } else {
             const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
             lines.push(theme.fg("dim", truncateToWidth(header, Math.max(1, width))));
-            const reservedRows = 21 + settingsLines.length + browseHints.length;
+            const reservedRows = 21 + settingsLines.length + confirmDisableLines.length + browseHints.length;
             const rowCount = visibleRulesNow.length + 1;
-            const listHeight = Math.max(3, Math.min(rowCount, tui.terminal.rows - reservedRows));
+            listRendered = true;
+            listExtraCap = rowCount - (tui.terminal.rows - reservedRows);
+            const listHeight = Math.max(3, Math.min(rowCount, tui.terminal.rows - reservedRows + listExtraRows));
             rulePageSize = listHeight;
             keepSelectedVisible(listHeight, rowCount);
             const endIndex = Math.min(rowCount, scrollOffset + listHeight);
@@ -3354,13 +3484,19 @@ export default async function (pi: ExtensionAPI) {
           }
 
           lines.push(rulesDivider);
-          if (screenRules.length > 0 && visibleRulesNow.length > 0) {
+          if (inlineConfirmState) {
+            // Temporarily replaces the rule details block below the list.
+            lines.push(...wrappedMaskingText(theme.fg("warning", theme.bold(inlineConfirmState.title)), width));
+            lines.push(...wrappedMaskingText(inlineConfirmState.message, width));
+            lines.push(theme.fg("accent", `${inlineConfirmState.yes ? "▶" : " "} Save anyway    ${inlineConfirmState.yes ? " " : "▶"} Back to editing`));
+            lines.push(...wrappedMaskingText(theme.fg("dim", "←→ select · Enter confirm · Esc back to editing"), width));
+          } else if (screenRules.length > 0 && visibleRulesNow.length > 0) {
             // Keep details outside the list dividers and reserve a fixed block
             // so exact/env/regex/preset rows never move the test panel.
-            const detailRowCount = 4;
+            const detailRowCount = 5;
             const selected = visibleRulesNow[selectedIndex];
             const details = selected
-              ? configuredRuleDetail(selected, showExactValues)
+              ? configuredRuleDetail(selected, showExactValues, config.options.disclosePlaceholders)
               : [];
             for (let index = 0; index < detailRowCount; index++) {
               const detail = details[index];
@@ -3396,12 +3532,71 @@ export default async function (pi: ExtensionAPI) {
             lines.push("");
             lines.push(...browseHints);
           }
+          // Let the rules list absorb any unused rows below the hint bar.
+          if (listRendered) {
+            const shortfall = tui.terminal.rows - lines.length;
+            if (shortfall !== 0) {
+              const reservedRows = 21 + settingsLines.length + confirmDisableLines.length + browseHints.length;
+              const baseHeight = tui.terminal.rows - reservedRows;
+              const next = Math.min(Math.max(listExtraRows + shortfall, -(baseHeight + 3)), listExtraCap);
+              if (next !== listExtraRows) {
+                listExtraRows = next;
+                tui.requestRender();
+              }
+            }
+          }
           return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => {},
         handleInput: (data) => {
+          if (inlineConfirmState) {
+            const state = inlineConfirmState;
+            const leftRight = matchesKey(data, Key.left) || matchesKey(data, Key.right);
+            const upDown = keybindings.matches(data, "tui.select.up") || keybindings.matches(data, "tui.select.down");
+            if (leftRight || upDown) {
+              state.yes = !state.yes;
+              tui.requestRender();
+              return;
+            }
+            if (keybindings.matches(data, "tui.select.confirm") || matchesKey(data, "y") || data === "Y") {
+              inlineConfirmState = null;
+              tui.requestRender();
+              state.resolve(true);
+              return;
+            }
+            if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")
+              || matchesKey(data, "n") || data === "N") {
+              inlineConfirmState = null;
+              tui.requestRender();
+              state.resolve(false);
+              return;
+            }
+            return;
+          }
           if (mutationInProgress) return;
           mutationMessage = "";
+          if (confirmDisableMasking) {
+            const leftRight = matchesKey(data, Key.left) || matchesKey(data, Key.right);
+            const upDown = keybindings.matches(data, "tui.select.up") || keybindings.matches(data, "tui.select.down");
+            if (leftRight || upDown) {
+              confirmDisableYes = !confirmDisableYes;
+              refresh();
+              return;
+            }
+            if (keybindings.matches(data, "tui.select.confirm") || matchesKey(data, "y") || data === "Y") {
+              confirmDisableMasking = false;
+              void performGlobalToggle();
+              return;
+            }
+            if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")
+              || matchesKey(data, "n") || data === "N") {
+              confirmDisableMasking = false;
+              mutationMessage = "Global masking unchanged";
+              refresh();
+              return;
+            }
+            return;
+          }
           if (searchMode) {
             if (matchesKey(data, Key.enter)) {
               searchMode = false;
@@ -3428,8 +3623,7 @@ export default async function (pi: ExtensionAPI) {
               homeFocus = "settings";
               refresh();
             } else if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
-              homeFocus = "rules";
-              refresh();
+              done(undefined);
             } else {
               testEditor.handleInput(data);
             }
@@ -3458,17 +3652,16 @@ export default async function (pi: ExtensionAPI) {
               return;
             }
             if (matchesKey(data, Key.space) || keybindings.matches(data, "tui.select.confirm")) {
-              if (settingsIndex === 0) void toggleMaskingInPlace();
+              if (settingsIndex === 0) toggleMaskingInPlace();
               else void toggleGuidanceInPlace();
               return;
             }
             if (matchesKey(data, "m") || data === "M") {
-              void toggleMaskingInPlace();
+              toggleMaskingInPlace();
               return;
             }
             if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
-              homeFocus = "rules";
-              refresh();
+              done(undefined);
             }
             return;
           }
@@ -3534,7 +3727,7 @@ export default async function (pi: ExtensionAPI) {
             return;
           }
           if (matchesKey(data, "m") || data === "M") {
-            void toggleMaskingInPlace();
+            toggleMaskingInPlace();
             return;
           }
           if (keybindings.matches(data, "tui.select.confirm")) {

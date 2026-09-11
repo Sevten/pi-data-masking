@@ -169,6 +169,7 @@ test("configuration home toggles and reorders in place while retaining selection
     { id: "second", name: "Second rule", real: "second-secret-value" },
   ] }));
 
+  const emitContext: Array<(event: unknown) => Promise<unknown>> = [];
   const harness = await createHarness(dir, [async (component, styleCalls) => {
     assert.ok(component.render(100).some((line) => line.includes("STATE") && line.includes("ORDER") && line.includes("NAME")));
     const narrowLines = component.render(42);
@@ -186,7 +187,7 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.ok(component.render(100).some((line) => /Masking\s+\[ON ?\]/.test(line)));
     const focusedDetails = component.render(100);
     assert.ok(focusedDetails.includes("Description: —"));
-    assert.ok(focusedDetails.includes('Exact value: "first-secret-value"'));
+    assert.ok(focusedDetails.includes('Exact value: first-secret-value'));
     assert.ok(focusedDetails.includes("Placeholder: masked-first-value · custom"));
     assert.equal(focusedDetails.some((line) => line.includes("stable across sessions")), false);
     assert.equal(focusedDetails.some((line) => line.startsWith("Scope:")), false);
@@ -208,8 +209,20 @@ test("configuration home toggles and reorders in place while retaining selection
     component.handleInput(INPUT.home);
     assert.ok(component.render(100).some((line) => line.startsWith("›") && line.includes("First rule")));
     component.handleInput("r");
-    assert.ok(component.render(100).includes('Exact value: "first-secret-value"'));
+    assert.ok(component.render(100).includes('Exact value: first-secret-value'));
+    // Make the session's model-bound transcript actually contain masked
+    // content, so disabling masking is a prefix-cache-impacting change and
+    // the inline confirmation appears.
+    assert.ok(emitContext[0], "context emitter missing");
+    const probe = await emitContext[0]({
+      messages: [{ role: "user", content: [{ type: "text", text: "contains first-secret-value" }] }],
+    }) as { messages: Array<{ content: Array<{ text: string }> }> };
+    assert.equal(JSON.stringify(probe.messages).includes("first-secret-value"), false);
     component.handleInput("M");
+    await waitFor(() => component.render(100).some((line) => line.includes("Disable masking?")));
+    assert.ok(component.render(100).join("\n").match(/persists across projects/));
+    assert.ok(component.render(100).join("\n").match(/future sessions/));
+    component.handleInput(INPUT.enter);
     await waitFor(() => component.render(100).some((line) => /Masking\s+\[OFF\]/.test(line)));
     component.handleInput("m");
     await waitFor(() => component.render(100).some((line) => /Masking\s+\[ON ?\]/.test(line)));
@@ -225,16 +238,23 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.ok(unfocusedDetails.every((call) => call.color === "dim"));
     component.handleInput(INPUT.tab);
     assert.ok(component.render(100).some((line) => line.includes("SETTINGS · focused")));
-    // Settings zone: arrows move between rows, Escape falls back to rules.
+    // Settings zone: arrows move between rows, Tab cycles zones, Esc closes.
     component.handleInput(INPUT.down);
     component.handleInput("\u001B[A");
-    component.handleInput(INPUT.escape);
+    component.handleInput(INPUT.tab);
     assert.ok(component.render(100).some((line) => line.includes("RULES · focused")));
     component.handleInput("\u001B[Z");
     assert.ok(component.render(100).some((line) => line.includes("SETTINGS · focused")));
     component.handleInput(INPUT.tab);
     component.handleInput(INPUT.space);
-    await waitFor(() => configRules(projectPath)[0]?.enabled === false);
+    await waitFor(() => configRules(projectPath)[0]?.enabled === false
+      || component.render(100).some((line) => line.includes("Local preflight")));
+    if (configRules(projectPath)[0]?.enabled !== false) {
+      // Masked history exists, so disabling the rule is a cache-impacting
+      // save: confirm it in the preflight dialog.
+      component.handleInput(INPUT.enter);
+      await waitFor(() => configRules(projectPath)[0]?.enabled === false);
+    }
     await waitFor(() => component.render(100).some((line) => line.includes("[OFF ]") && line.includes("First rule")));
     assert.ok(component.render(100).some((line) => line.includes("[OFF ]") && line.includes("First rule")));
 
@@ -245,12 +265,11 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.ok(selectedRow?.startsWith("›"), "moved rule should remain selected");
     component.handleInput(INPUT.escape);
   }, async (component) => {
-    const confirmation = component.render(100).join("\n");
-    assert.match(confirmation, /Disable masking\?/);
-    assert.match(confirmation, /persists across projects/);
-    assert.match(confirmation, /future sessions/);
+    // Cache-impacting rule toggle confirmation (preflight dialog).
+    assert.match(component.render(100).join("\n"), /Local preflight/);
     component.handleInput(INPUT.enter);
   }]);
+  emitContext.push((event) => harness.emit("context", event));
 
   try {
     assert.equal(harness.commands.has("masking"), true);
@@ -342,33 +361,31 @@ test("history-changing saves confirm inside configuration UI before writing", as
     assert.ok(lines.some((line) => line.includes("earliest #1")));
     assert.equal(configRules(projectPath)[sourceIndex]?.enabled, undefined, "candidate must not be written before confirmation");
   };
+  const waitImpactConfirmation = async (component: Component, sourceIndex: number) => {
+    await waitFor(() => component.render(100).some((line) => line.includes("Save masking changes?")));
+    assertImpactConfirmation(component, sourceIndex);
+  };
   const harness = await createHarness(dir, [
     async (component) => {
       component.handleInput(INPUT.space);
-      await waitFor(() => firstCancelled);
+      await waitImpactConfirmation(component, 0);
+      component.handleInput(INPUT.escape);
+      firstCancelled = true;
+      // Wait for the cancelled save's promise chain to settle before the next input.
+      await waitFor(() => component.render(100)[0]?.includes("Save failed · no changes applied") === true);
       assert.equal(configRules(projectPath)[0]?.enabled, undefined, "Back to editing must leave the file unchanged");
       component.handleInput(INPUT.space);
+      await waitImpactConfirmation(component, 0);
+      component.handleInput(INPUT.enter);
       await waitFor(() => configRules(projectPath)[0]?.enabled === false);
       await waitFor(() => component.render(100)[0]?.includes("Disabled ·") === true);
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.space);
+      await waitImpactConfirmation(component, 1);
+      component.handleInput(INPUT.enter);
       await waitFor(() => configRules(projectPath)[1]?.enabled === false);
       await waitFor(() => component.render(100)[0]?.includes("Disabled ·") === true);
       component.handleInput(INPUT.escape);
-    },
-    async (component) => {
-      assertImpactConfirmation(component, 0);
-      component.handleInput(INPUT.down);
-      component.handleInput(INPUT.enter);
-      firstCancelled = true;
-    },
-    async (component) => {
-      assertImpactConfirmation(component, 0);
-      component.handleInput(INPUT.enter);
-    },
-    async (component) => {
-      assertImpactConfirmation(component, 1);
-      component.handleInput(INPUT.enter);
     },
   ]);
 

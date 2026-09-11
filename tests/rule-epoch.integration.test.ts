@@ -93,15 +93,14 @@ async function createHarness(cwd: string, branch: unknown[] = []) {
       scenarios.push(async (component) => {
         assert.ok(component.render(100).some((line) => /Masking\s+\[(?:ON ?|OFF)\]/.test(line)));
         component.handleInput("m");
-        await waitFor(() => notifications.length > before);
+        await waitFor(() => notifications.length > before
+          || component.render(100).some((line) => line.includes("Disable masking?")));
+        if (notifications.length === before) {
+          component.handleInput(confirmDisable ? "\r" : "\x1b");
+          await waitFor(() => notifications.length > before);
+        }
         component.handleInput("\x1b");
       });
-      if (confirmDisable) {
-        scenarios.push(async (component) => {
-          assert.ok(component.render(100).some((line) => line.includes("Disable masking?")));
-          component.handleInput("\r");
-        });
-      }
       const command = commands.get("masking");
       assert.ok(command, "missing command masking");
       assert.equal(commands.has("masking-toggle"), false);
