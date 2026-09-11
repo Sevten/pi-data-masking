@@ -155,6 +155,25 @@ function statusLabel(cfg: MaskingConfig): string {
     : `🔓 Masking: off · ${active} rule(s) ready`;
 }
 
+/**
+ * Build latestModelInput for the messages of the most recent provider
+ * request. `original` aliases the transcript entry's private clone instead of
+ * deep-cloning the whole conversation on every request — every requested
+ * message was just merged under the same transcriptKey. The masked
+ * fingerprint comes from the boundary observation when available.
+ */
+function latestInputsFromTranscript(
+  entries: readonly TranscriptEntry[],
+  originals: readonly Record<string, unknown>[],
+  maskedHashAt: (index: number) => string,
+): Array<{ original: Record<string, unknown>; maskedHash: string }> {
+  const byKey = new Map(entries.map((entry) => [entry.key, entry]));
+  return originals.map((message, index) => ({
+    original: byKey.get(transcriptKey(message, index))?.original ?? message,
+    maskedHash: maskedHashAt(index),
+  }));
+}
+
 // ─── Extension entry point ──────────────────────────────────────────────────
 
 export default async function (pi: ExtensionAPI) {
@@ -213,7 +232,9 @@ export default async function (pi: ExtensionAPI) {
   let pendingSystemSourceHash: string | undefined;
   let pendingSystemSourceText: string | undefined;
   /** Most recent factual model input, retained only in memory for an immediate
-   *  dry-run when masking behavior changes. */
+   *  dry-run when masking behavior changes. `original` aliases the
+   *  transcript's private clone (maskers never mutate their input — they
+   *  build new containers), so no per-request re-clone is needed. */
   let latestModelInput: Array<{ original: Record<string, unknown>; maskedHash: string }> = [];
   let latestSystemPrefix: { source: string; emitted: string } | undefined;
   let impactPreviewKeys = new Set<string>();
@@ -927,7 +948,7 @@ export default async function (pi: ExtensionAPI) {
     activeEpochConfig = undefined;
     persistedEpochIds = new Set(ruleEpochs.map((epoch) => epoch.epochId));
     latestModelInput = transcript.map((entry) => ({
-      original: structuredClone(entry.original),
+      original: entry.original,
       maskedHash: hashMessage(entry.masked),
     }));
     return restored;
@@ -1040,10 +1061,7 @@ export default async function (pi: ExtensionAPI) {
         disabledPairs.push({ original: hash, masked: hash });
       }
       transcript = mergeTranscript(transcript, originals, originals, capturedAt, disabledPairs);
-      latestModelInput = originals.map((message) => ({
-        original: structuredClone(message),
-        maskedHash: hashMessage(message),
-      }));
+      latestModelInput = latestInputsFromTranscript(transcript, originals, (index) => hashMessage(originals[index]));
       impactPreviewKeys.clear();
       observeEpochFacts(ctx, epochObservations(originals, originals, disabledPairs), capturedAt);
       persistSnapshots(ctx, originals, originals, disabledPairs);
@@ -1086,10 +1104,11 @@ export default async function (pi: ExtensionAPI) {
       capturedAt,
       contentHashes,
     );
-    latestModelInput = originals.map((message, index) => ({
-      original: structuredClone(message),
-      maskedHash: contentHashes[index]?.masked ?? hashMessage(maskedMessages[index] ?? message),
-    }));
+    latestModelInput = latestInputsFromTranscript(
+      transcript,
+      originals,
+      (index) => contentHashes[index]?.masked ?? hashMessage(maskedMessages[index] ?? originals[index]),
+    );
     impactPreviewKeys.clear();
     observeEpochFacts(ctx, epochObservations(originals, maskedMessages, contentHashes), capturedAt);
     persistSnapshots(ctx, originals, maskedMessages, contentHashes);
