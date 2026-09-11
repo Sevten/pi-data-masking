@@ -287,6 +287,11 @@ export class Masker {
   private displayPlaceholders: Array<{ p: string; len: number }> | null = null;
   private displayLookupDirty = true;
 
+  /** Cached longest-first dynamic entries with their compiled literal match
+   *  patterns for the unmask direction; see getUnmaskDynamicPatterns(). */
+  private unmaskDynamicPatterns: Array<{ entry: DynamicMapEntry; pattern: RegExp }> | null = null;
+  private unmaskDynamicPatternsDirty = true;
+
   /** Regex compile errors etc., for the caller to surface via ctx.ui.notify */
   public readonly warnings: string[] = [];
 
@@ -463,6 +468,7 @@ export class Masker {
     this.protectedValues.add(real);
     this.protectPatternDirty = true;
     this.displayLookupDirty = true;
+    this.unmaskDynamicPatternsDirty = true;
     return candidate;
   }
 
@@ -737,6 +743,27 @@ export class Masker {
   // ── unmask: literal rules' fixed placeholders + the dynamic map's
   //    placeholders, looked up uniformly ─────────────────────────────────────
 
+/**
+   * Longest-first dynamic entries with a compiled literal pattern each, for
+   * collectUnmaskSpans(). unmask() runs on every message_end and tool_call,
+   * so compiling one RegExp per entry — and re-sorting the map — per call
+   * would dominate runtime once the dynamic map grows into the thousands.
+   * Cached like protectPattern/displayLookup; invalidated only when a new
+   * dynamic placeholder is generated.
+   */
+  private getUnmaskDynamicPatterns(): Array<{ entry: DynamicMapEntry; pattern: RegExp }> {
+    if (!this.unmaskDynamicPatternsDirty) return this.unmaskDynamicPatterns ?? [];
+    const sorted = Array.from(this.dynamicMap.values()).sort(
+      (a, b) => b.placeholder.length - a.placeholder.length
+    );
+    this.unmaskDynamicPatterns = sorted.map((entry) => ({
+      entry,
+      pattern: new RegExp(toLiteralPattern(entry.placeholder), "g" + this.caseFlag),
+    }));
+    this.unmaskDynamicPatternsDirty = false;
+    return this.unmaskDynamicPatterns;
+  }
+
   private collectUnmaskSpans(text: string): ReplaceSpan[] {
     const claimed: Array<[number, number]> = [];
     const spans: ReplaceSpan[] = [];
@@ -760,11 +787,8 @@ export class Masker {
 
     // Dynamic map (regex-discovered values), longest placeholder first to
     // reduce the chance of accidental overlap
-    const dynamicEntries = Array.from(this.dynamicMap.values()).sort(
-      (a, b) => b.placeholder.length - a.placeholder.length
-    );
-    for (const entry of dynamicEntries) {
-      const pattern = new RegExp(toLiteralPattern(entry.placeholder), "g" + this.caseFlag);
+    for (const { entry, pattern } of this.getUnmaskDynamicPatterns()) {
+      pattern.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = pattern.exec(text))) {
         const start = m.index;
