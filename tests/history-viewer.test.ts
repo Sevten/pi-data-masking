@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { createEpochHistoryViewer, createHistoryViewer, diffText, mergePendingAssistant, mergeTranscript } from "../history-viewer.ts";
+import { createEpochHistoryViewer, createHistoryViewer, mergePendingAssistant, mergeTranscript } from "../history-viewer.ts";
+import { diffText } from "../diff-text.ts";
 import type { RuleEpoch } from "../rule-epoch.ts";
 
 test("history transcript updates a context message instead of duplicating it", () => {

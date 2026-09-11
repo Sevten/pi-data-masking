@@ -26,8 +26,8 @@ import {
   saveRuleEnabledChanges,
   validateConfig,
   validateRawConfigRule,
-  watchConfigPaths,
 } from "../config-loader.ts";
+import { watchConfigPaths } from "../config-watcher.ts";
 import { Masker, isRegexRule } from "../masker.ts";
 import { generatePlaceholder } from "../placeholder-gen.ts";
 import { isCommonSemanticValue } from "../common-semantic-terms.ts";
