@@ -3271,7 +3271,7 @@ export default async function (pi: ExtensionAPI) {
           const settingRow = (index: number, label: string, value: boolean, description: string): string => {
             const selected = homeFocus === "settings" && index === settingsIndex;
             const marker = selected ? "▶" : " ";
-            const plain = `${marker} ${label}${" ".repeat(Math.max(0, 16 - label.length))} [${value ? "ON" : "OFF"}]`;
+            const plain = `${marker} ${label}${" ".repeat(Math.max(0, 16 - label.length))} [${value ? "ON " : "OFF"}]`;
             const descriptionWidth = Math.max(0, width - visibleWidth(plain) - 2);
             const desc = truncateToWidth(description, descriptionWidth);
             const rowBody = homeFocus === "settings"
