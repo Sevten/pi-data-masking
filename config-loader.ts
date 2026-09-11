@@ -220,32 +220,6 @@ export function buildInitialConfig(
  * used as the final publish operation so an existing target can never be
  * overwritten, including if another process creates it during the wizard.
  */
-export async function createInitialConfigFile(path: string, config: InitialConfig): Promise<void> {
-  const validation = validateConfig(config.rules);
-  if (validation.rules.length !== config.rules.length || validation.warnings.length > 0) {
-    throw new Error(`Generated config failed validation: ${validation.warnings.join("; ")}`);
-  }
-
-  await mkdir(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await chmod(tempPath, 0o600);
-    await link(tempPath, path);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(`Config already exists at ${path}; it was not overwritten`);
-    }
-    throw err;
-  } finally {
-    try {
-      await unlink(tempPath);
-    } catch {
-      // The temp may not have been created or may already be gone.
-    }
-  }
-}
-
 /** Add the project config path to .gitignore without duplicating the entry. */
 export async function ensureProjectConfigGitignored(cwd: string): Promise<boolean> {
   const ignorePath = join(cwd, ".gitignore");

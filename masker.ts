@@ -191,12 +191,6 @@ function toLiteralPattern(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** First 4 chars + ***, for display purposes */
-export function makePreview(real: string): string {
-  if (real.length <= 4) return "***";
-  return real.slice(0, 4) + "***";
-}
-
 function overlaps(claimed: Array<[number, number]>, start: number, end: number): boolean {
   for (const [s, e] of claimed) {
     if (start < e && s < end) return true;
@@ -923,16 +917,6 @@ export class Masker {
       }
       return matched;
     });
-  }
-
-  /**
-   * Every known placeholder string (literal rules in config order, then
-   * regex-discovered dynamic entries). Backs stream-level prefix hold-back;
-   * rebuilt together with the display lookup.
-   */
-  getKnownPlaceholders(): string[] {
-    const cached = this.getDisplayPlaceholderCache();
-    return cached === null ? [] : cached.list.map((entry) => entry.p);
   }
 
   /**

@@ -194,13 +194,6 @@ test("displayHoldbackLength: strict prefixes only, case-insensitive support", ()
   assert.equal(ci.displayHoldbackLength("value @SECR"), 5);
   assert.equal(ci.displayHoldbackLength("value @secre"), 6);
   assert.equal(ci.displayHoldbackLength("unrelated"), 0);
-
-  // getKnownPlaceholders covers literal rules in config order.
-  const multi = makeMasker([
-    { id: "a", real: "1", placeholder: "PL-A" },
-    { id: "b", real: "2", placeholder: "PL-B" },
-  ]);
-  assert.deepEqual(multi.getKnownPlaceholders(), ["PL-A", "PL-B"]);
 });
 
 test("dynamic placeholders participate in restoration and hold-back", async () => {

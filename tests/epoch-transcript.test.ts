@@ -3,8 +3,6 @@ import test from "node:test";
 import {
   EPOCH_TRANSCRIPT_ENTRY,
   createEpochTranscriptState,
-  findObservedPrefixComponentImpact,
-  findObservedPrefixImpact,
   markEpochBatchPersisted,
   mergeEpochFacts,
   appendUnobservedTail,
@@ -115,43 +113,7 @@ test("a newer epoch contains only messages it actually processed after compactio
   assert.deepEqual(secondEpoch.entries.map((entry) => entry.messageKey), ["user:2"]);
 });
 
-test("prefix impact compares only factual shared messages and reports the earliest change", () => {
-  const previous = createEpochTranscriptState(epoch(1));
-  const unchanged = { role: "user", timestamp: 1, content: "unchanged" };
-  const changed = { role: "assistant", timestamp: 2, content: "secret" };
-  mergeEpochFacts(previous, [
-    observation(unchanged, unchanged, "user:1"),
-    observation(changed, { ...changed, content: "MASK-1" }, "assistant:2"),
-  ]);
-
-  const newTail = { role: "user", timestamp: 3, content: "new secret" };
-  const observations = [
-    observation(unchanged, unchanged, "user:1"),
-    observation(changed, { ...changed, content: "MASK-2" }, "assistant:2"),
-    observation(newTail, { ...newTail, content: "NEW-MASK" }, "user:3"),
-  ];
-  const impact = findObservedPrefixImpact(previous, observations);
-
-  assert.deepEqual(impact, {
-    changedMessageCount: 1,
-    firstChangedIndex: 1,
-    firstChangedMessageKey: "assistant:2",
-  });
-});
-
-test("prefix impact stays silent for new tails, missing compacted facts, and equal output", () => {
-  const previous = createEpochTranscriptState(epoch(1));
-  const retained = { role: "user", timestamp: 2, content: "same" };
-  mergeEpochFacts(previous, [observation(retained, retained, "user:2")]);
-  const newTail = { role: "user", timestamp: 3, content: "new" };
-
-  assert.equal(findObservedPrefixImpact(previous, [
-    observation(retained, retained, "user:2"),
-    observation(newTail, { ...newTail, content: "MASK" }, "user:3"),
-  ]), undefined);
-});
-
-test("provider prefix facts persist once, restore without plaintext, and prioritize system", () => {
+test("provider prefix facts persist once and restore without plaintext", () => {
   const first = createEpochTranscriptState(epoch(1));
   const sourceHash = "a".repeat(64);
   const firstSystemHash = "b".repeat(64);
@@ -173,18 +135,6 @@ test("provider prefix facts persist once, restore without plaintext, and priorit
   ], [first.epoch], []);
   assert.deepEqual(restored.get(1)!.prefixObservation, firstObservation);
   assert.equal(restored.get(1)!.prefixPersisted, true);
-
-  const secondSystem = {
-    observedAt: 30,
-    system: { sourceHash, emittedHash: "d".repeat(64) },
-    prompt: { sourceHash, emittedHash: "e".repeat(64) },
-  };
-  assert.equal(findObservedPrefixComponentImpact(restored.get(1)!, secondSystem), "system");
-  assert.equal(findObservedPrefixComponentImpact(restored.get(1)!, {
-    observedAt: 30,
-    system: { sourceHash: "f".repeat(64), emittedHash: "d".repeat(64) },
-    prompt: { sourceHash, emittedHash: "e".repeat(64) },
-  }), "prompt");
 });
 
 test("invalid or unknown epoch batches are ignored during recovery", () => {

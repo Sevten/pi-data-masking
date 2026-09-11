@@ -62,7 +62,7 @@ import { getApiProvider, registerBuiltInApiProviders } from "@earendil-works/pi-
 import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import { Editor, Key, decodeKittyPrintable, matchesKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { EditorTheme } from "@earendil-works/pi-tui";
-import { existsSync, appendFileSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createHmac } from "node:crypto";
 import { resolve } from "node:path";
 import { Masker, isRegexRule } from "./masker.ts";
@@ -175,24 +175,12 @@ const SNAPSHOT_CONTENT_HASH_MAX_ENTRIES = 10_000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-function unmaskMessage<T>(
-  message: T,
-  masker: Masker
-): { message: T } {
-  const r = masker.unmaskValue(message);
-  return { message: r.value as T };
-}
-
 function statusLabel(cfg: MaskingConfig): string {
   const configured = cfg.configuredRules.length;
   const active = cfg.rules.length;
   return cfg.enabled
     ? `🔒 Masking: ${active} active / ${configured} configured`
     : `🔓 Masking: off · ${active} rule(s) ready`;
-}
-
-function configuredRuleKey(configured: ConfiguredMaskingRule): string {
-  return `${configured.path}\0${configured.sourceIndex}`;
 }
 
 function configuredRuleStableKey(configured: ConfiguredMaskingRule): string {
@@ -430,11 +418,6 @@ export default async function (pi: ExtensionAPI) {
   // wrappers eagerly for every known provider, delegating to the live session
   // instance via STREAM_RESTORE_SLOT. In the CLI the same registrations simply
   // apply at runner init — behavior there is unchanged.
-  const debugStream = process.env.PI_DATA_MASKING_DEBUG === "1";
-  const dbgLog = (msg: string): void => {
-    if (!debugStream) return;
-    try { appendFileSync("/tmp/pi-data-masking-stream.log", `${new Date().toISOString()} ${msg}\n`); } catch { /* ignore */ }
-  };
   try {
     registerBuiltInApiProviders();
     const providerApis = new Map<string, string>();
@@ -462,12 +445,10 @@ export default async function (pi: ExtensionAPI) {
       pi.registerProvider?.(providerId, {
         api,
         streamSimple: (model, context, options) => {
-          dbgLog(`stream wrapper invoked: ${providerId}@${api}`);
           return wrapWithActiveRestore(apiImpl.streamSimple(model, context, options));
         },
       });
     }
-    dbgLog(`eager registration done: ${[...providerApis.keys()].join(",")}`);
   } catch {
     // Best effort: older cores or unusual hosts simply keep the lazy
     // registration path in ensureStreamDisplayRestore below.
@@ -635,11 +616,7 @@ export default async function (pi: ExtensionAPI) {
    * mask so provenance registration happens exactly once.
    */
   function maskSystemPromptCached(input: string): { text: string; count: number } {
-    if (
-      systemPromptMemo !== null &&
-      systemPromptMemo.input.length === input.length &&
-      systemPromptMemo.input === input
-    ) {
+    if (systemPromptMemo !== null && systemPromptMemo.input === input) {
       return systemPromptMemo;
     }
     const r = masker.mask(input, { discover: true });
@@ -1149,7 +1126,7 @@ export default async function (pi: ExtensionAPI) {
       // simply keep today's behavior (mask restored at message_end only).
       pi.registerProvider?.(providerId, {
         api: model.api,
-        streamSimple: (m, c, o) => { dbgLog("WRAPPER INVOKED"); return streamRestore.wrap(pristine(m, c, o)); },
+        streamSimple: (m, c, o) => streamRestore.wrap(pristine(m, c, o)),
       });
       streamRestoredApis.set(providerId, model.api);
     } catch {
@@ -1413,7 +1390,7 @@ export default async function (pi: ExtensionAPI) {
     }
 
     // Restore real values before storing, so the user always sees the real data
-    const { message } = unmaskMessage(event.message, masker);
+    const { value: message } = masker.unmaskValue(event.message);
     // The response is not part of the outbound context until the next model
     // request. Keep a provisional snapshot so the viewer includes it now; the
     // next context hook replaces it with the exact provider-boundary version.
@@ -2958,7 +2935,7 @@ export default async function (pi: ExtensionAPI) {
     const sameSource = config.configuredRules
       .filter((candidate) => candidate.path === configured.path)
       .sort((a, b) => a.sourceIndex - b.sourceIndex);
-    const index = sameSource.findIndex((candidate) => configuredRuleKey(candidate) === configuredRuleKey(configured));
+    const index = sameSource.findIndex((candidate) => configuredRuleStableKey(candidate) === configuredRuleStableKey(configured));
     const target = sameSource[index + direction];
     if (!target) {
       ctx.ui.notify(`Rule is already at the ${direction < 0 ? "top" : "bottom"} of its ${configured.scope} scope`, "info");

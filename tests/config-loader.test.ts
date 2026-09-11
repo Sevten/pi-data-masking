@@ -12,7 +12,6 @@ import { tmpdir } from "node:os";
 import {
   CONFIG_SCHEMA_URL,
   buildInitialConfig,
-  createInitialConfigFile,
   createJsonFileExclusive,
   ensureProjectConfigGitignored,
   generateUniqueRuleId,
@@ -274,10 +273,9 @@ test("realFromEnv resolves only in memory and missing/conflicting sources stay i
   }
 });
 
-test("initializer builds a minimal preset config, refuses overwrite, and can update .gitignore", async () => {
+test("initializer builds a minimal preset config and can update .gitignore", async () => {
   const dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "masking-init-"));
   try {
-    const path = join(dir, ".pi", "pi-data-masking", "masking.config.json");
     const initial = buildInitialConfig(["github-pat", "private-ipv4", "github-pat"], {
       showStatusBar: false,
       persistHistory: true,
@@ -286,13 +284,6 @@ test("initializer builds a minimal preset config, refuses overwrite, and can upd
     assert.deepEqual(initial.rules.map((rule) => rule.preset), ["github-pat", "private-ipv4"]);
     assert.deepEqual(initial.rules.map((rule) => rule.name), ["GitHub personal access token", "Private IPv4 address"]);
     assert.equal(initial.options.showStatusBar, false);
-
-    await createInitialConfigFile(path, initial);
-    const before = readFileSync(path, "utf8");
-    assert.deepEqual(JSON.parse(before), initial);
-    if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
-    await assert.rejects(createInitialConfigFile(path, buildInitialConfig([])), /already exists/);
-    assert.equal(readFileSync(path, "utf8"), before);
 
     assert.equal(await ensureProjectConfigGitignored(dir), true);
     assert.equal(await ensureProjectConfigGitignored(dir), false);
