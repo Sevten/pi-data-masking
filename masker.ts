@@ -277,8 +277,9 @@ export class Masker {
   private displayLookup: Map<string, string> | null = null;
   /** Lowercase alias of displayLookup, built only for case-insensitive maskers. */
   private displayLookupLower: Map<string, string> | null = null;
-  /** Cached known-placeholder list for stream hold-back; see displayHoldbackLength(). */
-  private displayPlaceholders: Array<{ p: string; len: number }> | null = null;
+  /** Cached known-placeholder first-character index for stream hold-back; see displayHoldbackLength(). */
+  private displayPlaceholders: Map<number, Array<{ p: string; len: number }>> | null = null;
+  private displayPlaceholdersMaxLen = 0;
   private displayLookupDirty = true;
 
   /** Cached longest-first dynamic entries with their compiled literal match
@@ -930,21 +931,24 @@ export class Masker {
     const cached = this.getDisplayPlaceholderCache();
     if (cached === null) return 0;
     const hay = cached.caseInsensitive ? text.toLowerCase() : text;
-    let best = 0;
-    for (const { p, len } of cached.list) {
-      const limit = Math.min(len - 1, hay.length);
-      for (let l = limit; l > best; l--) {
-        if (hay.endsWith(p.slice(0, l))) {
-          best = l;
-          break;
-        }
+    // Lengths descend from the longest possible strict prefix, so the first
+    // hit is the maximum. The first-character index prunes the common case
+    // (tail characters that start no placeholder at all) to one Map lookup
+    // per candidate length — this runs on every stream delta.
+    const n = hay.length;
+    const limit = Math.min(cached.maxLen - 1, n);
+    for (let l = limit; l > 0; l--) {
+      const group = cached.groups.get(hay.charCodeAt(n - l));
+      if (group === undefined) continue;
+      for (const { p, len } of group) {
+        if (len > l && hay.endsWith(p.slice(0, l))) return l;
       }
     }
-    return best;
+    return 0;
   }
 
-  private getDisplayPlaceholderCache(): { list: Array<{ p: string; len: number }>; caseInsensitive: boolean } | null {
-    if (!this.displayLookupDirty) return this.displayPlaceholders === null ? null : { list: this.displayPlaceholders, caseInsensitive: this.caseFlag === "i" };
+  private getDisplayPlaceholderCache(): { groups: Map<number, Array<{ p: string; len: number }>>; maxLen: number; caseInsensitive: boolean } | null {
+    if (!this.displayLookupDirty) return this.displayPlaceholders === null ? null : { groups: this.displayPlaceholders, maxLen: this.displayPlaceholdersMaxLen, caseInsensitive: this.caseFlag === "i" };
     const seen = new Set<string>();
     const list: Array<{ p: string; len: number }> = [];
     for (const rule of this.compiledRules) {
@@ -958,8 +962,22 @@ export class Masker {
       seen.add(entry.placeholder);
       list.push({ p: this.caseFlag === "i" ? entry.placeholder.toLowerCase() : entry.placeholder, len: entry.placeholder.length });
     }
-    this.displayPlaceholders = list.length === 0 ? null : list;
-    return this.displayPlaceholders === null ? null : { list, caseInsensitive: this.caseFlag === "i" };
+    if (list.length === 0) {
+      this.displayPlaceholders = null;
+      return null;
+    }
+    const groups = new Map<number, Array<{ p: string; len: number }>>();
+    let maxLen = 0;
+    for (const item of list) {
+      if (item.len > maxLen) maxLen = item.len;
+      const first = item.p.charCodeAt(0);
+      const group = groups.get(first);
+      if (group) group.push(item);
+      else groups.set(first, [item]);
+    }
+    this.displayPlaceholders = groups;
+    this.displayPlaceholdersMaxLen = maxLen;
+    return { groups, maxLen, caseInsensitive: this.caseFlag === "i" };
   }
 
   // ── Arbitrary-depth objects (recurse over all string values, keys untouched) ──
