@@ -8,7 +8,7 @@
  */
 
 import { chmod, link, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, type FSWatcher } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -1511,11 +1511,20 @@ export async function saveConfigRuleMutations(
 
 // ─── File watching (hot reload) ────────────────────────────────────────────
 
+export interface WatchConfigHooks {
+  /** Test seam called whenever an FSWatcher is registered. */
+  onWatcher?: (watcher: FSWatcher, target: string) => void;
+}
+
 /**
  * Watches both global and project-level config files, debounced 300ms
  * before calling onChange. Returns a stop() function to call on
  * session_shutdown.
  */
-export function watchConfigs(cwd: string, onChange: () => void): () => void {
-  return watchConfigPaths(GLOBAL_CONFIG_PATH, getProjectConfigPath(cwd), onChange);
+export function watchConfigs(
+  cwd: string,
+  onChange: () => void,
+  hooks?: WatchConfigHooks,
+): () => void {
+  return watchConfigPaths(GLOBAL_CONFIG_PATH, getProjectConfigPath(cwd), onChange, hooks);
 }
