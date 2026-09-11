@@ -1,0 +1,2 @@
+# pi-skill-repo symlink bridges carry absolute paths — never commit them
+/skills/

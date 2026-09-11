@@ -26,10 +26,14 @@ export interface MaskingOptions {
   caseSensitive: boolean;
   /** Whether to show masking status in the bottom status bar (default true) */
   showStatusBar: boolean;
-  /** Whether to append a guidance paragraph to the system prompt telling the
-   *  LLM that masked values are opaque placeholders and must not be inferred
-   *  from or transformed (default false). */
+  /** Whether to append a guidance note to the system prompt establishing the
+   *  behavioral contract for masked values (default false). Placeholder
+   *  disclosure requires this option; the loader auto-enables it otherwise. */
   systemPromptGuidance: boolean;
+  /** Global default for listing literal-rule placeholder strings in the
+   *  guidance note; a rule-level `disclosePlaceholder` overrides it (default
+   *  false). */
+  disclosePlaceholders: boolean;
   /** Persist model-input history snapshots and the session key in the Pi
    *  session so /masking-history survives restart (default true). */
   persistHistory: boolean;
@@ -109,6 +113,7 @@ export interface InitialConfig {
     caseSensitive: true;
     showStatusBar: boolean;
     systemPromptGuidance: false;
+    disclosePlaceholders: false;
     persistHistory: boolean;
   };
 }
@@ -202,6 +207,7 @@ export function buildInitialConfig(
       caseSensitive: true,
       showStatusBar: options.showStatusBar,
       systemPromptGuidance: false,
+      disclosePlaceholders: false,
       persistHistory: options.persistHistory,
     },
   };
@@ -281,6 +287,7 @@ function defaultConfig(): MaskingConfig {
       caseSensitive: true,
       showStatusBar: true,
       systemPromptGuidance: false,
+      disclosePlaceholders: false,
       persistHistory: true,
     },
   };
@@ -435,7 +442,7 @@ export function validateConfig(
         warnings.push(`Rule [${id}] has invalid 'preset' (must be a non-empty string) and was skipped`);
         continue;
       }
-      const incompatible = ["type", "real", "realFromEnv", "pattern", "flags", "placeholder", "allowCommonPlaceholder"]
+      const incompatible = ["type", "real", "realFromEnv", "pattern", "flags", "placeholder", "allowCommonPlaceholder", "disclosePlaceholder"]
         .filter((field) => rule[field] !== undefined);
       if (incompatible.length > 0) {
         warnings.push(`Rule [${id}] preset reference also sets ${incompatible.join(", ")} and was skipped`);
@@ -460,7 +467,7 @@ export function validateConfig(
     if (rule.type === "regex") {
       if (
         rule.real !== undefined || rule.realFromEnv !== undefined || rule.placeholder !== undefined ||
-        rule.allowCommonPlaceholder !== undefined
+        rule.allowCommonPlaceholder !== undefined || rule.disclosePlaceholder !== undefined
       ) {
         warnings.push(`Rule [${id}] is regex but also sets a literal-only field and was skipped`);
         continue;
@@ -538,6 +545,10 @@ export function validateConfig(
         warnings.push(`Rule [${id}] has invalid 'allowCommonPlaceholder' (must be a boolean) and was skipped`);
         continue;
       }
+      if (rule.disclosePlaceholder !== undefined && typeof rule.disclosePlaceholder !== "boolean") {
+        warnings.push(`Rule [${id}] has invalid 'disclosePlaceholder' (must be a boolean) and was skipped`);
+        continue;
+      }
       if (rule.placeholder !== undefined && rule.placeholder !== "auto") {
         if (typeof rule.placeholder !== "string" || rule.placeholder.length === 0) {
           warnings.push(`Rule [${id}] has an invalid placeholder (must be a non-empty string or "auto"); skipped`);
@@ -561,6 +572,7 @@ export function validateConfig(
         preserveStructure,
         real,
         placeholder: rule.placeholder as string | undefined,
+        disclosePlaceholder: rule.disclosePlaceholder as boolean | undefined,
       };
       rules.push(resolved);
       continue;
@@ -851,6 +863,16 @@ function buildLoadResult(
 ): LoadResult {
   const config = mergeConfigs(globalData, projectData);
   const configuredRules: ConfiguredMaskingRule[] = [];
+
+  // Switch coupling: disclosure requires the guidance note. The intent to
+  // disclose is clear, so the loader auto-corrects instead of erroring.
+  if (config.options.disclosePlaceholders && !config.options.systemPromptGuidance) {
+    config.options.systemPromptGuidance = true;
+    warnings.push(
+      "options.disclosePlaceholders is enabled, so systemPromptGuidance was enabled automatically; " +
+        "placeholder disclosure is only meaningful inside the guidance note"
+    );
+  }
 
   function collect(
     data: Partial<MaskingConfig> | null,

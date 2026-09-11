@@ -27,6 +27,7 @@ function epoch(epochId: number): RuleEpoch {
     enabled: true,
     caseSensitive: true,
     systemPromptGuidance: false,
+      disclosePlaceholders: false,
     reason: epochId === 1 ? "session_start" : "ui_edit",
     rules: [],
     changes: [{ kind: epochId === 1 ? "initialized" : "configuration_changed" }],

@@ -37,7 +37,7 @@ export interface RuleEpochChange {
   ruleKey?: string;
   ruleId?: string;
   ruleName?: string;
-  option?: "caseSensitive" | "systemPromptGuidance";
+  option?: "caseSensitive" | "systemPromptGuidance" | "disclosePlaceholders";
   fields?: string[];
   fromOrder?: number;
   toOrder?: number;
@@ -52,6 +52,7 @@ export interface RuleEpoch {
   enabled: boolean;
   caseSensitive: boolean;
   systemPromptGuidance: boolean;
+  disclosePlaceholders?: boolean;
   reason: RuleEpochReason;
   rules: RuleEpochRuleMetadata[];
   changes: RuleEpochChange[];
@@ -87,6 +88,7 @@ function behaviorRule(rule: MaskingRule): Record<string, unknown> {
     id: rule.id,
     real: rule.real,
     placeholder: rule.placeholder ?? null,
+    disclosePlaceholder: rule.disclosePlaceholder ?? null,
     preserveStructure: rule.preserveStructure ?? null,
   };
 }
@@ -98,6 +100,7 @@ export function ruleBehaviorFingerprint(config: MaskingConfig, sessionKey: Buffe
         enabled: true,
         caseSensitive: config.options.caseSensitive,
         systemPromptGuidance: config.options.systemPromptGuidance,
+        disclosePlaceholders: config.options.disclosePlaceholders,
         rules: config.rules.map(behaviorRule),
       }
     : { enabled: false };
@@ -155,6 +158,9 @@ export function summarizeRuleChanges(
   }
   if (previous.options.systemPromptGuidance !== next.options.systemPromptGuidance) {
     changes.push({ kind: "option_changed", option: "systemPromptGuidance" });
+  }
+  if (previous.options.disclosePlaceholders !== next.options.disclosePlaceholders) {
+    changes.push({ kind: "option_changed", option: "disclosePlaceholders" });
   }
 
   const before = new Map(descriptors(previous, sessionKey).map((item) => [item.metadata.key, item]));
@@ -225,6 +231,9 @@ export function summarizeEpochNetChanges(previous: RuleEpoch, next: RuleEpoch): 
   }
   if (previous.systemPromptGuidance !== next.systemPromptGuidance) {
     changes.push({ kind: "option_changed", option: "systemPromptGuidance" });
+  }
+  if ((previous.disclosePlaceholders ?? false) !== (next.disclosePlaceholders ?? false)) {
+    changes.push({ kind: "option_changed", option: "disclosePlaceholders" });
   }
 
   const before = new Map(previous.rules.map((rule) => [rule.key, rule]));
@@ -321,6 +330,7 @@ export function createRuleEpoch(args: {
     enabled: config.enabled,
     caseSensitive: config.options.caseSensitive,
     systemPromptGuidance: config.options.systemPromptGuidance,
+    disclosePlaceholders: config.options.disclosePlaceholders,
     reason,
     rules: descriptors(config, sessionKey).map(({ metadata }) => metadata),
     changes: previousEpoch && !previousConfig
@@ -380,6 +390,7 @@ export function parseRuleEpoch(value: unknown): RuleEpoch | undefined {
     typeof value.enabled !== "boolean" ||
     typeof value.caseSensitive !== "boolean" ||
     typeof value.systemPromptGuidance !== "boolean" ||
+    (value.disclosePlaceholders !== undefined && typeof value.disclosePlaceholders !== "boolean") ||
     (value.reason !== "session_start" && value.reason !== "ui_edit" && value.reason !== "file_reload" && value.reason !== "toggle") ||
     !Array.isArray(value.rules) || !Array.isArray(value.changes)
   ) return undefined;
@@ -395,6 +406,7 @@ export function parseRuleEpoch(value: unknown): RuleEpoch | undefined {
     enabled: value.enabled,
     caseSensitive: value.caseSensitive,
     systemPromptGuidance: value.systemPromptGuidance,
+    disclosePlaceholders: value.disclosePlaceholders ?? false,
     reason: value.reason,
     rules: rules as RuleEpochRuleMetadata[],
     changes: changes as RuleEpochChange[],

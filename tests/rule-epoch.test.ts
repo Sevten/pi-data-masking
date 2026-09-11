@@ -47,6 +47,7 @@ function literalConfig(args: {
       caseSensitive: args.caseSensitive ?? true,
       showStatusBar: true,
       systemPromptGuidance: false,
+      disclosePlaceholders: false,
       persistHistory: true,
     },
   };

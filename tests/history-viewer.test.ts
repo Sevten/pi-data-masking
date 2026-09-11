@@ -412,6 +412,7 @@ test("epoch history defaults to the latest factual version and switches without 
     enabled: true,
     caseSensitive: true,
     systemPromptGuidance: false,
+      disclosePlaceholders: false,
     reason: epochId === 1 ? "session_start" : "ui_edit",
     rules: [{
       key: "project:token",
@@ -494,6 +495,7 @@ test("version rules show read-only rule metadata and net changes", () => {
     enabled: true,
     caseSensitive: epochId > 1,
     systemPromptGuidance: false,
+      disclosePlaceholders: false,
     reason: epochId === 1 ? "session_start" : "ui_edit",
     rules,
     changes: [],

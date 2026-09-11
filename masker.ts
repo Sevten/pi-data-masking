@@ -112,6 +112,10 @@ export interface LiteralMaskingRule extends BaseMaskingRule {
    * explicit value to use it directly (manual takes precedence).
    */
   placeholder?: string;
+  /** Optional override of options.disclosePlaceholders for this rule's
+   *  placeholder in the guidance note's disclosure list (tri-state:
+   *  undefined inherits the global default). */
+  disclosePlaceholder?: boolean;
 }
 
 export interface RegexMaskingRule extends BaseMaskingRule {

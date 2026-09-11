@@ -98,6 +98,7 @@ import type {
 } from "./config-loader.ts";
 import { generatePlaceholder, generateSessionKey } from "./placeholder-gen.ts";
 import { MASKING_PRESETS } from "./presets.ts";
+import { guidanceNoteForConfig } from "./guidance.ts";
 import {
   createEpochHistoryViewer,
   createHistoryViewer,
@@ -151,15 +152,11 @@ import {
 // values) grows past this many entries — it only grows within a session.
 const DYNAMIC_MAP_WARN_THRESHOLD = 5000;
 
-// System-prompt guidance paragraph (options.systemPromptGuidance, default
-// off): appended after the masked system prompt to reduce the chance the LLM
-// treats placeholder appearance as meaningful.
-const SYSTEM_PROMPT_GUIDANCE =
-  "[System note: some values in this conversation are masked placeholders. " +
-  "Treat them as opaque tokens: never infer their original values from their " +
-  "appearance, never transform or derive from them, and note that text " +
-  "describing a value's properties (prefix, format, strength) may refer to " +
-  "the original value, not the placeholder.]";
+// System-prompt guidance note (options.systemPromptGuidance, default off):
+// appended after the masked system prompt to establish the behavioral
+// contract for masked values — see guidance.ts and
+// docs/model-guidance-design.md. Composed per config so the optional
+// placeholder disclosure list reflects the active rule set.
 
 // Upper bound for snapshotContentHashes (last-persisted per-message
 // fingerprints). It otherwise mirrors transcript growth, which is unbounded
@@ -464,7 +461,7 @@ export default async function (pi: ExtensionAPI) {
     enabled: false,
     rules: [],
     configuredRules: [],
-    options: { caseSensitive: true, showStatusBar: true, systemPromptGuidance: false, persistHistory: true },
+    options: { caseSensitive: true, showStatusBar: true, systemPromptGuidance: false, disclosePlaceholders: false, persistHistory: true },
   };
   let masker = new Masker([], true);
   let stopWatching: (() => void) | null = null;
@@ -784,7 +781,8 @@ export default async function (pi: ExtensionAPI) {
       let emitted = latestSystemPrefix.source;
       if (cfg.enabled && cfg.rules.length > 0) {
         emitted = previewMasker.mask(emitted, { discover: true }).text;
-        if (cfg.options.systemPromptGuidance) emitted += "\n\n" + SYSTEM_PROMPT_GUIDANCE;
+        const guidanceNote = guidanceNoteForConfig(cfg);
+        if (guidanceNote) emitted += "\n\n" + guidanceNote;
       }
       systemChanged = emitted !== latestSystemPrefix.emitted;
     }
@@ -1422,8 +1420,9 @@ export default async function (pi: ExtensionAPI) {
     // provider boundary; fill registers provenance exactly once.
     const r = maskSystemPromptCached(event.systemPrompt);
     let text = r.text;
-    if (config.options.systemPromptGuidance) {
-      text += "\n\n" + SYSTEM_PROMPT_GUIDANCE;
+    const guidanceNote = guidanceNoteForConfig(config);
+    if (guidanceNote) {
+      text += "\n\n" + guidanceNote;
     }
     if (r.count > 0 && !systemPromptWarned) {
       systemPromptWarned = true;
