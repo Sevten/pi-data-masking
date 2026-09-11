@@ -38,6 +38,7 @@
     "caseSensitive": true,
     "showStatusBar": true,
     "systemPromptGuidance": false,
+    "disclosePlaceholders": false,
     "persistHistory": true
   }
 }

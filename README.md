@@ -176,6 +176,7 @@ Test input remains local and does not enter model context, session history, conf
 
 Masking has several inherent limitations:
 
+- **LLM secret-handling heuristics misfire on placeholders.** Models trained to avoid reading secrets verbatim often compare only head/tail samples or length, encode instead of comparing, or refuse credential-shaped strings outright. Because distinct originals can produce placeholders with equal length and preserved prefixes, sampled comparison yields confidently wrong equality judgments. The opt-in `systemPromptGuidance` note counters this with a behavioral contract (exact full-string equality, verbatim tool passthrough), but compliance is not guaranteed.
 - **Assertions about hidden characters may be wrong.** Password-strength judgments, numeric comparisons, parsing, and generated checks for prefixes, lengths, or character classes describe the placeholder unless that structure was explicitly preserved.
 - **Derived values cannot be restored.** Arithmetic, slicing, concatenation, hashing, checksums, and signatures operate on placeholder characters rather than the real value.
 - **One string cannot carry two semantic identities.** If `password` is protected as the real password and the model later writes the ordinary word `password` in code or documentation, the next request masks both alike. The model then sees a changed version of its own earlier answer, which can cause confusion or inconsistent reasoning.
@@ -206,7 +207,7 @@ Project rules run before global rules, and project options override global optio
 
 Rule or global-state changes received during an agent run activate before the next run, keeping tool placeholder restoration consistent. With the default `persistHistory: true`, session keys, rule-version metadata, and model-facing differences survive restarts without duplicating original secrets beyond Pi's normal local conversation storage.
 
-Other options are `caseSensitive`, `showStatusBar`, and `systemPromptGuidance`; see the JSON Schema for defaults and descriptions.
+Other options are `caseSensitive`, `showStatusBar`, `systemPromptGuidance`, and `disclosePlaceholders`; see the JSON Schema for defaults and descriptions.
 
 ## FAQ
 
@@ -232,7 +233,11 @@ No. Stable placeholders and save-time preflight help preserve model-facing prefi
 
 ### What happens if the model modifies a placeholder?
 
-A sliced, concatenated, hashed, or otherwise transformed placeholder cannot be mapped back to the original value.
+A sliced, concatenated, hashed, or otherwise transformed placeholder cannot be mapped back to the original value. The guidance note tells the model to pass placeholders verbatim into tools and let the tool perform any transformation, but this is advice, not an enforcement mechanism.
+
+### Can the model be told which values are placeholders?
+
+Yes, opt-in. `options.disclosePlaceholders` (or a per-rule `disclosePlaceholder` override, literal rules only) lists the session's actual placeholder strings inside the guidance note, grouped into "generated" (structure preserved) and "custom" (structure not preserved) substitutes. Disclosure requires `systemPromptGuidance` and enables it automatically. Regex-discovered placeholders are never listed: they appear lazily mid-session, and listing them would invalidate the provider prefix cache on every discovery. A disclosed list also does not certify that everything unlisted is real — a value that escaped masking never gains credibility from not being listed. Toggle both switches in `/masking` → Settings (press `S`).
 
 ## Development
 

@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- New opt-in system-prompt guidance contract (`options.systemPromptGuidance`, now
+  editable in `/masking` → Settings): counters LLM secret-handling heuristics
+  (sampled head/tail/length comparison, encoding instead of comparing) by
+  granting exact full-string equality, requiring verbatim passthrough into
+  tool calls, routing transformations through tools, and ending with an escape
+  hatch — inexplicable contradictions should be described to the user, never
+  investigated by hunting for the original values.
+- Opt-in placeholder disclosure: `options.disclosePlaceholders` (global
+  switch) with tri-state per-rule `disclosePlaceholder` overrides lists the
+  session's literal-rule placeholders in the guidance note, grouped by
+  structure fidelity. Disclosure requires guidance and enables it
+  automatically; WAIT-state env rules are skipped; regex placeholders are
+  never listed. All cache-impacting changes run through the existing save-time
+  preflight.
+- One-time upgrade notice for existing users pointing at the new settings
+  screen (never shown on fresh installs, never repeated).
+
 ### Fixed
 
 - Fix `/masking-history` showing the previous branch's history after `/tree`

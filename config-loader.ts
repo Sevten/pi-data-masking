@@ -471,7 +471,9 @@ export function validateConfig(
         rule.real !== undefined || rule.realFromEnv !== undefined || rule.placeholder !== undefined ||
         rule.allowCommonPlaceholder !== undefined || rule.disclosePlaceholder !== undefined
       ) {
-        warnings.push(`Rule [${id}] is regex but also sets a literal-only field and was skipped`);
+        const literalOnly = ["real", "realFromEnv", "placeholder", "allowCommonPlaceholder", "disclosePlaceholder"]
+          .filter((field) => rule[field] !== undefined);
+        warnings.push(`Rule [${id}] is regex but also sets literal-only field(s) — ${literalOnly.join(", ")} — and was skipped`);
         continue;
       }
       const pattern = typeof rule.pattern === "string" ? rule.pattern : "";
