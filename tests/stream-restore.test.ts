@@ -13,7 +13,7 @@ import {
   type AssistantMessageEvent,
 } from "@earendil-works/pi-ai";
 import { Masker } from "../masker.ts";
-import { createStreamRestore, type StreamRestoreBlockState } from "../index.ts";
+import { createStreamRestore, type StreamRestoreBlockState } from "../stream-restore.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 
