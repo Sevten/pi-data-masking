@@ -103,6 +103,13 @@ import { generatePlaceholder, generateSessionKey } from "./placeholder-gen.ts";
 import { MASKING_PRESETS } from "./presets.ts";
 import { guidanceNoteForConfig } from "./guidance.ts";
 import {
+  decideGuidanceNotice,
+  markGuidanceNoticeShown,
+  migrationStatePath,
+  readMigrationStateSync,
+  writeMigrationState,
+} from "./migration.ts";
+import {
   createEpochHistoryViewer,
   createHistoryViewer,
   mergePendingAssistant,
@@ -1230,6 +1237,27 @@ export default async function (pi: ExtensionAPI) {
 
     ensureSessionStatePersisted(ctx);
     notifyWarnings(ctx, [...loaded.warnings, ...persisted.warnings, ...compileWarnings]);
+
+    // One-time upgrade notice: only for existing-config users, only until
+    // the marker records this notice version. The actual enablement lives
+    // in /masking → Settings; this never blocks or asks inline.
+    try {
+      const statePath = migrationStatePath(getAgentDir());
+      const state = readMigrationStateSync(statePath);
+      const configExists = existsSync(GLOBAL_CONFIG_PATH) || existsSync(getProjectConfigPath(ctx.cwd));
+      if (decideGuidanceNotice(state, configExists).pending) {
+        guidanceNoticePending = true;
+        await writeMigrationState(statePath, markGuidanceNoticeShown(state));
+        if (!persisted.config.options.systemPromptGuidance) {
+          ctx.ui.notify(
+            "pi-data-masking: new in this version — a guidance note can tell the model how to work with masked values (compare, pass through, transform via tools). Open /masking and press S to enable it.",
+            "info",
+          );
+        }
+      }
+    } catch {
+      // The notice is best-effort; never block session start over it.
+    }
 
     stopWatching = watchConfigs(ctx.cwd, async () => {
       // Hot reload: reuse the current session's sessionKey and dynamicPlaceholderMap
@@ -3046,6 +3074,7 @@ export default async function (pi: ExtensionAPI) {
         tui.requestRender();
         const saved = await saveConfigOptionsUI(ctx, next);
         saving = false;
+        if (saved && next.systemPromptGuidance) guidanceNoticePending = false;
         message = saved ? "Saved · affects future requests" : "Save cancelled · no changes applied";
         tui.requestRender();
       }
