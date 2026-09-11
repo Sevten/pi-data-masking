@@ -1,6 +1,6 @@
 /**
  * tests/guidance.test.ts
- * Unit tests for the guidance note: three-state composition, the disclosure
+ * Unit tests for the model guidance: three-state composition, the disclosure
  * inheritance matrix, loader auto-correction, and Hook-6-style re-masking
  * idempotence over the note itself.
  */

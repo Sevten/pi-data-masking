@@ -43,7 +43,7 @@
   investigated by hunting for the original values.
 - Opt-in placeholder disclosure: `options.disclosePlaceholders` (global
   switch) with tri-state per-rule `disclosePlaceholder` overrides lists the
-  session's literal-rule placeholders in the guidance note, grouped by
+  session's literal-rule placeholders in the model guidance, grouped by
   structure fidelity. Disclosure requires guidance and enables it
   automatically; WAIT-state env rules are skipped; regex placeholders are
   never listed. All cache-impacting changes run through the existing save-time

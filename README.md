@@ -233,11 +233,11 @@ No. Stable placeholders and save-time preflight help preserve model-facing prefi
 
 ### What happens if the model modifies a placeholder?
 
-A sliced, concatenated, hashed, or otherwise transformed placeholder cannot be mapped back to the original value. The guidance note tells the model to pass placeholders verbatim into tools and let the tool perform any transformation, but this is advice, not an enforcement mechanism.
+A sliced, concatenated, hashed, or otherwise transformed placeholder cannot be mapped back to the original value. The model guidance tells the model to pass placeholders verbatim into tools and let the tool perform any transformation, but this is advice, not an enforcement mechanism.
 
 ### Can the model be told which values are placeholders?
 
-Yes, opt-in. `options.disclosePlaceholders` (or a per-rule `disclosePlaceholder` override, literal rules only) lists the session's actual placeholder strings inside the guidance note, grouped into "generated" (structure preserved) and "custom" (structure not preserved) substitutes. Disclosure requires `systemPromptGuidance` and enables it automatically. Regex-discovered placeholders are never listed: they appear lazily mid-session, and listing them would invalidate the provider prefix cache on every discovery. A disclosed list also does not certify that everything unlisted is real — a value that escaped masking never gains credibility from not being listed. Toggle both switches in the `/masking` home screen's settings zone (top block, Tab to focus).
+Yes, opt-in. `options.disclosePlaceholders` (or a per-rule `disclosePlaceholder` override, literal rules only) lists the session's actual placeholder strings inside the model guidance, grouped into "generated" (structure preserved) and "custom" (structure not preserved) substitutes. Disclosure requires `systemPromptGuidance` and enables it automatically. Regex-discovered placeholders are never listed: they appear lazily mid-session, and listing them would invalidate the provider prefix cache on every discovery. A disclosed list also does not certify that everything unlisted is real — a value that escaped masking never gains credibility from not being listed. Toggle both switches in the `/masking` home screen's settings zone (top block, Tab to focus).
 
 ## Development
 

@@ -69,7 +69,7 @@
         "placeholder": { "type": "string", "minLength": 1, "default": "auto" },
         "disclosePlaceholder": {
           "type": "boolean",
-          "description": "Override options.disclosePlaceholders for this rule's placeholder in the guidance note's disclosure list. Omit to inherit the global default. Literal rules only."
+          "description": "Override options.disclosePlaceholders for this rule's placeholder in the model guidance's disclosure list. Omit to inherit the global default. Literal rules only."
         },
         "allowCommonPlaceholder": {
           "type": "boolean",
@@ -149,12 +149,12 @@
         "systemPromptGuidance": {
           "type": "boolean",
           "default": false,
-          "description": "Append a guidance note to the system prompt establishing the behavioral contract for masked values: exact full-string comparison, verbatim passthrough into tool calls, transformations via tools, and no investigation of inconsistencies (ask the user instead). Cache-impacting when toggled mid-session."
+          "description": "Append model guidance to the system prompt establishing the behavioral contract for masked values: exact full-string comparison, verbatim passthrough into tool calls, transformations via tools, and no investigation of inconsistencies (ask the user instead). Cache-impacting when toggled mid-session."
         },
         "disclosePlaceholders": {
           "type": "boolean",
           "default": false,
-          "description": "List literal-rule placeholder strings inside the guidance note, grouped by structure fidelity. Requires systemPromptGuidance (auto-enabled otherwise). Regex placeholders are never listed."
+          "description": "List literal-rule placeholder strings inside the model guidance, grouped by structure fidelity. Requires systemPromptGuidance (auto-enabled otherwise). Regex placeholders are never listed."
         },
         "persistHistory": { "type": "boolean", "default": true }
       }

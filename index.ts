@@ -162,7 +162,7 @@ import {
 // values) grows past this many entries — it only grows within a session.
 const DYNAMIC_MAP_WARN_THRESHOLD = 5000;
 
-// System-prompt guidance note (options.systemPromptGuidance, default off):
+// Model guidance appended to the system prompt (options.systemPromptGuidance, default off):
 // appended after the masked system prompt to establish the behavioral
 // contract for masked values — see guidance.ts and
 // docs/model-guidance-design.md. Composed per config so the optional
@@ -489,7 +489,7 @@ export default async function (pi: ExtensionAPI) {
   let sessionKey: Buffer = generateSessionKey();
 
   // Upgrade notice state: set at startup for existing-config users who have
-  // not seen (or enabled) the guidance note; cleared once the marker file is
+  // not seen (or enabled) the model guidance; cleared once the marker file is
   // written and after the user enables guidance. See migration.ts.
   let guidanceNoticePending = false;
 
@@ -1274,7 +1274,7 @@ export default async function (pi: ExtensionAPI) {
         await writeMigrationState(statePath, markGuidanceNoticeShown(state));
         if (!persisted.config.options.systemPromptGuidance) {
           ctx.ui.notify(
-            "pi-data-masking: new in this version — a guidance note can tell the model how to work with masked values (compare, pass through, transform via tools). Open /masking, Tab to the settings zone to enable it.",
+            "pi-data-masking: new in this version — model guidance can tell the model how to work with masked values (compare, pass through, transform via tools). Open /masking, Tab to the settings zone to enable it.",
             "info",
           );
         }
@@ -2681,12 +2681,12 @@ export default async function (pi: ExtensionAPI) {
               renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
               renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
               if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
-              renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "listed placeholders appear in the guidance note, labelled as substitutes — never the real value · ←/→ or Space cycles");
+              renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "listed placeholders appear in the model guidance, labelled as substitutes — never the real value · ←/→ or Space cycles");
             } else {
               renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
               renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
               if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
-              renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "listed placeholders appear in the guidance note, labelled as substitutes — never the real value · ←/→ or Space cycles");
+              renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "listed placeholders appear in the model guidance, labelled as substitutes — never the real value · ←/→ or Space cycles");
             }
             const fixedFieldRowCount = 8;
             while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
@@ -3400,15 +3400,15 @@ export default async function (pi: ExtensionAPI) {
             settingsDivider,
             settingRow(0, "Masking", maskingEnabled,
               maskingActivationPending ? "saved · activates next run" : "saved across projects and future sessions"),
-            settingRow(1, "Guidance note", config.options.systemPromptGuidance,
+            settingRow(1, "Model guidance", config.options.systemPromptGuidance,
               "tell the model how to work with masked values (compare, pass through, transform via tools)"),
             settingRow(2, "Disclose", config.options.disclosePlaceholders,
-              `list literal-rule placeholders inside the guidance note (${literalEligible} eligible${config.options.disclosePlaceholders ? "" : " · requires the guidance note"})`),
+              `list literal-rule placeholders inside the model guidance (${literalEligible} eligible${config.options.disclosePlaceholders ? "" : " · requires the model guidance"})`),
             settingRow(3, "Status line", config.options.showStatusBar,
               "show the masking summary on the status line at the bottom of the chat window"),
           ];
           if (guidanceNoticePending && !config.options.systemPromptGuidance) {
-            settingsLines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: the guidance note tells the model how to work with masked values — enable it above."), width));
+            settingsLines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: model guidance tells the model how to work with masked values — enable it above."), width));
           }
           const confirmDisableLines = confirmDisableMasking
             ? [

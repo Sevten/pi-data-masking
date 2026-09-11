@@ -26,12 +26,12 @@ export interface MaskingOptions {
   caseSensitive: boolean;
   /** Whether to show masking status in the bottom status bar (default true) */
   showStatusBar: boolean;
-  /** Whether to append a guidance note to the system prompt establishing the
+  /** Whether to append model guidance to the system prompt establishing the
    *  behavioral contract for masked values (default false). Placeholder
    *  disclosure requires this option; the loader auto-enables it otherwise. */
   systemPromptGuidance: boolean;
   /** Global default for listing literal-rule placeholder strings in the
-   *  guidance note; a rule-level `disclosePlaceholder` overrides it (default
+   *  model guidance; a rule-level `disclosePlaceholder` overrides it (default
    *  false). */
   disclosePlaceholders: boolean;
   /** Persist model-input history snapshots and the session key in the Pi
@@ -868,13 +868,13 @@ function buildLoadResult(
   const config = mergeConfigs(globalData, projectData);
   const configuredRules: ConfiguredMaskingRule[] = [];
 
-  // Switch coupling: disclosure requires the guidance note. The intent to
+  // Switch coupling: disclosure requires the model guidance. The intent to
   // disclose is clear, so the loader auto-corrects instead of erroring.
   if (config.options.disclosePlaceholders && !config.options.systemPromptGuidance) {
     config.options.systemPromptGuidance = true;
     warnings.push(
       "options.disclosePlaceholders is enabled, so systemPromptGuidance was enabled automatically; " +
-        "placeholder disclosure is only meaningful inside the guidance note"
+        "placeholder disclosure is only meaningful inside the model guidance"
     );
   }
 
