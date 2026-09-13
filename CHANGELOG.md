@@ -4,113 +4,64 @@
 
 ### Added
 
-- Expanded `systemPromptGuidance` contract (now editable in the `/masking`
-  settings zone). When enabled, a guidance note is injected into the system
-  prompt telling the model how to work with masked placeholders; this change
-  extends it to counter common secret-handling heuristics: grants exact
-  full-string equality, requires verbatim tool-call passthrough, routes
-  transformations through tools, and tells the model to report inexplicable
-  contradictions instead of hunting for the original values.
-- Opt-in placeholder disclosure: `options.disclosePlaceholders` (global) with
-  tri-state per-rule overrides. When enabled, the session's actual literal-rule
-  placeholder strings (grouped by structure fidelity) are listed in the model
-  guidance, so the model can tell which strings are substitutes instead of
-  guessing. Requires and enables `systemPromptGuidance`; WAIT-state env rules
-  and regex placeholders are never listed.
-- `/masking-history`: press `/` to search the transcript. Typing jumps
-  incrementally between matches, `Enter`/`Ctrl+R` cycle focus forward and
-  backward (both wrap), and all visible matches are highlighted. In
-  side-by-side compare view only the active column is searched.
-- New settings row `Status line` toggles the masking summary in the main chat
-  window (`options.showStatusBar`).
-- `/masking` subcommands: `/masking test <text>` previews masking locally,
-  `/masking on` and `/masking off` toggle the global masking switch.
+- Expanded `systemPromptGuidance` contract (now editable in the `/masking` settings zone). When enabled, a guidance note is injected into the system prompt telling the model how to work with masked placeholders; this change extends it to counter common secret-handling heuristics: grants exact full-string equality, requires verbatim tool-call passthrough, routes transformations through tools, and tells the model to report inexplicable contradictions instead of hunting for the original values.
+- Opt-in placeholder disclosure: `options.disclosePlaceholders` (global) with tri-state per-rule overrides. When enabled, the session's actual literal-rule placeholder strings (grouped by structure fidelity) are listed in the model guidance, so the model can tell which strings are substitutes instead of guessing. Requires and enables `systemPromptGuidance`; WAIT-state env rules and regex placeholders are never listed.
+- `/masking-history`: press `/` to search the transcript. Typing jumps incrementally between matches, `Enter`/`Ctrl+R` cycle focus forward and backward (both wrap), and all visible matches are highlighted. In side-by-side compare view only the active column is searched.
+- New settings row `Status line` toggles the masking summary in the main chat window (`options.showStatusBar`).
+- `/masking` subcommands: `/masking test <text>` previews masking locally, `/masking on` and `/masking off` toggle the global masking switch.
 
 ### Changed
 
-- `/masking`: rule enable/disable and edits with cache impact confirm inline
-  instead of stacking a second overlay window; compacted layout (summary on
-  the header line, list fills the terminal, hints at the bottom); Esc closes
-  from any zone.
-- Rules-list details show the exact value unquoted plus a `Disclose:` line
-  with the rule's effective disclosure mode.
+- `/masking`: rule enable/disable and edits with cache impact confirm inline instead of stacking a second overlay window; compacted layout (summary on the header line, list fills the terminal, hints at the bottom); Esc closes from any zone.
+- Rules-list details show the exact value unquoted plus a `Disclose:` line with the rule's effective disclosure mode.
 - Removed the "Masking config reloaded" notification after every rule change.
 
 ### Fixed
 
-- Fix `/masking-history` showing the previous branch's history after `/tree`
-  navigation.
-- Fix the save-time impact confirmation firing for rules that have never
-  fired on any message: it now re-masks both candidate and active configs
-  fresh instead of comparing against recorded masked hashes.
-- Fix live streaming in @jmfederico/pi-web still showing masked placeholders;
-  real values now appear from the first streaming delta there too.
+- Fix `/masking-history` showing the previous branch's history after `/tree` navigation.
+- Fix the save-time impact confirmation firing for rules that have never fired on any message: it now re-masks both candidate and active configs fresh instead of comparing against recorded masked hashes.
+- Fix live streaming in @jmfederico/pi-web still showing masked placeholders; real values now appear from the first streaming delta there too.
 
 ## [0.6.2] - 2026-09-01
 
 ### Added
 
-- Real values now appear from the first streaming delta in every UI, including
-  pi's web client: assistant text and thinking are restored live as the model
-  streams them, so long thinking output no longer leaves masked placeholders
-  in the terminal scrollback after completion.
-- Tool arguments are still restored only at tool execution; stream transform
-  failures fall back to passing events through untouched, so a transform bug
-  can never break streaming.
-- Warn when a literal value or custom placeholder collides with a bundled
-  common term (e.g. a word that also appears in normal prose), so ambiguous
-  rules are caught before they cause accidental unmasking.
+- Real values now appear from the first streaming delta in every UI, including pi's web client: assistant text and thinking are restored live as the model streams them, so long thinking output no longer leaves masked placeholders in the terminal scrollback after completion.
+- Tool arguments are still restored only at tool execution; stream transform failures fall back to passing events through untouched, so a transform bug can never break streaming.
+- Warn when a literal value or custom placeholder collides with a bundled common term (e.g. a word that also appears in normal prose), so ambiguous rules are caught before they cause accidental unmasking.
 
 ### Changed
 
-- Disabling global masking from the `/masking` home screen now confirms inline
-  (warning and Yes/No selector rendered inside the same screen, `←→` select ·
-  `Enter` confirm · `Esc` cancel) instead of opening a separate overlay window.
-  The confirmation only appears when the session's model-bound context has
-  actually been masked — i.e. disabling would change the outbound prefix and
-  drop provider prefix-cache reuse; otherwise the toggle applies immediately.
-- The `/masking` configuration home is faster to navigate, with direct JSON
-  editing, sensitive-value visibility controls, and clearer compact layouts.
-- Creating a global rule is simpler: global scope by default, generated IDs,
-  immediate test previews, and validation when saving.
+- Disabling global masking from the `/masking` home screen now confirms inline (warning and Yes/No selector rendered inside the same screen, `←→` select · `Enter` confirm · `Esc` cancel) instead of opening a separate overlay window. The confirmation only appears when the session's model-bound context has actually been masked — i.e. disabling would change the outbound prefix and drop provider prefix-cache reuse; otherwise the toggle applies immediately.
+- The `/masking` configuration home is faster to navigate, with direct JSON editing, sensitive-value visibility controls, and clearer compact layouts.
+- Creating a global rule is simpler: global scope by default, generated IDs, immediate test previews, and validation when saving.
 
 ### Fixed
 
-- `/masking-history` comparisons no longer repeatedly rewind a shared prefix
-  to the start of a word without making progress.
+- `/masking-history` comparisons no longer repeatedly rewind a shared prefix to the start of a word without making progress.
 
 ## [0.6.1] - 2026-08-29
 
 ### Added
 
-- Add a built-in preset for publicly routable IPv4 addresses, excluding private
-  and common special-use ranges.
+- Add a built-in preset for publicly routable IPv4 addresses, excluding private and common special-use ranges.
 
 ### Changed
 
 - Clarify that the private IPv4 preset preserves its first two octets by default.
-- Expand the README with common use cases and FAQs, and clarify the masking
-  boundary and the benefits and limitations of structure-preserving placeholders.
+- Expand the README with common use cases and FAQs, and clarify the masking boundary and the benefits and limitations of structure-preserving placeholders.
 
 ## [0.6.0] - 2026-08-29
 
 ### Added
 
-- Add save-time preflight for masking changes that may alter the model-facing
-  prompt prefix and reduce provider prompt-cache reuse, identifying the earliest
-  affected system prompt or conversation message before rules are written.
-- Add rule-version auditing to `/masking-history`: navigate versions that reached
-  the model with `[` and `]`, inspect rules and net changes with `R`, and retain
-  immutable transcripts—including compacted messages—plus sanitized metadata
-  and session-keyed boundary fingerprints without storing boundary plaintext.
+- Add save-time preflight for masking changes that may alter the model-facing prompt prefix and reduce provider prompt-cache reuse, identifying the earliest affected system prompt or conversation message before rules are written.
+- Add rule-version auditing to `/masking-history`: navigate versions that reached the model with `[` and `]`, inspect rules and net changes with `R`, and retain immutable transcripts—including compacted messages—plus sanitized metadata and session-keyed boundary fingerprints without storing boundary plaintext.
 
 ### Changed
 
-- Move the persistent global masking switch into `/masking` under the `M`
-  shortcut, with disable confirmation and pending-run status.
-- Cache masked output for unchanged history across requests, improving
-  performance while preventing repeated masking and isolating cached values
-  from external mutation.
+- Move the persistent global masking switch into `/masking` under the `M` shortcut, with disable confirmation and pending-run status.
+- Cache masked output for unchanged history across requests, improving performance while preventing repeated masking and isolating cached values from external mutation.
 
 ### Removed
 
@@ -118,14 +69,10 @@
 
 ### Fixed
 
-- Improve `/masking-history` at narrow widths and correct comparison headings,
-  controls, occurrence navigation, lexical highlighting, and message styling.
-- Preserve the selected history display mode across rule versions and refresh
-  masked history when rules change even if the source message does not.
-- Fix package dependency metadata by declaring Pi core modules as peers,
-  preventing duplicate Pi runtime installations.
-- Keep all `/masking` workflows on a clean full-screen surface without flashing
-  conversation history or blank intermediate screens.
+- Improve `/masking-history` at narrow widths and correct comparison headings, controls, occurrence navigation, lexical highlighting, and message styling.
+- Preserve the selected history display mode across rule versions and refresh masked history when rules change even if the source message does not.
+- Fix package dependency metadata by declaring Pi core modules as peers, preventing duplicate Pi runtime installations.
+- Keep all `/masking` workflows on a clean full-screen surface without flashing conversation history or blank intermediate screens.
 
 ## [0.5.0] - 2026-08-24
 
