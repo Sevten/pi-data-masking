@@ -30,6 +30,7 @@ async function createHarness(cwd: string, branch: unknown[] = []) {
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   const entries: Array<{ customType: string; data: unknown }> = [];
   const notifications: string[] = [];
+  const statuses: Record<string, string | undefined> = {};
   const scenarios: Scenario[] = [];
   const pi = {
     on(name: string, handler: Handler) {
@@ -61,7 +62,7 @@ async function createHarness(cwd: string, branch: unknown[] = []) {
     cwd,
     ui: {
       notify(message: string) { notifications.push(message); },
-      setStatus() {},
+      setStatus(name: string, text: string | undefined) { statuses[name] = text; },
       setWidget() {},
       async custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => Component): Promise<T> {
         const scenario = scenarios.shift();
@@ -83,6 +84,7 @@ async function createHarness(cwd: string, branch: unknown[] = []) {
     commands,
     entries,
     notifications,
+    statuses,
     async emit(name: string, event: unknown): Promise<unknown> {
       let result: unknown;
       for (const handler of events.get(name) ?? []) result = await handler(event, ctx);
@@ -219,7 +221,9 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     writeFileSync(join(configDir, "masking.config.json"), JSON.stringify({
       rules: [{ id: "token", real: "secret-service-token", placeholder: "rotated-mask-value" }],
     }));
-    await waitFor(() => harness.notifications.some((message) => message.includes("reload saved")));
+    // Config saves during a run no longer notify in chat; the queued state
+    // is visible on the masking status line ("· changes pending").
+    await waitFor(() => (harness.statuses.masking ?? "").includes("changes pending"));
 
     const beforeReloadActivation = await harness.emit("context", { messages: [structuredClone(original)] }) as {
       messages: Array<{ content: string }>;

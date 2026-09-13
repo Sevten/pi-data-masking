@@ -668,10 +668,6 @@ export default async function (pi: ExtensionAPI) {
     pendingConfigActivation = null;
     activateConfig(pending.config, pending.reason, ctx);
     ensureSessionStatePersisted(ctx);
-    ctx.ui.notify(
-      `🔒 Pending masking changes activated as E${activeRuleEpoch?.epochId ?? 1} for this agent run; previously recorded masking facts remain unchanged`,
-      "info",
-    );
     updateStatus(ctx);
   }
 
@@ -704,18 +700,14 @@ export default async function (pi: ExtensionAPI) {
     const loaded = await loadConfig(ctx.cwd, sessionKey, configSnapshot);
     configSnapshot = loaded.snapshot;
     const persisted = await applyPersistentToggle(loaded.config);
-    const disposition = acceptConfigChange(
+    // Queued vs activated is surfaced by the status bar ("· changes pending")
+    // and the /masking UI, not by chat notifications.
+    acceptConfigChange(
       ctx,
       persisted.config,
       "ui_edit",
       [...loaded.warnings, ...persisted.warnings],
     );
-    if (disposition === "queued") {
-      ctx.ui.notify(
-        "Masking changes are saved; the active agent run keeps its current rules, the final change activates before the next run, and recorded history is not rewritten",
-        "info",
-      );
-    }
   }
 
   /** Persist only new/changed per-message model-input differences.
@@ -1019,12 +1011,7 @@ export default async function (pi: ExtensionAPI) {
         [...reloaded.warnings, ...persistedReload.warnings],
       );
       if (disposition === "activated") ensureSessionStatePersisted(ctx);
-      if (disposition === "queued") {
-        ctx.ui.notify(
-          "🔒 Masking config reload saved; the active run keeps its current rules, the reload activates before the next run, and recorded history is not rewritten",
-          "info"
-        );
-      }
+      // Queued reloads are surfaced by the status bar and the /masking UI.
     });
 
     updateStatus(ctx);

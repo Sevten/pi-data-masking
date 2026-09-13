@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Masking config saves and hot reloads no longer post explanations into the chat conversation; the pending state is shown on the masking status line ("· changes pending") and inside the `/masking` screen, where each changed settings row carries an "activates next run" hint.
+
 ### Fixed
 
+- The `/masking` settings rows (Model guidance, Disclose, Status line) now reflect the next-to-run config immediately after saving, even while an agent run is active, with a "· activates next run" hint on each changed row; previously the toggles kept showing the old state until the next conversation started. Repeated toggles during a run also no longer swallow the second change.
 - Disabled rules no longer produce quality warnings at load time. Advisory checks — regex safety risks, short/low-entropy values, common semantic values (real or placeholder), missing environment variables, and the placeholder-equals-real-value "no effect" warning — are suppressed while a rule is `enabled: false`; structural warnings that affect config loading (skipped/invalid rules, duplicate IDs) are still reported. The checks re-fire on the next load after the rule is re-enabled.
 
 ## [0.7.0] - 2026-09-12

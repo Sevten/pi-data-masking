@@ -201,9 +201,12 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
      *  both — off / guidance-only / full are the only reachable states.
      *  The status-line row is an independent toggle. */
     async function toggleGuidanceInPlace(): Promise<void> {
+      // Base the next state on the effective config (queued changes included)
+      // so repeated toggles during an active run accumulate correctly.
+      const options = bridge.effectiveConfig().options;
       const next: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders" | "showStatusBar">> = {
-        systemPromptGuidance: bridge.config().options.systemPromptGuidance,
-        disclosePlaceholders: bridge.config().options.disclosePlaceholders,
+        systemPromptGuidance: options.systemPromptGuidance,
+        disclosePlaceholders: options.disclosePlaceholders,
       };
       if (settingsIndex === 3) {
         next.showStatusBar = !bridge.config().options.showStatusBar;
@@ -221,9 +224,9 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           next.systemPromptGuidance = true;
         }
       }
-      if (next.systemPromptGuidance === bridge.config().options.systemPromptGuidance
-        && next.disclosePlaceholders === bridge.config().options.disclosePlaceholders
-        && next.showStatusBar === bridge.config().options.showStatusBar) return;
+      if (next.systemPromptGuidance === options.systemPromptGuidance
+        && next.disclosePlaceholders === options.disclosePlaceholders
+        && next.showStatusBar === options.showStatusBar) return;
       mutationInProgress = true;
       mutationMessage = "Saving…";
       refresh();
@@ -314,6 +317,15 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         const desiredConfig = bridge.effectiveConfig();
         const maskingEnabled = desiredConfig.enabled;
         const maskingActivationPending = bridge.activationPending() && desiredConfig.enabled !== bridge.config().enabled;
+        // Settings-zone rows reflect the config that will run next; when a
+        // change is queued behind the active agent run, say so per row.
+        const options = desiredConfig.options;
+        const activeOptions = bridge.config().options;
+        const optionsPendingSuffix = bridge.activationPending()
+          && (options.systemPromptGuidance !== activeOptions.systemPromptGuidance
+            || options.disclosePlaceholders !== activeOptions.disclosePlaceholders
+            || options.showStatusBar !== activeOptions.showStatusBar)
+          ? " · activates next run" : "";
         const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
         const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
         const literalEligible = screenRules.filter((configured) =>
@@ -337,14 +349,14 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           settingsDivider,
           settingRow(0, "Masking", maskingEnabled,
             maskingActivationPending ? "saved · activates next run" : "saved across projects and future sessions"),
-          settingRow(1, "Model guidance", bridge.config().options.systemPromptGuidance,
-            "tell the model how to work with masked values (compare, pass through, transform via tools)"),
-          settingRow(2, "Disclose", bridge.config().options.disclosePlaceholders,
-            `list literal-rule placeholders inside the model guidance (${literalEligible} eligible${bridge.config().options.disclosePlaceholders ? "" : " · requires the model guidance"})`),
-          settingRow(3, "Status line", bridge.config().options.showStatusBar,
-            "show the masking summary on the status line at the bottom of the chat window"),
+          settingRow(1, "Model guidance", options.systemPromptGuidance,
+            `tell the model how to work with masked values (compare, pass through, transform via tools)${optionsPendingSuffix}`),
+          settingRow(2, "Disclose", options.disclosePlaceholders,
+            `list literal-rule placeholders inside the model guidance (${literalEligible} eligible${options.disclosePlaceholders ? "" : " · requires the model guidance"})${optionsPendingSuffix}`),
+          settingRow(3, "Status line", options.showStatusBar,
+            `show the masking summary on the status line at the bottom of the chat window${optionsPendingSuffix}`),
         ];
-        if (bridge.guidanceNoticePending() && !bridge.config().options.systemPromptGuidance) {
+        if (bridge.guidanceNoticePending() && !options.systemPromptGuidance) {
           settingsLines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: model guidance tells the model how to work with masked values — enable it above."), width));
         }
         const confirmDisableLines = confirmDisableMasking
