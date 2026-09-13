@@ -127,11 +127,7 @@ import {
   type PrefixComponentFingerprint,
 } from "./epoch-transcript.ts";
 
-/** Widget key for the one-time upgrade notice; lives above the editor so it
- *  survives the startup chat render that wipes session_start notifies. */
-const UPGRADE_NOTICE_WIDGET_KEY = "pi-data-masking-upgrade-notice";
-
-
+// ─── Types ──────────────────────────────────────────────────────────────────
 
 
 
@@ -204,9 +200,9 @@ export default async function (pi: ExtensionAPI) {
   // not seen (or enabled) the model guidance; cleared once the marker file is
   // written and after the user enables guidance. See migration.ts.
   let guidanceNoticePending = false;
-  /** True while the upgrade-notice widget is on screen; the first user input
-   *  (or enabling guidance) removes it. Independent of guidanceNoticePending,
-   *  which drives the /masking settings highlight until guidance is enabled. */
+  /** True while the one-time upgrade notice still needs its deferred notify
+   *  delivery (first user input); independent of guidanceNoticePending, which
+   *  drives the /masking settings highlight until guidance is enabled. */
   let guidanceNoticeUndelivered = false;
 
   // Dynamic placeholder map (regex-discovered values only): created and
@@ -1003,20 +999,11 @@ export default async function (pi: ExtensionAPI) {
       const configExists = existsSync(GLOBAL_CONFIG_PATH) || existsSync(getProjectConfigPath(ctx.cwd));
       if (decideGuidanceNotice(state, configExists).pending) {
         guidanceNoticePending = true;
-        await writeMigrationState(statePath, markGuidanceNoticeShown(state));
-        if (!persisted.config.options.systemPromptGuidance) {
-          guidanceNoticeUndelivered = true;
-          // A chat-area notify during session_start is wiped by the startup
-          // render pass (renderCurrentSessionState clears the chat), so the
-          // notice renders as a widget — its own container above the editor,
-          // visible immediately and unaffected by chat clears. Removed on
-          // first input or when guidance is enabled.
-          ctx.ui.setWidget(UPGRADE_NOTICE_WIDGET_KEY, [
-            "pi-data-masking: new in this version — model guidance can tell the model how",
-            "to work with masked values (compare, pass through, transform via tools).",
-            "Open /masking, Tab to the settings zone to enable it.",
-          ]);
-        }
+        guidanceNoticeUndelivered = true;
+        // Delivery is deferred to the first user input: a notify fired during
+        // session_start renders before the UI settles and is easily missed or
+        // overwritten by startup output. The marker is written on delivery so
+        // an unnoticed notice retries next session instead of being lost.
       }
     } catch {
       // The notice is best-effort; never block session start over it.
@@ -1061,13 +1048,28 @@ export default async function (pi: ExtensionAPI) {
     resetSessionState();
   });
 
-  // The upgrade notice widget is removed on the first user input; the
-  // shown-marker is written when the widget is set, since the widget is
-  // immediately visible at startup and persists across chat clears.
+  // Deferred delivery of the one-time upgrade notice: the first user input
+  // guarantees the TUI is rendering, so the notify is actually visible. The
+  // marker is persisted here (not at session_start) so a notice the user
+  // never saw retries on the next session. The /masking settings highlight
+  // (guidanceNoticePending) remains independent of this marker until the
+  // user enables guidance.
   pi.on("input", async (_event, ctx) => {
     if (!guidanceNoticeUndelivered) return;
     guidanceNoticeUndelivered = false;
-    ctx.ui.setWidget(UPGRADE_NOTICE_WIDGET_KEY, undefined);
+    try {
+      const statePath = migrationStatePath(getAgentDir());
+      const state = readMigrationStateSync(statePath);
+      await writeMigrationState(statePath, markGuidanceNoticeShown(state));
+      if (!config.options.systemPromptGuidance) {
+        ctx.ui.notify(
+          "pi-data-masking: new in this version — model guidance can tell the model how to work with masked values (compare, pass through, transform via tools). Open /masking, Tab to the settings zone to enable it.",
+          "info",
+        );
+      }
+    } catch {
+      // Best-effort; the pending flag is already cleared for this session.
+    }
   });
 
   // ── Hook 1: context — outbound masking ────────────────────────────────────
@@ -1352,10 +1354,9 @@ export default async function (pi: ExtensionAPI) {
     sessionKey: () => sessionKey,
     sessionMaskedOutbound: () => sessionMaskedOutbound,
     guidanceNoticePending: () => guidanceNoticePending,
-    clearGuidanceNotice: (clearCtx?: ExtensionContext) => {
+    clearGuidanceNotice: () => {
       guidanceNoticePending = false;
       guidanceNoticeUndelivered = false;
-      clearCtx?.ui.setWidget(UPGRADE_NOTICE_WIDGET_KEY, undefined);
     },
     candidateConfigFromSources,
     acceptConfigChange,
