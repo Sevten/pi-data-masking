@@ -57,7 +57,8 @@ import { Masker } from "./masker.ts";
 import type { DynamicPlaceholderMap, MaskOptions } from "./masker.ts";
 import { armStreamRestore, createStreamRestore, registerStreamRestoreProviders } from "./stream-restore.ts";
 import { openMaskingConfig } from "./ui/config-screen.ts";
-import { selectMaskingOption, type MaskingUIBridge } from "./ui/masking-common.ts";
+import { configuredRuleDisplayName, selectMaskingOption, type MaskingUIBridge } from "./ui/masking-common.ts";
+import { previewWithRules, toggleGlobalMasking } from "./ui/rule-editor.ts";
 import {
   GLOBAL_CONFIG_PATH,
   getProjectConfigPath,
@@ -1339,7 +1340,41 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerCommand("masking", {
     description: "Enable/disable masking and configure rules (real values stay hidden)",
-    handler: async (_args, ctx) => openMaskingConfig(maskingUIBridge, ctx),
+    handler: async (args, ctx) => {
+      const [sub, ...rest] = (typeof args === "string" ? args : "").trim().split(/\s+/).filter(Boolean);
+      if (!sub) {
+        await openMaskingConfig(maskingUIBridge, ctx);
+        return;
+      }
+      if (sub === "test") {
+        const input = rest.join(" ");
+        if (!input) {
+          ctx.ui.notify("Usage: /masking test <text> — runs the effective rules over the text. For repeated testing, the test area inside /masking lets you edit the text in place.", "info");
+          return;
+        }
+        const cfg = maskingUIBridge.effectiveConfig();
+        const names = new Map(cfg.configuredRules.map((configured) => [configured.rule.id, configuredRuleDisplayName(configured)]));
+        const preview = previewWithRules(maskingUIBridge, input, cfg.rules, names);
+        const state = cfg.enabled ? "on" : "OFF (masking is globally disabled; this is a dry run)";
+        const lines = [
+          `Masking ${state} · ${preview.count} value(s) masked · ${preview.attribution}`,
+          ...preview.warnings.map((w) => `⚠️ ${w}`),
+          preview.text,
+        ];
+        ctx.ui.notify(lines.join("\n"), "info");
+        return;
+      }
+      if (sub === "on" || sub === "off") {
+        const enabled = sub === "on";
+        if (maskingUIBridge.effectiveConfig().enabled === enabled) {
+          ctx.ui.notify(`Data masking is already ${enabled ? "enabled" : "disabled"}`, "info");
+          return;
+        }
+        await toggleGlobalMasking(maskingUIBridge, ctx);
+        return;
+      }
+      ctx.ui.notify(`Unknown subcommand "${sub}" — supported: test <text>, on, off; plain /masking opens the config UI`, "warning");
+    },
   });
 
   // ── Command: /masking-history ────────────────────────────────────────────

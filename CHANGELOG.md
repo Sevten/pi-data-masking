@@ -1,81 +1,50 @@
 # Changelog
 
-## [Unreleased]
+## [0.7.0] - 2026-09-12
 
 ### Added
 
+- Expanded `systemPromptGuidance` contract (now editable in the `/masking`
+  settings zone). When enabled, a guidance note is injected into the system
+  prompt telling the model how to work with masked placeholders; this change
+  extends it to counter common secret-handling heuristics: grants exact
+  full-string equality, requires verbatim tool-call passthrough, routes
+  transformations through tools, and tells the model to report inexplicable
+  contradictions instead of hunting for the original values.
+- Opt-in placeholder disclosure: `options.disclosePlaceholders` (global) with
+  tri-state per-rule overrides. When enabled, the session's actual literal-rule
+  placeholder strings (grouped by structure fidelity) are listed in the model
+  guidance, so the model can tell which strings are substitutes instead of
+  guessing. Requires and enables `systemPromptGuidance`; WAIT-state env rules
+  and regex placeholders are never listed.
 - `/masking-history`: press `/` to search the transcript. Typing jumps
-  incrementally to the first match at or after the viewport, Enter cycles
-  focus forward and Ctrl+R backward through every occurrence (both wrap),
-  Backspace edits the query, and the prompt shows the total match count.
-  All visible matches are inverse-highlighted, with the focused occurrence
-  additionally bolded. In side-by-side compare view only one column is
-  searched — the lens active before pressing "c" (LOCAL or MODEL) — so
-  unchanged context is not double-counted; the prompt names the column. Esc
-  or the cancel keybinding closes search mode. While search is open the epoch
-  wrapper no longer intercepts its own shortcuts (", ], r), so query letters
-  like "r" are typed into the search instead of opening the rules view.
+  incrementally between matches, `Enter`/`Ctrl+R` cycle focus forward and
+  backward (both wrap), and all visible matches are highlighted. In
+  side-by-side compare view only the active column is searched.
+- New settings row `Status line` toggles the masking summary in the main chat
+  window (`options.showStatusBar`).
+- `/masking` subcommands: `/masking test <text>` previews masking locally,
+  `/masking on` and `/masking off` toggle the global masking switch.
 
 ### Changed
 
-- Rule Builder: keyboard hints (and any pending confirmation) now sit at the
-  very bottom of the terminal window instead of directly under the content.
-- Removed "No provider request has been sent for this check." from the
-  save-time impact confirmation, and both confirm choices are now rendered
-  highlighted with a ▶ selection marker.
-- Rule enable/disable (single and batch) with cache impact now confirms
-  inline in the `/masking` home screen — in place of the rule details block
-  — instead of stacking a second overlay window.
-- `/masking`: the "N enabled / M configured · filter …" summary moved onto
-  the first header line to save a row.
-- `/masking` rules-list details: the exact value is shown without surrounding
-  quotes, and a `Disclose:` line reports the rule's effective disclosure mode
-  (always / never / inherit with the current global value).
-- `/masking` rules list now grows to fill the terminal down to the hint bar
-  instead of leaving blank rows below it.
-- New settings row `Status line` toggles the masking summary shown at the
-  bottom of the main chat window (`options.showStatusBar`).
-- Esc closes `/masking` from any zone (settings, test area, rules list);
-  it no longer first returns focus to the rules list.
-- Rule edits with cache impact confirm inline inside the Rule Builder screen
-  instead of stacking a second overlay window.
-- The save-time impact confirmation now compares a fresh re-mask of the
-  candidate config against a fresh re-mask of the currently-active config,
-  instead of against recorded masked hashes — editing a rule that has never
-  fired on any message no longer triggers the confirmation.
-- Removed the noisy "Masking config reloaded (N active / M configured)"
-  notification after every rule change or enable/disable.
-
-### Added
-
-- New opt-in system-prompt guidance contract (`options.systemPromptGuidance`, now
-  editable in the `/masking` home screen's settings zone): counters LLM secret-handling heuristics
-  (sampled head/tail/length comparison, encoding instead of comparing) by
-  granting exact full-string equality, requiring verbatim passthrough into
-  tool calls, routing transformations through tools, and ending with an escape
-  hatch — inexplicable contradictions should be described to the user, never
-  investigated by hunting for the original values.
-- Opt-in placeholder disclosure: `options.disclosePlaceholders` (global
-  switch) with tri-state per-rule `disclosePlaceholder` overrides lists the
-  session's literal-rule placeholders in the model guidance, grouped by
-  structure fidelity. Disclosure requires guidance and enables it
-  automatically; WAIT-state env rules are skipped; regex placeholders are
-  never listed. All cache-impacting changes run through the existing save-time
-  preflight.
-- One-time upgrade notice for existing users pointing at the new settings
-  screen (never shown on fresh installs, never repeated).
+- `/masking`: rule enable/disable and edits with cache impact confirm inline
+  instead of stacking a second overlay window; compacted layout (summary on
+  the header line, list fills the terminal, hints at the bottom); Esc closes
+  from any zone.
+- Rules-list details show the exact value unquoted plus a `Disclose:` line
+  with the rule's effective disclosure mode.
+- Removed the "Masking config reloaded" notification after every rule change.
 
 ### Fixed
 
 - Fix `/masking-history` showing the previous branch's history after `/tree`
-  navigation: branch-derived state (transcript, rule epochs, epoch transcripts)
-  is now also rebuilt on `session_tree`, not only on `session_start`.
-- Fix live streaming in @jmfederico/pi-web still showing masked placeholders:
-  register the provider stream wrappers at extension load time so the
-  registration survives pi-web's post-bootstrap provider freeze; real values
-  now appear from the first streaming delta. Other hosts and web UIs that load
-  extensions normally already benefited from data-level stream restoration and
-  are unaffected.
+  navigation.
+- Fix the save-time impact confirmation firing for rules that have never
+  fired on any message: it now re-masks both candidate and active configs
+  fresh instead of comparing against recorded masked hashes.
+- Fix live streaming in @jmfederico/pi-web still showing masked placeholders;
+  real values now appear from the first streaming delta there too.
 
 ## [0.6.2] - 2026-09-01
 
