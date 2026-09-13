@@ -463,13 +463,17 @@ export function validateConfig(
         warnings.push(`Rule [${id}] has an invalid regex and was skipped: ${(err as Error).message}`);
         continue;
       }
-      for (const issue of analyzeRegexSafety(pattern)) {
-        warnings.push(
-          `Rule [${id}] regex risk: ${issue.message}. ` +
-            `Use a narrower character class, a required separator, or a fixed upper bound`
-        );
+      // Quality warnings are noise for disabled rules; they re-fire on the
+      // next load after the rule is re-enabled.
+      if (rule.enabled !== false) {
+        for (const issue of analyzeRegexSafety(pattern)) {
+          warnings.push(
+            `Rule [${id}] regex risk: ${issue.message}. ` +
+              `Use a narrower character class, a required separator, or a fixed upper bound`
+          );
+        }
       }
-      if (rule.lowEntropy !== true) {
+      if (rule.enabled !== false && rule.lowEntropy !== true) {
         const est = estimateMatchLength(pattern);
         if (est !== null && est.max > 0 && est.max <= 6) {
           warnings.push(
@@ -501,10 +505,12 @@ export function validateConfig(
       const envName = hasEnvName ? rule.realFromEnv as string : undefined;
       const real = hasReal ? rule.real as string : envName ? env[envName] ?? "" : "";
       if (envName && real.length === 0) {
-        warnings.push(`Rule [${id}] environment variable ${JSON.stringify(envName)} is missing or empty; rule is inactive`);
+        if (rule.enabled !== false) {
+          warnings.push(`Rule [${id}] environment variable ${JSON.stringify(envName)} is missing or empty; rule is inactive`);
+        }
         continue;
       }
-      if (rule.lowEntropy !== true) {
+      if (rule.enabled !== false && rule.lowEntropy !== true) {
         if (isCommonSemanticValue(real)) {
           warnings.push(
             `Rule [${id}] masks a common semantic value — ordinary text with the same value cannot be ` +
@@ -533,7 +539,7 @@ export function validateConfig(
           warnings.push(`Rule [${id}] has an invalid placeholder (must be a non-empty string or "auto"); skipped`);
           continue;
         }
-        if (rule.allowCommonPlaceholder !== true && isCommonSemanticValue(rule.placeholder)) {
+        if (rule.enabled !== false && rule.allowCommonPlaceholder !== true && isCommonSemanticValue(rule.placeholder)) {
           warnings.push(
             `Rule [${id}] uses the common semantic value ${JSON.stringify(rule.placeholder)} as a custom placeholder — ` +
               `if the model independently emits the same text, tool arguments may be restored incorrectly. ` +
@@ -1070,7 +1076,7 @@ export function validateRawConfigRule(rule: RawConfigRule): string[] {
     throw new Error(validated.warnings.join("; ") || "Rule is invalid");
   }
   const warnings = [...validated.warnings];
-  if (typeof rule.real === "string" && rule.placeholder === rule.real) {
+  if (rule.enabled !== false && typeof rule.real === "string" && rule.placeholder === rule.real) {
     warnings.push(`Rule [${String(rule.id)}] has placeholder equal to its real value; the rule has no effect`);
   }
   return warnings;
