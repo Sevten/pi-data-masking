@@ -219,8 +219,9 @@ export interface MaskingUIBridge {
   sessionMaskedOutbound(): boolean;
   /** One-time model-guidance upgrade notice still pending? */
   guidanceNoticePending(): boolean;
-  /** Clear the upgrade notice (user enabled guidance from the settings zone). */
-  clearGuidanceNotice(): void;
+  /** Clear the upgrade notice (user enabled guidance from the settings zone).
+   *  Pass the context so the on-screen notice widget can be removed too. */
+  clearGuidanceNotice(ctx?: ExtensionContext): void;
   candidateConfigFromSources(
     ctx: ExtensionContext,
     sources: Array<{ path: string; data: { rules: RawConfigRule[]; [key: string]: unknown } }>,

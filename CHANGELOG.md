@@ -5,7 +5,7 @@
 ### Fixed
 
 - Disabled rules no longer produce quality warnings at load time. Advisory checks — regex safety risks, short/low-entropy values, common semantic values (real or placeholder), missing environment variables, and the placeholder-equals-real-value "no effect" warning — are suppressed while a rule is `enabled: false`; structural warnings that affect config loading (skipped/invalid rules, duplicate IDs) are still reported. The checks re-fire on the next load after the rule is re-enabled.
-- The one-time upgrade notice is now delivered on the first user input instead of during `session_start`, where the notify line rendered before the UI settled and was easily missed. The shown-marker is written on delivery, so a notice that was never seen retries on the next session.
+- The one-time upgrade notice now renders as a widget above the editor, visible immediately at startup. The previous chat-area notify was wiped by the startup render pass; widgets live in their own container and are unaffected. The notice is removed on the first user input or when model guidance is enabled.
 
 ## [0.7.0] - 2026-09-12
 

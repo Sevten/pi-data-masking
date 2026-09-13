@@ -229,7 +229,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       refresh();
       const saved = await saveConfigOptionsUI(bridge, ctx, next);
       mutationInProgress = false;
-      if (saved && next.systemPromptGuidance) bridge.clearGuidanceNotice();
+      if (saved && next.systemPromptGuidance) bridge.clearGuidanceNotice(ctx);
       mutationMessage = saved
         ? settingsIndex === 3
           ? "Saved · status line updated"
