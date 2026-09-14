@@ -1,27 +1,25 @@
 /**
  * ui/allowlist-editor.ts
  * Overlay editor for the global allowlist (options.allowlist): a flat list
- * of exact literal values that are never masked. Stages add/delete in
- * memory and persists the whole array as one options change through the
- * same save pipeline as the other settings (cache-impact confirmed).
+ * of exact literal values that are never masked. An inline input line at
+ * the bottom is always focused — typing a value and pressing Enter adds it
+ * immediately (staged in memory); Up/Down select, D or Delete remove, F2
+ * stages the whole list as JSON. Exit saves via the same options pipeline
+ * as the other settings (cache-impact confirmed).
  */
 
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { Editor, Key, matchesKey, truncateToWidth, type EditorTheme } from "@earendil-works/pi-tui";
 import {
   MASKING_SCREEN_OPTIONS,
   fillMaskingScreen,
-  inputMaskingValue,
   wrappedMaskingText,
   type MaskingUIBridge,
 } from "./masking-common.ts";
 import { saveConfigOptionsUI } from "./rule-editor.ts";
 
-/**
- * Open the allowlist editor for `current`. Stages edits locally; on Exit,
- * saves the array via saveConfigOptionsUI (no-op when nothing changed).
- * Returns true when a change was saved.
- */
+const HINTS = "↑/↓ select · D or Delete delete · F2 JSON · Esc save & back";
+
 export async function openAllowlistEditor(
   bridge: MaskingUIBridge,
   ctx: ExtensionContext,
@@ -34,36 +32,58 @@ export async function openAllowlistEditor(
   let message = "";
 
   return await ctx.ui.custom<boolean>((tui, theme, keybindings, done) => {
+    const editorTheme: EditorTheme = {
+      borderColor: (text) => theme.fg("accent", text),
+      selectList: {
+        selectedPrefix: (text) => theme.fg("accent", text),
+        selectedText: (text) => theme.fg("accent", text),
+        description: (text) => theme.fg("muted", text),
+        scrollInfo: (text) => theme.fg("dim", text),
+        noMatch: (text) => theme.fg("warning", text),
+      },
+    };
+    const input = new Editor(tui, editorTheme, { paddingX: 1 });
+    input.focused = true;
+    input.onChange = () => tui.requestRender();
+
     function refresh(): void {
       tui.requestRender();
     }
 
-    async function addEntry(): Promise<void> {
-      const input = (await inputMaskingValue(ctx, "Add allowlist entry", "10.0.0.5"))?.trim();
-      if (!input) {
-        message = input === "" ? "Empty entry ignored" : "";
-        refresh();
-        return;
-      }
+    function addValue(raw: string): void {
+      const value = raw.trim();
+      if (!value) return;
       const duplicate = entries.some((entry) => caseInsensitive
-        ? entry.toLowerCase() === input.toLowerCase()
-        : entry === input);
+        ? entry.toLowerCase() === value.toLowerCase()
+        : entry === value);
       if (duplicate) {
         message = "Entry already in the allowlist";
         refresh();
         return;
       }
-      entries.push(input);
+      entries.push(value);
       selectedIndex = entries.length - 1;
       message = "Staged · saved on exit";
       refresh();
     }
+
+    input.onSubmit = (text) => {
+      addValue(text);
+      input.setText("");
+      refresh();
+    };
 
     function deleteSelected(): void {
       if (selectedIndex < 0 || selectedIndex >= entries.length) return;
       entries.splice(selectedIndex, 1);
       if (selectedIndex >= entries.length) selectedIndex = entries.length - 1;
       message = "Staged · saved on exit";
+      refresh();
+    }
+
+    function moveSelection(delta: number): void {
+      if (entries.length === 0) return;
+      selectedIndex = (selectedIndex + delta + entries.length) % entries.length;
       refresh();
     }
 
@@ -78,6 +98,52 @@ export async function openAllowlistEditor(
       done(saved);
     }
 
+    /** Stage the whole list from JSON (F2), mirroring the rule editor's JSON mode. */
+    function openJsonStage(): void {
+      void ctx.ui.custom<void>((jsonTui, jsonTheme, jsonKeybindings, jsonDone) => {
+        const jsonInput = new Editor(jsonTui, editorTheme, { paddingX: 1 });
+        jsonInput.focused = true;
+        jsonInput.setText(JSON.stringify(entries, null, 2));
+        let error = "";
+        return {
+          render: (width) => fillMaskingScreen([
+            jsonTheme.fg("accent", jsonTheme.bold("ALLOWLIST · edit as JSON")),
+            error ? wrappedMaskingText(jsonTheme.fg("warning", error), width).join("\n") : "",
+            ...jsonInput.render(width),
+            "",
+            ...wrappedMaskingText(jsonTheme.fg("dim", "Enter apply · Esc cancel"), width),
+          ].filter((line) => line !== ""), width, jsonTui.terminal.rows),
+          invalidate: () => jsonInput.invalidate(),
+          handleInput: (data) => {
+            if (jsonKeybindings.matches(data, "tui.select.cancel") || jsonKeybindings.matches(data, "app.interrupt")
+              || matchesKey(data, Key.escape)) {
+              jsonDone(undefined);
+              return;
+            }
+            if (matchesKey(data, Key.enter) || jsonKeybindings.matches(data, "tui.select.confirm")) {
+              const text = jsonInput.getExpandedText();
+              try {
+                const parsed = JSON.parse(text) as unknown;
+                if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string" || entry.length === 0)) {
+                  throw new Error("Expected an array of non-empty strings");
+                }
+                entries = [...new Set(parsed as string[])];
+                selectedIndex = Math.min(selectedIndex, entries.length - 1);
+                message = "Staged · saved on exit";
+                refresh();
+                jsonDone(undefined);
+              } catch (err) {
+                error = (err as Error).message;
+                jsonTui.requestRender();
+              }
+              return;
+            }
+            jsonInput.handleInput(data);
+          },
+        };
+      }, MASKING_SCREEN_OPTIONS);
+    }
+
     return {
       render: (width) => {
         const title = theme.fg("accent", theme.bold(
@@ -88,7 +154,6 @@ export async function openAllowlistEditor(
         lines.push("");
         if (entries.length === 0) {
           lines.push(theme.fg("warning", "The allowlist is empty — every rule match is masked."));
-          lines.push(...wrappedMaskingText(theme.fg("dim", "Press A to add a value (exact literal match)."), width));
         } else {
           for (let index = 0; index < entries.length; index++) {
             const cursor = index === selectedIndex ? "›" : " ";
@@ -98,38 +163,40 @@ export async function openAllowlistEditor(
           }
         }
         lines.push("");
-        lines.push(...wrappedMaskingText(theme.fg("dim", "A add · D delete · ↑/↓ select · Esc save & back"), width));
+        lines.push(...wrappedMaskingText(theme.fg("dim", "Type a value and press Enter to add it"), width));
+        lines.push(...input.render(width));
+        lines.push("");
+        lines.push(...wrappedMaskingText(theme.fg("dim", HINTS), width));
         return fillMaskingScreen(lines, width, tui.terminal.rows);
       },
-      invalidate: () => {},
+      invalidate: () => input.invalidate(),
       handleInput: (data) => {
-        if (matchesKey(data, Key.up) || keybindings.matches(data, "tui.select.up")) {
-          if (entries.length > 0) {
-            selectedIndex = (selectedIndex + entries.length) % entries.length;
-            refresh();
-          }
-          return;
-        }
-        if (matchesKey(data, Key.down) || keybindings.matches(data, "tui.select.down")) {
-          if (entries.length > 0) {
-            selectedIndex = (selectedIndex + 1) % entries.length;
-            refresh();
-          }
-          return;
-        }
-        if (matchesKey(data, "a") || data === "A") {
-          void addEntry();
-          return;
-        }
-        if (matchesKey(data, "d") || data === "D") {
-          deleteSelected();
-          return;
-        }
         if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")
           || matchesKey(data, Key.escape)) {
           void finish();
           return;
         }
+        // With an empty input line the keys drive the list; while typing they
+        // belong to the editor.
+        if (input.getText().length === 0) {
+          if (matchesKey(data, Key.up) || keybindings.matches(data, "tui.select.up")) {
+            moveSelection(-1);
+            return;
+          }
+          if (matchesKey(data, Key.down) || keybindings.matches(data, "tui.select.down")) {
+            moveSelection(1);
+            return;
+          }
+          if (matchesKey(data, "d") || data === "D" || matchesKey(data, Key.delete)) {
+            deleteSelected();
+            return;
+          }
+          if (matchesKey(data, Key.f2)) {
+            openJsonStage();
+            return;
+          }
+        }
+        input.handleInput(data);
       },
     };
   }, MASKING_SCREEN_OPTIONS);

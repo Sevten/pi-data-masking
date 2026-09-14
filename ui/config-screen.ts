@@ -363,10 +363,19 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
         const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · ←/→ or Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
         const settingsDivider = theme.fg(homeFocus === "settings" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
-        const settingRow = (index: number, label: string, value: boolean | string, description: string): string => {
+        const settingRow = (index: number, label: string, value: boolean | string | number, description: string, cell?: string): string => {
           const selected = homeFocus === "settings" && index === settingsIndex;
           const marker = selected ? "▶" : " ";
-          const rawLabel = value === true ? "ON" : value === false ? "OFF" : String(value);
+          // Launcher rows (allowlist) pass an explicit cell: plain text, no
+          // ‹ › toggle chrome, since ←/→ do nothing for them.
+          if (cell !== undefined) {
+            const plain = `${marker} ${label}${" ".repeat(Math.max(0, 16 - label.length))}   ${cell}`;
+            const rowBody = homeFocus === "settings"
+              ? (selected ? theme.fg("accent", plain) : plain)
+              : theme.fg("dim", plain);
+            return truncateToWidth(rowBody + "  " + theme.fg("dim", truncateToWidth(description, Math.max(0, width - visibleWidth(plain) - 2))), width);
+          }
+          const rawLabel = typeof value === "boolean" ? (value ? "ON" : "OFF") : String(value);
           // ‹ › pinned to fixed columns; centering biases extra space to the
           // right so ON and OFF share the same leading column.
           const pad = Math.max(0, 4 - rawLabel.length);
@@ -395,8 +404,9 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
               : "list literal-rule placeholders in the model guidance") + optionsPendingSuffix),
           settingRow(3, "Status line", options.showStatusBar,
             `show the masking summary on the status line at the bottom of the chat window${optionsPendingSuffix}`),
-          settingRow(4, "Allowlist", `${(options.allowlist ?? []).length} values`,
-            `exact values that are never masked · Enter to edit${optionsPendingSuffix}`),
+          settingRow(4, "Allowlist", (options.allowlist ?? []).length,
+            `exact values that are never masked · Enter to edit${optionsPendingSuffix}`,
+            `${(options.allowlist ?? []).length} values`),
         ];
         if (bridge.guidanceNoticePending() && !options.systemPromptGuidance) {
           settingsLines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: model guidance tells the model how to work with masked values — enable it above."), width));

@@ -4,7 +4,7 @@
 
 ### Added
 
-- Global allowlist: exact literal values listed under `options.allowlist` are never masked, even when a rule matches them. Matching follows the case-sensitivity option; global and project lists merge by union (project entries first). Manage it in `/masking` (Settings → Allowlist, Enter opens a list editor with add/delete) or edit the config file directly; changes are cache-impacting and confirm before saving, and the `/masking` test preview reports allowlisted values as left unmasked.
+- Global allowlist: exact literal values listed under `options.allowlist` are never masked, even when a rule matches them. Matching follows the case-sensitivity option; global and project lists merge by union (project entries first). Manage it in `/masking` (Settings → Allowlist, Enter opens a list editor: type and Enter adds, D/Delete removes, F2 edits the list as JSON) or edit the config file directly; changes are cache-impacting and confirm before saving, and the `/masking` test preview reports allowlisted values as left unmasked.
 
 ### Changed
 

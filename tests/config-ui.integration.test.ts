@@ -587,25 +587,21 @@ test("allowlist zone opens the editor; staged entries persist as options", async
       component.handleInput(INPUT.down); // → Allowlist row
       assert.ok(component.render(100).some((line) => line.includes("Allowlist") && line.includes("▶")));
       component.handleInput(INPUT.enter);
-      // The editor overlay owns its own component; wait for the save to land.
+      // The editor overlay owns its own component; wait until it has fully
+      // finished saving (main screen shows the saved message) before closing.
       await waitFor(() => JSON.parse(readFileSync(projectPath, "utf8")).options?.allowlist?.[0] === "10.0.0.9");
+      await waitFor(() => component.render(100).some((line) => line.includes("Saved · allowlist updated")));
       component.handleInput(INPUT.escape);
     },
-    // Scenario 2: allowlist editor overlay.
+    // Scenario 2: allowlist editor overlay with an always-focused input line.
     async (component) => {
       await waitFor(() => component.render(100).some((line) => line.includes("never masked")));
       assert.ok(component.render(100).some((line) => line.includes("The allowlist is empty")));
-      component.handleInput("a");
-      // Scenario 3 handles the entry input; wait until it is staged.
-      await waitFor(() => component.render(100).some((line) => line.includes("10.0.0.9")));
-      assert.ok(component.render(100).some((line) => line.includes("Staged")));
-      component.handleInput(INPUT.escape);
-    },
-    // Scenario 3: single-line entry input.
-    async (component) => {
-      await waitFor(() => component.render(100).join("\n").includes("Add allowlist entry"));
+      // Typing goes straight into the inline input; Enter adds immediately.
       for (const char of "10.0.0.9") component.handleInput(char);
       component.handleInput(INPUT.enter);
+      await waitFor(() => component.render(100).some((line) => line.includes("10.0.0.9")));
+      component.handleInput(INPUT.escape);
     },
   ]);
   try {
