@@ -41,6 +41,10 @@ export interface MaskingOptions {
   /** Persist model-input history snapshots and the session key in the Pi
    *  session so /masking-history survives restart (default true). */
   persistHistory: boolean;
+  /** Exact literal values that are never masked, regardless of which rule
+   *  would otherwise match them (default []). Global and project lists
+   *  merge by union, project entries first. */
+  allowlist: string[];
 }
 
 export interface MaskingConfig {
@@ -269,6 +273,7 @@ function defaultConfig(): MaskingConfig {
       systemPromptGuidance: false,
       disclosePlaceholders: false,
       persistHistory: true,
+      allowlist: [],
     },
   };
 }
@@ -344,9 +349,42 @@ function mergeConfigs(
     ...(global?.options ?? {}),
     ...(project?.options ?? {}),
   };
-
-  // Rules are validated and collected with source metadata below.
   return { enabled, rules: [], configuredRules: [], options };
+}
+
+/**
+ * Allowlist union merge with per-entry validation. Project entries come
+ * first (they are the more specific intent); exact duplicates are dropped;
+ * non-string / empty entries are dropped with a warning. An array of the
+ * wrong type disables that file's contribution entirely rather than
+ * partially, so the user sees the full effect of fixing it.
+ */
+function sanitizeAllowlist(
+  projectRaw: unknown,
+  globalRaw: unknown,
+  warnings: string[],
+): string[] {
+  function side(raw: unknown, scope: ConfigScope): string[] {
+    if (raw === undefined) return [];
+    if (!Array.isArray(raw)) {
+      warnings.push(`${scope} options.allowlist is not an array; its entries were ignored`);
+      return [];
+    }
+    const entries: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of raw) {
+      if (typeof entry !== "string" || entry.length === 0) {
+        warnings.push(`${scope} options.allowlist contains a non-string or empty entry; it was dropped`);
+        continue;
+      }
+      if (seen.has(entry)) continue;
+      seen.add(entry);
+      entries.push(entry);
+    }
+    return entries;
+  }
+  const result = [...side(projectRaw, "project"), ...side(globalRaw, "global")];
+  return [...new Set(result)];
 }
 
 // ─── Validation ────────────────────────────────────────────────────────────
@@ -851,6 +889,14 @@ function buildLoadResult(
 ): LoadResult {
   const config = mergeConfigs(globalData, projectData);
   const configuredRules: ConfiguredMaskingRule[] = [];
+
+  // Allowlist: union merge (project first) with per-entry validation; the
+  // scalar spread in mergeConfigs is overridden by the merged result.
+  config.options.allowlist = sanitizeAllowlist(
+    (projectData?.options as Record<string, unknown> | undefined)?.allowlist,
+    (globalData?.options as Record<string, unknown> | undefined)?.allowlist,
+    warnings,
+  );
 
   // Switch coupling: disclosure requires the model guidance. The intent to
   // disclose is clear, so the loader auto-corrects instead of erroring.

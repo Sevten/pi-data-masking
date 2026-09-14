@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Global allowlist: exact literal values listed under `options.allowlist` are never masked, even when a rule matches them. Matching follows the case-sensitivity option; global and project lists merge by union (project entries first). Manage it in `/masking` via the Allowlist zone (Enter opens a list editor with add/delete) or edit the config file directly; changes are cache-impacting and confirm before saving, and the `/masking` test preview reports allowlisted values as left unmasked.
+
 ### Changed
 
 - Placeholder disclosure is now a three-position master switch: on (disclose all literal rules), off (disclose none), or per-rule (each rule's Disclose setting decides, default off). Note for upgraders: rule-level `disclosePlaceholder` values now apply only in per-rule mode — previously they overrode the global switch. Existing boolean configs keep their meaning, and `systemPromptGuidance` still auto-enables when disclosure needs it.

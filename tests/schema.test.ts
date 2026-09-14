@@ -46,3 +46,13 @@ test("JSON Schema rejects ambiguous sources, fixed regex placeholders, and unkno
     assert.equal(validate({ rules: [rule] }), false, `unexpectedly accepted ${JSON.stringify(rule)}`);
   }
 });
+
+test("JSON Schema accepts a valid allowlist and rejects bad entries", () => {
+  const base = { $schema: "./masking.config.schema.json", version: 1, enabled: true, rules: [] };
+  assert.equal(validate({ ...base, options: { allowlist: ["10.0.0.5", "internal.example"] } }), true,
+    JSON.stringify(validate.errors));
+  const bad = validate({ ...base, options: { allowlist: ["ok", ""] } });
+  assert.equal(bad, false);
+  const nonString = validate({ ...base, options: { allowlist: [42] } });
+  assert.equal(nonString, false);
+});

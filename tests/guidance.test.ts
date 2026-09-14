@@ -58,6 +58,7 @@ function config(overrides: Partial<MaskingConfig> & {
       systemPromptGuidance: overrides.guidance ?? true,
       disclosePlaceholders: overrides.discloseGlobal ?? false,
       persistHistory: true,
+      allowlist: [],
     },
   };
 }

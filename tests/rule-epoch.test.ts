@@ -49,6 +49,7 @@ function literalConfig(args: {
       systemPromptGuidance: false,
       disclosePlaceholders: false,
       persistHistory: true,
+      allowlist: [],
     },
   };
 }

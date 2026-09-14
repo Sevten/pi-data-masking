@@ -504,3 +504,117 @@ test("unmaskDisplay: empty masker returns the input unchanged", () => {
   const text = "plain assistant output";
   assert.equal(m.unmaskDisplay(text), text);
 });
+
+// ─── Allowlist ──────────────────────────────────────────────────────────────
+
+test("allowlist: literal rule match is exempt and not registered anywhere", () => {
+  const m = new Masker(
+    [{ id: "ip", type: "regex", pattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b" }],
+    true,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["10.0.0.5"],
+  );
+  const masked = m.mask("host 10.0.0.5 and 10.0.0.6", { discover: true });
+  assert.equal(masked.count, 1);
+  assert.equal(masked.text.includes("10.0.0.5"), true);
+  assert.equal(masked.text.includes("10.0.0.6"), false);
+});
+
+test("allowlist: removing an entry masks the value again", () => {
+  const sharedProtected = new Set<string>();
+  const sharedInvented = new Set<string>();
+  const withEntry = new Masker(
+    [{ id: "ip", type: "regex", pattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b" }],
+    true,
+    KEY,
+    new Map(),
+    sharedInvented,
+    sharedProtected,
+    ["10.0.0.5"],
+  );
+  assert.equal(withEntry.mask("host 10.0.0.5", { discover: true }).count, 0);
+  const withoutEntry = new Masker(
+    [{ id: "ip", type: "regex", pattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b" }],
+    true,
+    KEY,
+    new Map(),
+    sharedInvented,
+    sharedProtected,
+  );
+  assert.equal(withoutEntry.mask("host 10.0.0.5", { discover: true }).count, 1);
+});
+
+test("allowlist: beats a lower-priority literal rule that also matches", () => {
+  const m = new Masker(
+    [{ id: "lit", real: "10.0.0.5", placeholder: "masked-ip" }],
+    true,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["10.0.0.5"],
+  );
+  const masked = m.mask("gateway 10.0.0.5", { discover: true });
+  assert.equal(masked.text, "gateway 10.0.0.5");
+  assert.equal(masked.count, 0);
+});
+
+test("allowlist: case-insensitive masker matches entries case-insensitively", () => {
+  const m = new Masker(
+    [{ id: "lit", real: "MyHost", placeholder: "masked-host" }],
+    false,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["myhost"],
+  );
+  assert.equal(m.mask("see MyHost now", { discover: true }).count, 0);
+});
+
+test("allowlist: case-sensitive masker only matches exact case", () => {
+  const m = new Masker(
+    [{ id: "lit", real: "MyHost", placeholder: "masked-host" }],
+    true,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["myhost"],
+  );
+  assert.equal(m.mask("see MyHost now", { discover: true }).count, 1);
+});
+
+test("allowlist: entry equal to a rule's placeholder produces a warning", () => {
+  const m = new Masker(
+    [{ id: "lit", real: "secret", placeholder: "masked-secret" }],
+    true,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["masked-secret"],
+  );
+  assert.ok(m.warnings.some((w) => w.includes("exempts placeholder text")));
+});
+
+test("allowlist: regex capture group exemption masks sibling groups", () => {
+  const m = new Masker(
+    [{ id: "pair", type: "regex", pattern: "(\\w+)=(\\w+)" }],
+    true,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["allowed"],
+  );
+  const masked = m.mask("allowed=value secret=hidden", { discover: true });
+  assert.equal(masked.text.startsWith("allowed="), true);
+  const reals = new Set(masked.details.flatMap((d) => d.values.map((v) => v.real)));
+  assert.equal(reals.has("allowed"), false);
+  assert.equal(reals.has("value"), true);
+  assert.equal(reals.has("hidden"), true);
+});

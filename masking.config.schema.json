@@ -157,7 +157,13 @@
           "default": false,
           "description": "Placeholder-disclosure master mode: true discloses all eligible literal rules; false discloses none; \"per-rule\" lets each rule's disclosePlaceholder decide (rules without it are not disclosed). In true/false mode rule-level values are paused, not lost. Requires systemPromptGuidance (auto-enabled otherwise). Regex placeholders are never listed."
         },
-        "persistHistory": { "type": "boolean", "default": true }
+        "persistHistory": { "type": "boolean", "default": true },
+        "allowlist": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": [],
+          "description": "Exact literal values that are never masked, regardless of which rule would otherwise match them. Matching follows caseSensitive. Global and project lists merge by union (project entries first)."
+        }
       }
     }
   },

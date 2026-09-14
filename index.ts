@@ -185,7 +185,7 @@ export default async function (pi: ExtensionAPI) {
     enabled: false,
     rules: [],
     configuredRules: [],
-    options: { caseSensitive: true, showStatusBar: true, systemPromptGuidance: false, disclosePlaceholders: false, persistHistory: true },
+    options: { caseSensitive: true, showStatusBar: true, systemPromptGuidance: false, disclosePlaceholders: false, persistHistory: true, allowlist: [] },
   };
   let masker = new Masker([], true);
   let stopWatching: (() => void) | null = null;
@@ -275,7 +275,8 @@ export default async function (pi: ExtensionAPI) {
       sessionKey,
       dynamicPlaceholderMap,
       llmInventedValues,
-      protectedValues
+      protectedValues,
+      cfg.options.allowlist ?? []
     );
   }
 
@@ -514,6 +515,7 @@ export default async function (pi: ExtensionAPI) {
       new Map(dynamicPlaceholderMap),
       new Set(llmInventedValues),
       new Set(protectedValues),
+      c.options.allowlist ?? [],
     );
 
     let systemChanged = false;

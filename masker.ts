@@ -265,6 +265,11 @@ export class Masker {
   private readonly llmInventedValues: Set<string>;
   /** Values first seen in user, system, or tool-result data: masked in every role. */
   private readonly protectedValues: Set<string>;
+  /** Allowlist entries: candidate values equal to any entry are never
+   *  masked (see shouldMaskSpan). Exact set plus a lowercased alias when
+   *  the masker is case-insensitive. */
+  private readonly allowlistExact: Set<string>;
+  private readonly allowlistLower: Set<string> | null;
   private usedPlaceholders: Set<string> = new Set();
   /** Case flag for unmask patterns, mirrors the mask direction ("" or "i"). */
   private readonly caseFlag: string;
@@ -311,13 +316,19 @@ export class Masker {
     sessionKey: Buffer | null = null,
     dynamicMap: DynamicPlaceholderMap = new Map(),
     llmInventedValues: Set<string> = new Set(),
-    protectedValues: Set<string> = new Set()
+    protectedValues: Set<string> = new Set(),
+    allowlist: Iterable<string> = []
   ) {
     this.sessionKey = sessionKey;
     this.dynamicMap = dynamicMap;
     this.llmInventedValues = llmInventedValues;
     this.protectedValues = protectedValues;
     this.caseFlag = caseSensitive ? "" : "i";
+
+    this.allowlistExact = new Set(allowlist);
+    this.allowlistLower = this.caseFlag === "i" && this.allowlistExact.size > 0
+      ? new Set([...this.allowlistExact].map((entry) => entry.toLowerCase()))
+      : null;
 
     for (const rule of rules) {
       if (rule.enabled === false) continue;
@@ -389,6 +400,22 @@ export class Masker {
       if (realValues.has(rule.placeholder) && rule.placeholder !== rule.real) {
         this.warnings.push(
           `Rule [${rule.id}] placeholder "${rule.placeholder}" is also a real value of another rule — masking may interact unexpectedly; consider distinct values`
+        );
+      }
+    }
+
+    // An allowlist entry equal to a rule's placeholder exempts the
+    // placeholder text itself (the covered-region logic already keeps
+    // placeholders intact), which is almost certainly a config mistake.
+    const placeholderOwnersLower = this.allowlistLower !== null
+      ? new Map([...placeholderOwners].map(([p, o]) => [p.toLowerCase(), o]))
+      : null;
+    for (const entry of this.allowlistExact) {
+      const owner = placeholderOwners.get(entry)
+        ?? placeholderOwnersLower?.get(entry.toLowerCase());
+      if (owner) {
+        this.warnings.push(
+          `Allowlist entry "${entry}" equals the placeholder of rule [${owner.ruleId}] — the entry exempts placeholder text, not a real value`
         );
       }
     }
@@ -604,6 +631,13 @@ export class Masker {
     real: string,
     opts: MaskOptions
   ): { mask: boolean; register: boolean } {
+    // Allowlisted values are exempt from every rule; they are also kept
+    // invisible to the first-seen trackers so removing an entry masks the
+    // value again in later messages.
+    if (this.allowlistExact.has(real)
+      || (this.allowlistLower !== null && this.allowlistLower.has(real.toLowerCase()))) {
+      return { mask: false, register: false };
+    }
     if (opts.discover !== false) {
       if (this.protectedValues.has(real)) return { mask: true, register: false };
       if (this.llmInventedValues.has(real)) {

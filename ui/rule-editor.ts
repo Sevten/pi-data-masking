@@ -129,14 +129,28 @@ export function previewWithRules(
     new Map(),
     new Set(),
     new Set(),
+    bridge.config().options.allowlist ?? [],
   );
   const result = tempMasker.mask(input);
-  const attribution = result.details.length === 0
-    ? "No values matched"
-    : result.details.map((detail) => {
-        const occurrences = detail.values.reduce((sum, value) => sum + value.occurrences, 0);
-        return `${names.get(detail.ruleId) ?? detail.ruleId} ×${occurrences}`;
-      }).join(" · ");
+  let attribution: string;
+  if (result.details.length > 0) {
+    attribution = result.details.map((detail) => {
+      const occurrences = detail.values.reduce((sum, value) => sum + value.occurrences, 0);
+      return `${names.get(detail.ruleId) ?? detail.ruleId} ×${occurrences}`;
+    }).join(" · ");
+  } else {
+    // Surface allowlisted values in the preview: they match rules but stay
+    // unmasked by design, so "No values matched" would be misleading.
+    const allowlist = bridge.config().options.allowlist ?? [];
+    const caseInsensitive = !bridge.config().options.caseSensitive;
+    const present = allowlist.filter((entry) => entry
+      && (caseInsensitive
+        ? input.toLowerCase().includes(entry.toLowerCase())
+        : input.includes(entry)));
+    attribution = present.length > 0
+      ? `${present.length} allowlisted value(s) left unmasked`
+      : "No values matched";
+  }
   return {
     text: result.text,
     count: result.count,
@@ -1277,7 +1291,7 @@ function optionsEditTarget(ctx: ExtensionContext): { scope: ConfigScope; path: s
 export async function saveConfigOptionsUI(
   bridge: MaskingUIBridge,
   ctx: ExtensionContext,
-  options: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders" | "showStatusBar">>,
+  options: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders" | "showStatusBar" | "allowlist">>,
 ): Promise<boolean> {
   const target = optionsEditTarget(ctx);
   if (!target) {

@@ -242,9 +242,14 @@ test("configuration home toggles and reorders in place while retaining selection
     component.handleInput(INPUT.down);
     component.handleInput("\u001B[A");
     component.handleInput(INPUT.tab);
+    assert.ok(component.render(100).some((line) => line.includes("ALLOWLIST ·")));
+    component.handleInput(INPUT.tab);
     assert.ok(component.render(100).some((line) => line.includes("RULES · focused")));
     component.handleInput("\u001B[Z");
+    assert.ok(component.render(100).some((line) => line.includes("ALLOWLIST ·")));
+    component.handleInput("\u001B[Z");
     assert.ok(component.render(100).some((line) => line.includes("SETTINGS · focused")));
+    component.handleInput(INPUT.tab);
     component.handleInput(INPUT.tab);
     component.handleInput(INPUT.space);
     await waitFor(() => configRules(projectPath)[0]?.enabled === false
@@ -555,6 +560,53 @@ test("hot reload keeps the last valid rules visible after transient invalid JSON
     assert.ok(harness.statuses.at(-1)?.includes("1 active / 1 configured"));
     assert.equal(harness.notifications.some((message) => message.includes("last-valid-secret-value")), false);
     await harness.commands.get("masking")!.handler("", harness.ctx);
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("allowlist zone opens the editor; staged entries persist as options", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(projectPath, JSON.stringify({ rules: [
+    { id: "first", name: "First rule", real: "first-secret-value" },
+  ] }));
+
+  const harness = await createHarness(dir, [
+    // Scenario 1: /masking home screen.
+    async (component) => {
+      assert.ok(component.render(100).some((line) => line.includes("ALLOWLIST · 0 value(s)"))),
+      component.handleInput("\u001B[Z"); // rules → allowlist zone
+      assert.ok(component.render(100).some((line) => line.includes("ALLOWLIST · 0 value(s) · focused")));
+      component.handleInput(INPUT.enter);
+      await waitFor(() => component.render(100).some((line) => line.includes("ALLOWLIST · 1 value(s)")));
+      await waitFor(() => JSON.parse(readFileSync(projectPath, "utf8")).options?.allowlist?.[0] === "10.0.0.9");
+      component.handleInput(INPUT.escape);
+    },
+    // Scenario 2: allowlist editor overlay.
+    async (component) => {
+      await waitFor(() => component.render(100).some((line) => line.includes("never masked")));
+      assert.ok(component.render(100).some((line) => line.includes("The allowlist is empty")));
+      component.handleInput("a");
+      // Scenario 3 handles the entry input; wait until it is staged.
+      await waitFor(() => component.render(100).some((line) => line.includes("10.0.0.9")));
+      assert.ok(component.render(100).some((line) => line.includes("Staged")));
+      component.handleInput(INPUT.escape);
+    },
+    // Scenario 3: single-line entry input.
+    async (component) => {
+      await waitFor(() => component.render(100).join("\n").includes("Add allowlist entry"));
+      for (const char of "10.0.0.9") component.handleInput(char);
+      component.handleInput(INPUT.enter);
+    },
+  ]);
+  try {
+    assert.equal(harness.commands.has("masking"), true);
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    const saved = JSON.parse(readFileSync(projectPath, "utf8")) as { options?: { allowlist?: string[] } };
+    assert.deepEqual(saved.options?.allowlist, ["10.0.0.9"]);
   } finally {
     await harness.shutdown();
     rmSync(dir, { recursive: true, force: true });

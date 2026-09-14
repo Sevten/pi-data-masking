@@ -781,3 +781,82 @@ test("watchConfigPaths is safe when neither file nor directory exists", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ─── Allowlist ──────────────────────────────────────────────────────────────
+
+test("allowlist: global and project entries merge by union, project first", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    const projectPath = join(dir, "project.json");
+    writeFileSync(globalPath, JSON.stringify({
+      rules: [],
+      options: { allowlist: ["10.0.0.1", "10.0.0.2"] },
+    }));
+    writeFileSync(projectPath, JSON.stringify({
+      rules: [],
+      options: { allowlist: ["192.168.1.1", "10.0.0.2"] },
+    }));
+    const { config } = await loadConfigFromPaths(globalPath, projectPath, KEY);
+    assert.deepEqual(config.options.allowlist, ["192.168.1.1", "10.0.0.2", "10.0.0.1"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("allowlist: absent from both files defaults to an empty list", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    const projectPath = join(dir, "project.json");
+    writeFileSync(globalPath, JSON.stringify({ rules: [] }));
+    writeFileSync(projectPath, JSON.stringify({ rules: [] }));
+    const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
+    assert.deepEqual(config.options.allowlist, []);
+    assert.equal(warnings.some((w) => w.includes("allowlist")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("allowlist: invalid entries are dropped with warnings, never fatal", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    const projectPath = join(dir, "project.json");
+    writeFileSync(globalPath, JSON.stringify({
+      rules: [],
+      options: { allowlist: ["ok", "", 42, "ok"] },
+    }));
+    writeFileSync(projectPath, JSON.stringify({
+      rules: [],
+      options: { allowlist: "not-an-array" },
+    }));
+    const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
+    assert.deepEqual(config.options.allowlist, ["ok"]);
+    assert.ok(warnings.some((w) => w.includes("project options.allowlist is not an array")));
+    assert.ok(warnings.some((w) => w.includes("non-string or empty entry")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("allowlist: loaded entries exempt matching values end to end", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    const projectPath = join(dir, "project.json");
+    writeFileSync(globalPath, JSON.stringify({
+      rules: [{ id: "ip", preset: "private-ipv4" }],
+      options: { allowlist: ["10.0.0.5"] },
+    }));
+    writeFileSync(projectPath, JSON.stringify({ rules: [] }));
+    const { config } = await loadConfigFromPaths(globalPath, projectPath, KEY);
+    const masker = new Masker(config.rules, config.options.caseSensitive, KEY, new Map(), new Set(), new Set(), config.options.allowlist);
+    const masked = masker.mask("host 10.0.0.5 and 10.0.0.6", { discover: true });
+    assert.equal(masked.text.includes("10.0.0.5"), true);
+    assert.equal(masked.text.includes("10.0.0.6"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
