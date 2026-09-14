@@ -367,9 +367,12 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           const selected = homeFocus === "settings" && index === settingsIndex;
           const marker = selected ? "▶" : " ";
           // Launcher rows (allowlist) pass an explicit cell: plain text, no
-          // ‹ › toggle chrome, since ←/→ do nothing for them.
+          // ‹ › toggle chrome, since ←/→ do nothing for them. The cell is
+          // padded to the same 8-column slot as the toggle cells so the
+          // description column stays aligned across rows.
           if (cell !== undefined) {
-            const plain = `${marker} ${label}${" ".repeat(Math.max(0, 16 - label.length))}   ${cell}`;
+            const alignedCell = truncateToWidth(cell, 8).padEnd(8);
+            const plain = `${marker} ${label}${" ".repeat(Math.max(0, 16 - label.length))} ${alignedCell}`;
             const rowBody = homeFocus === "settings"
               ? (selected ? theme.fg("accent", plain) : plain)
               : theme.fg("dim", plain);
