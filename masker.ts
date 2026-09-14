@@ -112,9 +112,9 @@ export interface LiteralMaskingRule extends BaseMaskingRule {
    * explicit value to use it directly (manual takes precedence).
    */
   placeholder?: string;
-  /** Optional override of options.disclosePlaceholders for this rule's
-   *  placeholder in the model guidance's disclosure list (tri-state:
-   *  undefined inherits the global default). */
+  /** Rule-level disclosure preference, applied when the global
+   *  options.disclosePlaceholders is "per-rule" (undefined → not disclosed).
+   *  While the global mode is true/false this value is paused, not lost. */
   disclosePlaceholder?: boolean;
 }
 

@@ -7,6 +7,7 @@
  * The UI modules never import index.ts — everything crosses the bridge.
  */
 
+
 import { existsSync } from "node:fs";
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Editor, truncateToWidth, wrapTextWithAnsi, type EditorTheme } from "@earendil-works/pi-tui";
@@ -166,7 +167,8 @@ export function configuredRuleDisplayName(configured: ConfiguredMaskingRule): st
 export function configuredRuleDetail(
   configured: ConfiguredMaskingRule,
   showExactValues: boolean,
-  globalDisclose: boolean,
+  globalDisclose: boolean | "per-rule",
+  dim: (text: string) => string = (text) => text,
 ): string[] {
   const rule = configured.rule;
   const lines = [
@@ -196,9 +198,27 @@ export function configuredRuleDetail(
       lines.push("Placeholder: automatic");
     }
     const disclose = (rule as { disclosePlaceholder?: boolean }).disclosePlaceholder;
-    lines.push(`Disclose: ${disclose === true ? "always" : disclose === false ? "never" : `inherit (${globalDisclose ? "on" : "off"})`}`);
+    lines.push(ruleDiscloseDetail(disclose, globalDisclose, dim));
   }
   return lines;
+}
+
+/** The `Disclose:` rule-detail line: the effective value first, then the
+ *  rule-level setting — dimmed whenever it is not the layer in effect (the
+ *  global on/off master switch pauses it; in per-rule mode an unset rule
+ *  falls back to the default off). */
+function ruleDiscloseDetail(
+  disclose: boolean | undefined,
+  globalMode: boolean | "per-rule",
+  dim: (text: string) => string,
+): string {
+  const ruleLabel = disclose === undefined ? "unset" : disclose ? "on" : "off";
+  if (globalMode === "per-rule") {
+    const effective = disclose === true ? "on" : "off";
+    const rulePart = disclose === undefined ? "rule: unset → default off" : `rule: ${ruleLabel}`;
+    return `Disclose: ${effective} (${dim(rulePart)})`;
+  }
+  return `Disclose: ${globalMode ? "on" : "off"} (global) · ${dim(`rule: ${ruleLabel}${disclose === undefined ? " (default off)" : ""} · paused`)}`;
 }
 
 /**

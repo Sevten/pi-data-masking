@@ -89,11 +89,24 @@ function dedupeEntries(entries: readonly GuidanceDisclosureEntry[]): GuidanceDis
   return result;
 }
 
+/** Placeholder-disclosure master mode: `true`/`false` is a global pause-all
+ *  switch (rule-level `disclosePlaceholder` values are kept but ignored);
+ *  "per-rule" defers to each rule's `disclosePlaceholder` (unset → off). */
+export type DiscloseMode = boolean | "per-rule";
+
+/** Whether a literal rule's placeholder is listed in the disclosure list:
+ *  the global mode decides whether rule values apply, and in per-rule mode
+ *  an unset rule defaults to off. */
+export function effectiveDisclose(mode: DiscloseMode, ruleValue: boolean | undefined): boolean {
+  if (mode === true) return true;
+  if (mode === false) return false;
+  return ruleValue === true;
+}
+
 /**
  * Resolve the disclosure entries for the current config: enabled + available
- * literal rules whose effective disclosure flag (rule override, else the
- * global `disclosePlaceholders` default) is true. WAIT-state rules have no
- * placeholder and are skipped. Regex rules are never disclosed — their
+ * literal rules whose effective disclosure flag is true. WAIT-state rules have
+ * no placeholder and are skipped. Regex rules are never disclosed — their
  * placeholders are generated lazily and would break the provider prefix
  * cache mid-session.
  */
@@ -103,8 +116,7 @@ export function guidanceDisclosureEntries(config: MaskingConfig): GuidanceDisclo
     if (!configured.enabled || !configured.available) continue;
     if (configured.sourceKind !== "literal") continue;
     const literal = configured.rule as { placeholder?: string; disclosePlaceholder?: boolean };
-    const effective = literal.disclosePlaceholder ?? config.options.disclosePlaceholders;
-    if (!effective) continue;
+    if (!effectiveDisclose(config.options.disclosePlaceholders, literal.disclosePlaceholder)) continue;
     const placeholder = literal.placeholder;
     if (!placeholder || placeholder === "auto") continue; // WAIT-state or lazy
     entries.push({ placeholder, custom: configured.placeholderMode === "custom" });

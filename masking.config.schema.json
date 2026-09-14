@@ -69,7 +69,7 @@
         "placeholder": { "type": "string", "minLength": 1, "default": "auto" },
         "disclosePlaceholder": {
           "type": "boolean",
-          "description": "Override options.disclosePlaceholders for this rule's placeholder in the model guidance's disclosure list. Omit to inherit the global default. Literal rules only."
+          "description": "Rule-level disclosure preference, applied when options.disclosePlaceholders is \"per-rule\"; omit or false to not disclose. While the global mode is true/false this value is paused (kept, not applied). Literal rules only."
         },
         "allowCommonPlaceholder": {
           "type": "boolean",
@@ -152,9 +152,10 @@
           "description": "Append model guidance to the system prompt establishing the behavioral contract for masked values: exact full-string comparison, verbatim passthrough into tool calls, transformations via tools, and no investigation of inconsistencies (ask the user instead). Cache-impacting when toggled mid-session."
         },
         "disclosePlaceholders": {
-          "type": "boolean",
+          "type": ["boolean", "string"],
+          "enum": [true, false, "per-rule"],
           "default": false,
-          "description": "List literal-rule placeholder strings inside the model guidance, grouped by structure fidelity. Requires systemPromptGuidance (auto-enabled otherwise). Regex placeholders are never listed."
+          "description": "Placeholder-disclosure master mode: true discloses all eligible literal rules; false discloses none; \"per-rule\" lets each rule's disclosePlaceholder decide (rules without it are not disclosed). In true/false mode rule-level values are paused, not lost. Requires systemPromptGuidance (auto-enabled otherwise). Regex placeholders are never listed."
         },
         "persistHistory": { "type": "boolean", "default": true }
       }

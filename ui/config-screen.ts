@@ -58,7 +58,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
     | { kind: "add"; initialMode?: "form" | "json" }
     | { kind: "import" | "export" | "help" };
   await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
-    let screenRules = bridge.config().configuredRules;
+    let screenRules = bridge.effectiveConfig().configuredRules;
     let selectedIndex = 0;
     let scrollOffset = 0;
     let rulePageSize = 1;
@@ -192,7 +192,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       } else {
         mutationMessage = `Masking ${result.enabled ? "ON" : "OFF"} · saved globally`;
       }
-      screenRules = bridge.config().configuredRules;
+      screenRules = bridge.effectiveConfig().configuredRules;
       refresh();
     }
 
@@ -200,7 +200,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
      *  disclosure force-enables guidance; disabling guidance disables
      *  both — off / guidance-only / full are the only reachable states.
      *  The status-line row is an independent toggle. */
-    async function toggleGuidanceInPlace(): Promise<void> {
+    async function toggleGuidanceInPlace(direction: 1 | -1 = 1): Promise<void> {
       // Base the next state on the effective config (queued changes included)
       // so repeated toggles during an active run accumulate correctly.
       const options = bridge.effectiveConfig().options;
@@ -211,10 +211,20 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       if (settingsIndex === 3) {
         next.showStatusBar = !bridge.config().options.showStatusBar;
       } else if (settingsIndex === 2) {
-        if (next.disclosePlaceholders) next.disclosePlaceholders = false;
-        else {
-          next.disclosePlaceholders = true;
+        // Master mode cycle (←/→ or Space): off → on (disclose everything) →
+        // per-rule (rule settings apply, unset rules stay off) → off. on and
+        // per-rule force-enable guidance; switching to off/on leaves rule-level
+        // values dormant.
+        const mode = next.disclosePlaceholders;
+        if (mode === false) {
+          next.disclosePlaceholders = direction === 1 ? true : "per-rule";
           next.systemPromptGuidance = true;
+        } else if (mode === true) {
+          next.disclosePlaceholders = direction === 1 ? "per-rule" : false;
+          if (direction === 1) next.systemPromptGuidance = true;
+        } else {
+          next.disclosePlaceholders = direction === 1 ? false : true;
+          if (direction === -1) next.systemPromptGuidance = true;
         }
       } else {
         if (next.systemPromptGuidance) {
@@ -249,7 +259,8 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       tui.requestRender();
       const saved = await toggleConfigRule(bridge, ctx, selected, false, inlineConfirm);
       if (saved) {
-        screenRules = bridge.config().configuredRules;
+        // Effective config: a queued change must show its target state now.
+        screenRules = bridge.effectiveConfig().configuredRules;
         retainSelectedRule(stableKey);
         mutationMessage = enabling
           ? "Enabled · affects future requests"
@@ -268,7 +279,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       tui.requestRender();
       const saved = await moveConfigRule(bridge, ctx, selected, direction, false);
       if (saved) {
-        screenRules = bridge.config().configuredRules;
+        screenRules = bridge.effectiveConfig().configuredRules;
         retainSelectedRule(stableKey);
         mutationMessage = "Order saved";
       } else {
@@ -301,7 +312,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         else if (action.kind === "import") await importConfigRules(bridge, ctx);
         else await exportConfigRules(bridge, ctx);
       } finally {
-        screenRules = bridge.config().configuredRules;
+        screenRules = bridge.effectiveConfig().configuredRules;
         mutationInProgress = false;
         mutationMessage = "";
         refresh();
@@ -321,20 +332,31 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         // change is queued behind the active agent run, say so per row.
         const options = desiredConfig.options;
         const activeOptions = bridge.config().options;
+        // Rules whose enabled state is queued behind the active agent run:
+        // the list shows the target state, the row carries a next-run hint.
+        const activeRuleEnabled = new Map(bridge.config().configuredRules.map((r) => [configuredRuleStableKey(r), r.enabled]));
+        const rulePendingHint = (configured: ConfiguredMaskingRule): string =>
+          bridge.activationPending()
+          && activeRuleEnabled.get(configuredRuleStableKey(configured)) !== configured.enabled
+            ? " · activates next run" : "";
         const optionsPendingSuffix = bridge.activationPending()
           && (options.systemPromptGuidance !== activeOptions.systemPromptGuidance
             || options.disclosePlaceholders !== activeOptions.disclosePlaceholders
             || options.showStatusBar !== activeOptions.showStatusBar)
           ? " · activates next run" : "";
         const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
-        const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
-        const literalEligible = screenRules.filter((configured) =>
-          configured.enabled && configured.available && configured.sourceKind === "literal").length;
+        const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · ←/→ or Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
         const settingsDivider = theme.fg(homeFocus === "settings" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
-        const settingRow = (index: number, label: string, value: boolean, description: string): string => {
+        const settingRow = (index: number, label: string, value: boolean | string, description: string): string => {
           const selected = homeFocus === "settings" && index === settingsIndex;
           const marker = selected ? "▶" : " ";
-          const plain = `${marker} ${label}${" ".repeat(Math.max(0, 16 - label.length))} [${value ? "ON " : "OFF"}]`;
+          const rawLabel = value === true ? "ON" : value === false ? "OFF" : "RULE";
+          // ‹ › pinned to fixed columns; centering biases extra space to the
+          // right so ON and OFF share the same leading column.
+          const pad = Math.max(0, 4 - rawLabel.length);
+          const valueLabel = " ".repeat(Math.ceil(pad / 2)) + rawLabel + " ".repeat(Math.floor(pad / 2));
+          const valueCell = `‹ ${valueLabel} ›`;
+          const plain = `${marker} ${label}${" ".repeat(Math.max(0, 16 - label.length))} ${valueCell}`;
           const descriptionWidth = Math.max(0, width - visibleWidth(plain) - 2);
           const desc = truncateToWidth(description, descriptionWidth);
           const rowBody = homeFocus === "settings"
@@ -344,15 +366,17 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         };
         const settingsLines: string[] = [
           homeFocus === "settings"
-            ? theme.fg("accent", theme.bold("SETTINGS · focused"))
+            ? theme.fg("accent", theme.bold("SETTINGS · focused · ←/→ or Space changes the selected row"))
             : theme.fg("muted", "SETTINGS · Tab to focus"),
           settingsDivider,
-          settingRow(0, "Masking", maskingEnabled,
-            maskingActivationPending ? "saved · activates next run" : "saved across projects and future sessions"),
+          settingRow(0, "Masking (global)", maskingEnabled,
+            maskingActivationPending ? "master switch · saved · activates next run" : "master switch for all masking · saved across projects and future sessions"),
           settingRow(1, "Model guidance", options.systemPromptGuidance,
-            `tell the model how to work with masked values (compare, pass through, transform via tools)${optionsPendingSuffix}`),
+            `tell the model how to work with masked values${optionsPendingSuffix}`),
           settingRow(2, "Disclose", options.disclosePlaceholders,
-            `list literal-rule placeholders inside the model guidance (${literalEligible} eligible${options.disclosePlaceholders ? "" : " · requires the model guidance"})${optionsPendingSuffix}`),
+            (options.disclosePlaceholders === "per-rule"
+              ? "each rule's Disclose setting decides · set per rule in the rule editor"
+              : "list literal-rule placeholders in the model guidance") + optionsPendingSuffix),
           settingRow(3, "Status line", options.showStatusBar,
             `show the masking summary on the status line at the bottom of the chat window${optionsPendingSuffix}`),
         ];
@@ -417,11 +441,16 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             const enabled = configured.enabled;
             const cursor = absoluteIndex === selectedIndex ? "›" : " ";
             const stateLabel = !enabled ? "OFF" : configured.available ? "ON" : "WAIT";
-            const statePadding = Math.max(0, 4 - stateLabel.length);
-            const state = `${" ".repeat(Math.floor(statePadding / 2))}${stateLabel}${" ".repeat(Math.ceil(statePadding / 2))}`;
+            const stateSlot = (label: string): string => {
+              const pad = Math.max(0, 4 - label.length);
+              return " ".repeat(Math.ceil(pad / 2)) + label + " ".repeat(Math.floor(pad / 2));
+            };
+            // ‹ › marks a toggle (same left-aligned cell as the settings zone); square
+            // brackets mark the read-only WAIT state.
+            const state = stateLabel === "WAIT" ? "[WAIT]" : `‹ ${stateSlot(stateLabel)} ›`;
             const priority = screenRules.indexOf(configured) + 1;
-            const displayName = configuredRuleDisplayName(configured);
-            const text = `${cursor} [${state}] ${String(priority).padStart(5)}  ${configured.scope.padEnd(7)}  ${configuredRuleKind(configured).padEnd(7)}  ${displayName}`;
+            const displayName = configuredRuleDisplayName(configured) + rulePendingHint(configured);
+            const text = `${cursor} ${state} ${String(priority).padStart(5)}  ${configured.scope.padEnd(7)}  ${configuredRuleKind(configured).padEnd(7)}  ${displayName}`;
             const clipped = truncateToWidth(text, Math.max(1, width));
             lines.push(homeFocus !== "rules"
               ? theme.fg("dim", clipped)
@@ -445,7 +474,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           const detailRowCount = 5;
           const selected = visibleRulesNow[selectedIndex];
           const details = selected
-            ? configuredRuleDetail(selected, showExactValues, bridge.config().options.disclosePlaceholders)
+            ? configuredRuleDetail(selected, showExactValues, bridge.config().options.disclosePlaceholders, (text) => theme.fg("dim", text))
             : [];
           for (let index = 0; index < detailRowCount; index++) {
             const detail = details[index];
@@ -600,6 +629,12 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             refresh();
             return;
           }
+          if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
+            const direction: 1 | -1 = matchesKey(data, Key.left) ? -1 : 1;
+            if (settingsIndex === 0) toggleMaskingInPlace();
+            else void toggleGuidanceInPlace(direction);
+            return;
+          }
           if (matchesKey(data, Key.space) || keybindings.matches(data, "tui.select.confirm")) {
             if (settingsIndex === 0) toggleMaskingInPlace();
             else void toggleGuidanceInPlace();
@@ -669,6 +704,10 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         if (matchesKey(data, Key.end)) {
           selectedIndex = visible.length;
           refresh();
+          return;
+        }
+        if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
+          if (selected) void toggleRuleInPlace(selected);
           return;
         }
         if (matchesKey(data, Key.space) && selected) {

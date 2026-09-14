@@ -52,7 +52,7 @@ export interface RuleEpoch {
   enabled: boolean;
   caseSensitive: boolean;
   systemPromptGuidance: boolean;
-  disclosePlaceholders?: boolean;
+  disclosePlaceholders?: boolean | "per-rule";
   reason: RuleEpochReason;
   rules: RuleEpochRuleMetadata[];
   changes: RuleEpochChange[];
@@ -390,7 +390,7 @@ export function parseRuleEpoch(value: unknown): RuleEpoch | undefined {
     typeof value.enabled !== "boolean" ||
     typeof value.caseSensitive !== "boolean" ||
     typeof value.systemPromptGuidance !== "boolean" ||
-    (value.disclosePlaceholders !== undefined && typeof value.disclosePlaceholders !== "boolean") ||
+    (value.disclosePlaceholders !== undefined && value.disclosePlaceholders !== "per-rule" && typeof value.disclosePlaceholders !== "boolean") ||
     (value.reason !== "session_start" && value.reason !== "ui_edit" && value.reason !== "file_reload" && value.reason !== "toggle") ||
     !Array.isArray(value.rules) || !Array.isArray(value.changes)
   ) return undefined;

@@ -45,7 +45,7 @@ function configuredRule(overrides: Partial<ConfiguredMaskingRule> & { placeholde
 
 function config(overrides: Partial<MaskingConfig> & {
   guidance?: boolean;
-  discloseGlobal?: boolean;
+  discloseGlobal?: boolean | "per-rule";
 } = {}): MaskingConfig {
   const configuredRules = overrides.configuredRules ?? [configuredRule()];
   return {
@@ -99,17 +99,22 @@ test("duplicate placeholders are deduplicated across rules", () => {
   assert.equal(note.split("same-placeholder").length - 1, 1);
 });
 
-test("inheritance matrix: global × rule override", () => {
-  // false / unset → no
+test("disclosure matrix: global master mode × rule setting", () => {
+  // off / unset → no
   assert.deepEqual(guidanceDisclosureEntries(config({ discloseGlobal: false })), []);
-  // false / true → yes
+  // off / true → no (rule setting paused, not lost)
   const overrideTrue = configuredRule({ ruleOverrides: { disclosePlaceholder: true } });
-  assert.equal(guidanceDisclosureEntries(config({ configuredRules: [overrideTrue] })).length, 1);
-  // true / unset → yes
+  assert.deepEqual(guidanceDisclosureEntries(config({ discloseGlobal: false, configuredRules: [overrideTrue] })), []);
+  // on / unset → yes
   assert.equal(guidanceDisclosureEntries(config({ discloseGlobal: true })).length, 1);
-  // true / false → no
+  // on / false → yes (rule setting paused, not lost)
   const overrideFalse = configuredRule({ ruleOverrides: { disclosePlaceholder: false } });
-  assert.deepEqual(guidanceDisclosureEntries(config({ discloseGlobal: true, configuredRules: [overrideFalse] })), []);
+  assert.equal(guidanceDisclosureEntries(config({ discloseGlobal: true, configuredRules: [overrideFalse] })).length, 1);
+  // per-rule / unset → no (default off)
+  assert.deepEqual(guidanceDisclosureEntries(config({ discloseGlobal: "per-rule" })), []);
+  // per-rule / true → yes; per-rule / false → no
+  assert.equal(guidanceDisclosureEntries(config({ discloseGlobal: "per-rule", configuredRules: [overrideTrue] })).length, 1);
+  assert.deepEqual(guidanceDisclosureEntries(config({ discloseGlobal: "per-rule", configuredRules: [overrideFalse] })), []);
 });
 
 test("WAIT-state and regex rules never appear in the disclosure list", () => {
@@ -167,6 +172,24 @@ test("loader auto-corrects disclosure without guidance and warns", async () => {
     const loaded = await loadConfigFromPaths(join(dir, "global.json"), join(dir, "project.json"), KEY);
     assert.equal(loaded.config.options.systemPromptGuidance, true);
     assert.ok(loaded.warnings.some((warning) => warning.includes("disclosePlaceholders")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loader auto-corrects per-rule disclosure without guidance and warns", async () => {
+  const dir = makeTmp();
+  try {
+    writeFileSync(join(dir, "global.json"), JSON.stringify({
+      version: 1,
+      enabled: true,
+      rules: [{ id: "k", real: "real-secret-value-123456", disclosePlaceholder: true }],
+      options: { systemPromptGuidance: false, disclosePlaceholders: "per-rule" },
+    }));
+    const loaded = await loadConfigFromPaths(join(dir, "global.json"), join(dir, "project.json"), KEY);
+    assert.equal(loaded.config.options.systemPromptGuidance, true);
+    assert.ok(loaded.warnings.some((warning) => warning.includes("disclosePlaceholders")));
+    assert.equal(guidanceDisclosureEntries(loaded.config).length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

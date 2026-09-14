@@ -4,12 +4,15 @@
 
 ### Changed
 
-- Masking config saves and hot reloads no longer post explanations into the chat conversation; the pending state is shown on the masking status line ("· changes pending") and inside the `/masking` screen, where each changed settings row carries an "activates next run" hint.
+- Placeholder disclosure is now a three-position master switch: on (disclose all literal rules), off (disclose none), or per-rule (each rule's Disclose setting decides, default off). Note for upgraders: rule-level `disclosePlaceholder` values now apply only in per-rule mode — previously they overrode the global switch. Existing boolean configs keep their meaning, and `systemPromptGuidance` still auto-enables when disclosure needs it.
+- Rule-level Disclose is a plain OFF/ON toggle (default off), replacing the inherit/always/never selector; `/masking` always shows the effective value with the paused rule setting dimmed.
+- `/masking` polish: settings rows and rule toggles share ‹ › selector cells with ←/→ support (Disclose cycles off → on → RULE), the global switch row is labeled "Masking (global)", and the read-only WAIT state keeps square brackets.
+- Masking config saves and hot reloads no longer post explanations into the chat conversation; the pending state is shown on the masking status line and inside the `/masking` screen with an "activates next run" hint.
 
 ### Fixed
 
-- The `/masking` settings rows (Model guidance, Disclose, Status line) now reflect the next-to-run config immediately after saving, even while an agent run is active, with a "· activates next run" hint on each changed row; previously the toggles kept showing the old state until the next conversation started. Repeated toggles during a run also no longer swallow the second change.
-- Disabled rules no longer produce quality warnings at load time. Advisory checks — regex safety risks, short/low-entropy values, common semantic values (real or placeholder), missing environment variables, and the placeholder-equals-real-value "no effect" warning — are suppressed while a rule is `enabled: false`; structural warnings that affect config loading (skipped/invalid rules, duplicate IDs) are still reported. The checks re-fire on the next load after the rule is re-enabled.
+- `/masking` toggles (settings rows and rule enable/disable) now reflect the next-to-run config immediately after saving, even mid-run, with an "activates next run" hint on each queued row; repeated toggles during a run no longer swallow the second change.
+- Disabled rules no longer produce quality warnings at load time; advisory checks re-fire when the rule is re-enabled. Structural problems (invalid or duplicate rules) are still reported.
 
 ## [0.7.0] - 2026-09-12
 

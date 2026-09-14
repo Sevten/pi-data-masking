@@ -93,7 +93,7 @@ async function createHarness(cwd: string, branch: unknown[] = []) {
     async toggleMasking(confirmDisable: boolean) {
       const before = notifications.length;
       scenarios.push(async (component) => {
-        assert.ok(component.render(100).some((line) => /Masking\s+\[(?:ON ?|OFF)\]/.test(line)));
+        assert.ok(component.render(100).some((line) => /Masking \(global\)\s+‹\s*(?:ON|OFF)\s*›/.test(line)));
         component.handleInput("m");
         await waitFor(() => notifications.length > before
           || component.render(100).some((line) => line.includes("Disable masking?")));

@@ -184,7 +184,7 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.doesNotMatch(narrow, /I\s+import/);
     assert.doesNotMatch(narrow, /X export/);
     assert.match(narrow, /Esc\s+close/);
-    assert.ok(component.render(100).some((line) => /Masking\s+\[ON ?\]/.test(line)));
+    assert.ok(component.render(100).some((line) => /Masking \(global\)\s+‹\s*ON\s*›/.test(line)));
     const focusedDetails = component.render(100);
     assert.ok(focusedDetails.includes("Description: —"));
     assert.ok(focusedDetails.includes('Exact value: first-secret-value'));
@@ -223,14 +223,14 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.ok(component.render(100).join("\n").match(/persists across projects/));
     assert.ok(component.render(100).join("\n").match(/future sessions/));
     component.handleInput(INPUT.enter);
-    await waitFor(() => component.render(100).some((line) => /Masking\s+\[OFF\]/.test(line)));
+    await waitFor(() => component.render(100).some((line) => /Masking \(global\)\s+‹\s*OFF\s*›/.test(line)));
     component.handleInput("m");
-    await waitFor(() => component.render(100).some((line) => /Masking\s+\[ON ?\]/.test(line)));
+    await waitFor(() => component.render(100).some((line) => /Masking \(global\)\s+‹\s*ON\s*›/.test(line)));
     component.handleInput(INPUT.tab);
     assert.ok(component.render(100).some((line) => line.includes("TEST ACTIVE RULES · focused")));
     styleCalls.length = 0;
     component.render(100);
-    const unfocusedRuleRows = styleCalls.filter((call) => /\[\s*(?:ON|OFF|WAIT)\s*\].*(?:First|Second) rule/.test(call.text));
+    const unfocusedRuleRows = styleCalls.filter((call) => /(?:‹\s*(?:ON|OFF)\s*›|\[WAIT\]).*(?:First|Second) rule/.test(call.text));
     assert.equal(unfocusedRuleRows.length, 2);
     assert.ok(unfocusedRuleRows.every((call) => call.color === "dim"));
     const unfocusedDetails = styleCalls.filter((call) => /^(?:Description|Exact value|Placeholder):/.test(call.text));
@@ -255,8 +255,8 @@ test("configuration home toggles and reorders in place while retaining selection
       component.handleInput(INPUT.enter);
       await waitFor(() => configRules(projectPath)[0]?.enabled === false);
     }
-    await waitFor(() => component.render(100).some((line) => line.includes("[OFF ]") && line.includes("First rule")));
-    assert.ok(component.render(100).some((line) => line.includes("[OFF ]") && line.includes("First rule")));
+    await waitFor(() => component.render(100).some((line) => line.includes("‹  OFF ›") && line.includes("First rule")));
+    assert.ok(component.render(100).some((line) => line.includes("‹  OFF ›") && line.includes("First rule")));
 
     component.handleInput(INPUT.ctrlDown);
     await waitFor(() => configRules(projectPath).map((rule) => rule.id).join(",") === "second,first");

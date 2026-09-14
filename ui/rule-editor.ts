@@ -337,9 +337,10 @@ export async function addConfigRule(
       });
     let builderType: BuilderType = selectedType;
     let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
-    // Tri-state disclosure for literal rules: inherit / always / never.
-    let discloseIndex = editing && editing.initial.disclosePlaceholder === true ? 1
-      : editing && editing.initial.disclosePlaceholder === false ? 2 : 0;
+    // Disclosure preference for literal rules: off is the default; the
+    // global on/off master switch pauses it anyway.
+    let discloseOn = editing && editing.initial.disclosePlaceholder === true;
+    const discloseGlobalMode = bridge.config().options.disclosePlaceholders;
     let mode: "form" | "json" = options.initialMode ?? "form";
     let focusIndex = !editing && mode === "form" ? 2 : 0;
     let lastFormField: BuilderField = !editing && mode === "form" ? "name" : "type";
@@ -523,9 +524,11 @@ export async function addConfigRule(
           ...base,
           realFromEnv: editors.env.getExpandedText().trim(),
           placeholder: replacementIndex === 0 ? "auto" : editors.placeholder.getExpandedText(),
-          ...(discloseIndex === 1 ? { disclosePlaceholder: true } : discloseIndex === 2 ? { disclosePlaceholder: false } : {}),
         };
         delete envRule.type;
+        delete envRule.disclosePlaceholder;
+        if (discloseOn) envRule.disclosePlaceholder = true;
+        delete envRule.pattern;
         delete envRule.pattern;
         delete envRule.flags;
         delete envRule.real;
@@ -536,8 +539,9 @@ export async function addConfigRule(
         ...base,
         real: editors.real.getExpandedText(),
         placeholder: replacementIndex === 0 ? "auto" : editors.placeholder.getExpandedText(),
-        ...(discloseIndex === 1 ? { disclosePlaceholder: true } : discloseIndex === 2 ? { disclosePlaceholder: false } : {}),
       };
+      delete literalRule.disclosePlaceholder;
+      if (discloseOn) literalRule.disclosePlaceholder = true;
       delete literalRule.pattern;
       delete literalRule.flags;
       delete literalRule.realFromEnv;
@@ -591,7 +595,7 @@ export async function addConfigRule(
       }
       builderType = isRegex ? "Custom regex" : hasEnv ? "Literal from environment" : "Exact literal value";
       advancedFields = { ...rule };
-      discloseIndex = rule.disclosePlaceholder === true ? 1 : rule.disclosePlaceholder === false ? 2 : 0;
+      discloseOn = rule.disclosePlaceholder === true;
       explicitId = typeof rule.id === "string" ? rule.id : undefined;
       editors.name.setText(typeof rule.name === "string" ? rule.name : "");
       editors.description.setText(typeof rule.description === "string" ? rule.description : "");
@@ -653,12 +657,14 @@ export async function addConfigRule(
       value: string,
       width: number,
       description: string,
-      options: { cursorEditor?: Editor; selector?: boolean; dim?: boolean } = {},
+      options: { cursorEditor?: Editor; selector?: boolean; selectorPrefix?: string; dim?: boolean } = {},
     ): void {
       const focused = field !== undefined && focusedField() === field;
       const marker = focused ? "▶" : " ";
       const labelWidth = 14;
-      const rawValue = options.selector ? `‹ ${value} ›` : value || "—";
+      const rawValue = options.selector
+        ? (options.selectorPrefix !== undefined ? `${options.selectorPrefix} ‹ ${value} ›` : `‹ ${value} ›`)
+        : value || "—";
       const valueWidth = Math.max(1, width - (2 + labelWidth + 2));
       const displayedValue = focused && options.cursorEditor
         ? valueWithCursor(options.cursorEditor, valueWidth)
@@ -683,8 +689,8 @@ export async function addConfigRule(
       lines.push(...wrappedMaskingText(description, width));
     }
 
-    function renderSelector(lines: string[], field: BuilderField, label: string, value: string, width: number, description: string): void {
-      renderFieldRow(lines, field, label, value, width, description, { selector: true });
+    function renderSelector(lines: string[], field: BuilderField, label: string, value: string, width: number, description: string, selectorPrefix?: string): void {
+      renderFieldRow(lines, field, label, value, width, description, { selector: true, selectorPrefix });
     }
 
     function renderSingleLineField(lines: string[], field: BuilderField, label: string, editor: Editor, width: number, description: string): void {
@@ -830,6 +836,15 @@ export async function addConfigRule(
       render: (width) => {
         const draft = currentDraft();
         renderedFieldDetails.clear();
+        // Disclose selector layout depends only on the global mode (constant
+        // while editing), so toggling the stored value never reshuffles the
+        // row — only the word inside the brackets changes.
+        const storedLabel = discloseOn ? "ON" : "OFF";
+        const disclosePrefix = discloseGlobalMode === true ? "ON (global)" : discloseGlobalMode === false ? "OFF (global)" : undefined;
+        const discloseValue = disclosePrefix ? theme.fg("dim", `${storedLabel} (stored)`) : storedLabel;
+        const discloseDescription = disclosePrefix
+          ? `global ${discloseGlobalMode ? "ON" : "OFF"} — rule setting not in effect`
+          : "no global override — this rule setting applies";
         const editorFocused = focusedField() !== "test";
         const editorDivider = theme.fg(editorFocused ? "accent" : "dim", "─".repeat(Math.max(1, width)));
         const editorTitle = mode === "form" ? "RULE FIELDS" : "RULE JSON";
@@ -858,12 +873,12 @@ export async function addConfigRule(
             renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
-            renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "listed placeholders appear in the model guidance, labelled as substitutes — never the real value · ←/→ or Space cycles");
+            renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, disclosePrefix);
           } else {
             renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
-            renderSelector(lines, "disclose", "Disclose", ["Inherit global setting", "Always disclose", "Never disclose"][discloseIndex]!, width, "listed placeholders appear in the model guidance, labelled as substitutes — never the real value · ←/→ or Space cycles");
+            renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, disclosePrefix);
           }
           const fixedFieldRowCount = 8;
           while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
@@ -1007,7 +1022,7 @@ export async function addConfigRule(
             replacementIndex = replacementIndex === 0 ? 1 : 0;
             focusIndex = Math.min(focusIndex, fields().length - 1);
           } else if (field === "disclose") {
-            discloseIndex = (discloseIndex + (selectorDirection < 0 ? 2 : 1)) % 3;
+            discloseOn = !discloseOn;
           } else {
             editorForField(field)?.handleInput(data);
             return;

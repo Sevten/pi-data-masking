@@ -31,10 +31,13 @@ export interface MaskingOptions {
    *  behavioral contract for masked values (default false). Placeholder
    *  disclosure requires this option; the loader auto-enables it otherwise. */
   systemPromptGuidance: boolean;
-  /** Global default for listing literal-rule placeholder strings in the
-   *  model guidance; a rule-level `disclosePlaceholder` overrides it (default
-   *  false). */
-  disclosePlaceholders: boolean;
+  /// Placeholder-disclosure master mode (default false):
+  ///  - true      → all eligible literal rules are disclosed; rule-level
+  ///                `disclosePlaceholder` values are paused (kept dormant)
+  ///  - false     → nothing is disclosed; rule-level values are paused
+  ///  - "per-rule" → each rule's `disclosePlaceholder` decides; rules that
+  ///                never set it are not disclosed
+  disclosePlaceholders: boolean | "per-rule";
   /** Persist model-input history snapshots and the session key in the Pi
    *  session so /masking-history survives restart (default true). */
   persistHistory: boolean;
@@ -851,7 +854,7 @@ function buildLoadResult(
 
   // Switch coupling: disclosure requires the model guidance. The intent to
   // disclose is clear, so the loader auto-corrects instead of erroring.
-  if (config.options.disclosePlaceholders && !config.options.systemPromptGuidance) {
+  if (config.options.disclosePlaceholders !== false && !config.options.systemPromptGuidance) {
     config.options.systemPromptGuidance = true;
     warnings.push(
       "options.disclosePlaceholders is enabled, so systemPromptGuidance was enabled automatically; " +
