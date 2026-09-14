@@ -888,8 +888,9 @@ function buildLoadResult(
     && typeof projectData.options === "object"
     && !Array.isArray(projectData.options)
     && Object.keys(projectData.options).length > 0) {
+    const ignoredFields = Object.keys(projectData.options).join(", ");
     warnings.push(
-      `project-level options are ignored; settings live in the global config (${globalPath})`,
+      `project-level options are ignored (${ignoredFields}); settings are global-level, configure them in /masking`,
     );
   }
 

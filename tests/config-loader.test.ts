@@ -75,7 +75,7 @@ test("project rules come first; options are global-only; project enabled wins", 
     assert.equal(config.options.caseSensitive, false, "project options are ignored; global wins");
     assert.equal(config.options.showStatusBar, true);
     assert.equal(config.options.systemPromptGuidance, false, "default, not the ignored project options");
-    assert.ok(warnings.some((w) => w.includes("project-level options are ignored")));
+    assert.ok(warnings.some((w) => w.includes('project-level options are ignored (caseSensitive')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -799,7 +799,7 @@ test("allowlist: global entries only; project allowlist is ignored", async () =>
     }));
     const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
     assert.deepEqual(config.options.allowlist, ["10.0.0.1", "10.0.0.2"]);
-    assert.ok(warnings.some((w) => w.includes("project-level options are ignored")));
+    assert.ok(warnings.some((w) => w.includes('project-level options are ignored (allowlist')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
