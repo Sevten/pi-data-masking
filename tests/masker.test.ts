@@ -618,3 +618,148 @@ test("allowlist: regex capture group exemption masks sibling groups", () => {
   assert.equal(reals.has("value"), true);
   assert.equal(reals.has("hidden"), true);
 });
+
+test("allowlist: whole-line entry exempts a capture-group match inside it", () => {
+  const m = new Masker(
+    [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
+    false,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["Authorization: Bearer test123456"],
+  );
+  const text = "curl -H 'Authorization: Bearer test123456' api.example.com";
+  const masked = m.mask(text, { discover: true });
+  assert.equal(masked.count, 0);
+  assert.equal(masked.text, text);
+});
+
+test("allowlist: prefix-only entry shields the captured token it overlaps", () => {
+  const m = new Masker(
+    [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
+    false,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["Bearer test123456"],
+  );
+  const masked = m.mask("Authorization: Bearer test123456", { discover: true });
+  assert.equal(masked.count, 0);
+});
+
+test("allowlist: entry that is a prefix of the token does NOT exempt the longer token", () => {
+  const m = new Masker(
+    [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
+    false,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["Authorization: Bearer test"],
+  );
+  // "Bearer test" continues into "test123": the entry never named that
+  // longer token, so it must stay masked.
+  const masked = m.mask("Authorization: Bearer test123", { discover: true });
+  assert.equal(masked.count, 1);
+  assert.equal(masked.text.startsWith("Authorization: Bearer "), true);
+  const exact = m.mask("Authorization: Bearer test", { discover: true });
+  assert.equal(exact.count, 0);
+});
+
+test("allowlist: whole-line entry matches case-insensitively when allowed", () => {
+  const m = new Masker(
+    [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
+    false,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["authorization: bearer TEST123456"],
+  );
+  const masked = m.mask("Authorization: Bearer test123456", { discover: true });
+  assert.equal(masked.count, 0);
+});
+
+test("allowlist: whole-line entry needs exact case when caseSensitive", () => {
+  const m = new Masker(
+    [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
+    true,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["authorization: bearer test123456"],
+  );
+  const masked = m.mask("Authorization: Bearer test123456", { discover: true });
+  assert.equal(masked.count, 1);
+});
+
+test("allowlist: prefix entry inside a longer value does NOT shield it", () => {
+  const m = new Masker(
+    [{ id: "tok", type: "regex", pattern: "tok-[A-Za-z0-9]+" }],
+    true,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["123456"],
+  );
+  // "123456" continues into a longer token run inside "tok-123456": a
+  // prefix of a longer value is a different value, so it stays masked.
+  const masked = m.mask("tok-123456 and tok-abcdef", { discover: true });
+  assert.equal(masked.count, 2);
+  const reals = masked.details.flatMap((d) => d.values.map((v) => v.real));
+  assert.deepEqual(reals, ["tok-123456", "tok-abcdef"]);
+});
+
+test("allowlist: boundary-aligned bare value is still exempt", () => {
+  const m = new Masker(
+    [{ id: "tok", type: "regex", pattern: "tok-[A-Za-z0-9]+" }],
+    true,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["123456"],
+  );
+  const masked = m.mask("tok-123456x and 123456", { discover: true });
+  // "tok-123456x" keeps the mask ("123456" inside it is bounded by token
+  // chars on both edges); the standalone "123456" is boundary-aligned and
+  // exempt.
+  assert.equal(masked.count, 1);
+  assert.equal(masked.text.endsWith(" and 123456"), true);
+  const reals = masked.details.flatMap((d) => d.values.map((v) => v.real));
+  assert.deepEqual(reals, ["tok-123456x"]);
+});
+
+test("allowlist: every occurrence of an entry is shielded", () => {
+  const m = new Masker(
+    [{ id: "ip", type: "regex", pattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b" }],
+    true,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["10.0.0.5"],
+  );
+  const masked = m.mask("10.0.0.5 to 10.0.0.5 via 10.0.0.6 then 10.0.0.5", { discover: true });
+  assert.equal(masked.count, 1);
+  assert.equal(masked.text.includes("10.0.0.6"), false);
+});
+
+test("allowlist: token-only entry still exempts the bare value", () => {
+  const m = new Masker(
+    [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
+    false,
+    KEY,
+    new Map(),
+    new Set(),
+    new Set(),
+    ["test123456"],
+  );
+  const masked = m.mask("Authorization: Bearer test123456", { discover: true });
+  assert.equal(masked.count, 0);
+  assert.equal(masked.text, "Authorization: Bearer test123456");
+});

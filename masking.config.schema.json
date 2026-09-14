@@ -316,7 +316,7 @@
             "minLength": 1
           },
           "default": [],
-          "description": "Exact literal values that are never masked, regardless of which rule would otherwise match them. Matching follows caseSensitive. Global and project lists merge by union (project entries first)."
+          "description": "Literal text that is never masked: every boundary-aligned occurrence of each entry is left untouched, even when a rule would match inside it — so an entry may be a bare value (\"10.0.0.5\") or a whole line (\"Authorization: Bearer tok123\") containing one. A match continuing into a longer token run does not count (\"Bearer test\" never exempts \"Bearer test123\"). Matching follows caseSensitive. Global and project lists merge by union (project entries first)."
         }
       }
     }

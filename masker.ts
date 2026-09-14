@@ -45,6 +45,15 @@
  *    `real: P1, placeholder: P2`, the LLM would see P2, and unmask could only
  *    ever restore P2→P1.
  *
+ * Allowlist:
+ *  - `options.allowlist` entries are literal text the user marks as safe.
+ *    Boundary-aligned occurrences are located in the original text before
+ *    rules run, and any rule match overlapping one is skipped — so an
+ *    entry may exempt a bare value ("10.0.0.5") or a whole line
+ *    ("Authorization: Bearer tok123") containing one. A match that
+ *    continues into a longer run of letters/digits does not count:
+ *    "Bearer test" never exempts "Bearer test123".
+ *
  * Collision protection:
  *  - A "used placeholders" set is kept (fixed literal placeholders +
  *    already-generated dynamic ones).
@@ -191,6 +200,17 @@ function toLiteralPattern(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Characters a secret-shaped run can continue with: letters, digits, and
+ *  the common token punctuation (identifier underscore, version dot, base64
+ *  plus, slug hyphen). Allowlist occurrences bounded by one of these are a
+ *  fragment of a longer value, not the entry's text. Liberal on purpose —
+ *  a false "continuation" keeps masking (safe), a miss would expose. */
+const TOKEN_CHAR = /[\p{L}\p{N}_.+-]/u;
+
+function isTokenChar(ch: string): boolean {
+  return ch !== "" && TOKEN_CHAR.test(ch);
+}
+
 function overlaps(claimed: Array<[number, number]>, start: number, end: number): boolean {
   for (const [s, e] of claimed) {
     if (start < e && s < end) return true;
@@ -265,11 +285,11 @@ export class Masker {
   private readonly llmInventedValues: Set<string>;
   /** Values first seen in user, system, or tool-result data: masked in every role. */
   private readonly protectedValues: Set<string>;
-  /** Allowlist entries: candidate values equal to any entry are never
-   *  masked (see shouldMaskSpan). Exact set plus a lowercased alias when
-   *  the masker is case-insensitive. */
-  private readonly allowlistExact: Set<string>;
-  private readonly allowlistLower: Set<string> | null;
+  /** Allowlist entries: literal text regions that are never masked (see
+   *  collectAllowlistRegions; occurrences must be boundary-aligned).
+   *  Kept as written, plus a lowercased alias when the masker is
+   *  case-insensitive. */
+  private readonly allowlistEntries: Array<{ text: string; lower: string | null }>;
   private usedPlaceholders: Set<string> = new Set();
   /** Case flag for unmask patterns, mirrors the mask direction ("" or "i"). */
   private readonly caseFlag: string;
@@ -325,10 +345,12 @@ export class Masker {
     this.protectedValues = protectedValues;
     this.caseFlag = caseSensitive ? "" : "i";
 
-    this.allowlistExact = new Set(allowlist);
-    this.allowlistLower = this.caseFlag === "i" && this.allowlistExact.size > 0
-      ? new Set([...this.allowlistExact].map((entry) => entry.toLowerCase()))
-      : null;
+    this.allowlistEntries = [...allowlist]
+      .filter((entry) => entry.length > 0)
+      .map((entry) => ({
+        text: entry,
+        lower: this.caseFlag === "i" ? entry.toLowerCase() : null,
+      }));
 
     for (const rule of rules) {
       if (rule.enabled === false) continue;
@@ -407,12 +429,12 @@ export class Masker {
     // An allowlist entry equal to a rule's placeholder exempts the
     // placeholder text itself (the covered-region logic already keeps
     // placeholders intact), which is almost certainly a config mistake.
-    const placeholderOwnersLower = this.allowlistLower !== null
+    const placeholderOwnersLower = this.caseFlag === "i"
       ? new Map([...placeholderOwners].map(([p, o]) => [p.toLowerCase(), o]))
       : null;
-    for (const entry of this.allowlistExact) {
+    for (const { text: entry, lower } of this.allowlistEntries) {
       const owner = placeholderOwners.get(entry)
-        ?? placeholderOwnersLower?.get(entry.toLowerCase());
+        ?? (lower !== null ? placeholderOwnersLower?.get(lower) : undefined);
       if (owner) {
         this.warnings.push(
           `Allowlist entry "${entry}" equals the placeholder of rule [${owner.ruleId}] — the entry exempts placeholder text, not a real value`
@@ -618,6 +640,40 @@ export class Masker {
   }
 
   /**
+   * Every boundary-aligned occurrence of every allowlist entry in text, as
+   * [start, end) regions. Literal substring scan (no regex): an entry
+   * exempts the exact text as written — a bare value ("10.0.0.5"), a full
+   * line ("Authorization: Bearer tok123"), or anything in between. An
+   * occurrence qualifies only when neither edge continues into a longer
+   * run of token characters (see isTokenChar): "Bearer test" does not
+   * match inside "Bearer test123", and "10.0.0.5" does not match inside
+   * "10.0.0.55" — a prefix of a longer value is a different value, which
+   * stays masked. Case-insensitive maskers scan a lowercased copy of the
+   * text; boundary checks always run on the original characters.
+   */
+  private collectAllowlistRegions(text: string): Array<[number, number]> {
+    const regions: Array<[number, number]> = [];
+    if (this.allowlistEntries.length === 0) return regions;
+    const caseInsensitive = this.caseFlag === "i";
+    const hay = caseInsensitive ? text.toLowerCase() : text;
+    for (const { text: entry, lower } of this.allowlistEntries) {
+      const needle = caseInsensitive ? lower as string : entry;
+      for (
+        let pos = hay.indexOf(needle);
+        pos !== -1;
+        pos = hay.indexOf(needle, pos + entry.length)
+      ) {
+        const end = pos + entry.length;
+        const before = pos > 0 ? text[pos - 1] : "";
+        const after = end < text.length ? text[end] : "";
+        if (isTokenChar(before) || isTokenChar(after)) continue;
+        regions.push([pos, end]);
+      }
+    }
+    return regions;
+  }
+
+  /**
    * Provenance-aware masking decision (first-seen is forever):
    *  - user/tool/system messages (discover, the default): a value is masked
    *    and registered unless it was first seen in LLM output
@@ -631,13 +687,8 @@ export class Masker {
     real: string,
     opts: MaskOptions
   ): { mask: boolean; register: boolean } {
-    // Allowlisted values are exempt from every rule; they are also kept
-    // invisible to the first-seen trackers so removing an entry masks the
-    // value again in later messages.
-    if (this.allowlistExact.has(real)
-      || (this.allowlistLower !== null && this.allowlistLower.has(real.toLowerCase()))) {
-      return { mask: false, register: false };
-    }
+    // Note: allowlist exemptions happen earlier, at the region level in
+    // collectMaskSpans(); a span reaching this point is not allowlisted.
     if (opts.discover !== false) {
       if (this.protectedValues.has(real)) return { mask: true, register: false };
       if (this.llmInventedValues.has(real)) {
@@ -659,6 +710,10 @@ export class Masker {
 
   private collectMaskSpans(text: string, opts: MaskOptions): ReplaceSpan[] {
     const claimed: Array<[number, number]> = [];
+
+    // Allowlist regions are literal text the user forbids touching; they
+    // are shielded before any rule runs (see collectAllowlistRegions).
+    const allowlistRegions = this.collectAllowlistRegions(text);
 
     // Compute which regions are already-masked content (placeholders from an
     // earlier masking pass). A replacement span is skipped only when it lies
@@ -685,6 +740,9 @@ export class Masker {
         if (overlaps(claimed, fullStart, fullEnd)) continue;
 
         if (rule.kind === "literal") {
+          // A literal match overlapping an allowlisted region is skipped
+          // whole, so the user's exact text is never rewritten.
+          if (overlaps(allowlistRegions, fullStart, fullEnd)) continue;
           const decision = this.shouldMaskSpan(rule.real, opts);
           // Provenance says leave this value as-is; the region stays free so
           // lower-priority rules can still claim it with their own decision.
@@ -702,10 +760,15 @@ export class Masker {
           });
         } else {
           const subSpans = this.extractSubSpans(m, fullStart, fullEnd);
-          const decided = subSpans.map((s) => ({
-            span: s,
-            decision: this.shouldMaskSpan(s.real, opts),
-          }));
+          // Captured parts overlapping an allowlisted region are left in
+          // place while sibling groups outside it stay maskable (e.g.
+          // `allowed=value` with "allowed" allowlisted masks only `value`).
+          const decided = subSpans
+            .filter((s) => !overlaps(allowlistRegions, s.start, s.end))
+            .map((s) => ({
+              span: s,
+              decision: this.shouldMaskSpan(s.real, opts),
+            }));
           // Claim the full match only when at least one captured part is
           // actually masked, so skipped (LLM-invented) regions stay free
           // for lower-priority rules.
