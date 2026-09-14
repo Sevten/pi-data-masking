@@ -1294,12 +1294,11 @@ export async function saveConfigOptionsUI(
   const resolvedTarget = target ?? optionsEditTarget(ctx);
   try {
     const preview = await previewConfigOptionChanges(resolvedTarget.path, options);
-    console.error("DBG preview ok");
     const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
     if (!await bridge.confirmConfigSave(
       ctx,
       candidate.config,
-      { title: "Save masking options?", warning: `Options are written to the ${resolvedTarget.scope} config (${resolvedTarget.path}).` },
+      { title: "Save masking options?", warning: `Options are written to the global config (${resolvedTarget.path}).` },
     )) return false;
     await saveConfigOptionChanges(resolvedTarget.path, options);
     bridge.notifyWarnings(ctx, candidate.warnings);

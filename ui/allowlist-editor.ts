@@ -156,7 +156,7 @@ export async function openAllowlistEditor(
     return {
       render: (width) => {
         const title = theme.fg("accent", theme.bold(
-          `ALLOWLIST · ${target.scope} · ${entries.length} value(s) never masked${caseInsensitive ? " · case-insensitive" : ""}`,
+          `ALLOWLIST · ${entries.length} value(s) never masked${caseInsensitive ? " · case-insensitive" : ""}`,
         ));
         const lines: string[] = [title];
         if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));

@@ -183,7 +183,7 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.doesNotMatch(narrow, /I\s+import/);
     assert.doesNotMatch(narrow, /X export/);
     assert.match(narrow, /Esc\s+close/);
-    assert.ok(component.render(100).some((line) => /Masking \(global\)\s+‹\s*ON\s*›/.test(line)));
+    assert.ok(component.render(100).some((line) => /Masking \s+‹\s*ON\s*›/.test(line)));
     const focusedDetails = component.render(100);
     assert.ok(focusedDetails.includes("Description: —"));
     assert.ok(focusedDetails.includes('Exact value: first-secret-value'));
@@ -222,9 +222,9 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.ok(component.render(100).join("\n").match(/persists across projects/));
     assert.ok(component.render(100).join("\n").match(/future sessions/));
     component.handleInput(INPUT.enter);
-    await waitFor(() => component.render(100).some((line) => /Masking \(global\)\s+‹\s*OFF\s*›/.test(line)));
+    await waitFor(() => component.render(100).some((line) => /Masking \s+‹\s*OFF\s*›/.test(line)));
     component.handleInput("m");
-    await waitFor(() => component.render(100).some((line) => /Masking \(global\)\s+‹\s*ON\s*›/.test(line)));
+    await waitFor(() => component.render(100).some((line) => /Masking \s+‹\s*ON\s*›/.test(line)));
     component.handleInput(INPUT.tab);
     assert.ok(component.render(100).some((line) => line.includes("TEST ACTIVE RULES · focused")));
     styleCalls.length = 0;
@@ -236,14 +236,14 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.equal(unfocusedDetails.length, 3);
     assert.ok(unfocusedDetails.every((call) => call.color === "dim"));
     component.handleInput(INPUT.tab);
-    assert.ok(component.render(100).some((line) => line.includes("SETTINGS · focused")));
+    assert.ok(component.render(100).some((line) => line.includes("SETTINGS (global) · focused")));
     // Settings zone: arrows move between rows, Tab cycles zones, Esc closes.
     component.handleInput(INPUT.down);
     component.handleInput("\u001B[A");
     component.handleInput(INPUT.tab);
     assert.ok(component.render(100).some((line) => line.includes("RULES · focused")));
     component.handleInput("\u001B[Z");
-    assert.ok(component.render(100).some((line) => line.includes("SETTINGS · focused")));
+    assert.ok(component.render(100).some((line) => line.includes("SETTINGS (global) · focused")));
     // The allowlist is the fifth settings row; arrows reach it, Enter opens the editor.
     component.handleInput(INPUT.down);
     component.handleInput(INPUT.down);

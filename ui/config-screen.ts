@@ -414,10 +414,10 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         };
         const settingsLines: string[] = [
           homeFocus === "settings"
-            ? theme.fg("accent", theme.bold("SETTINGS · focused · ←/→ or Space changes the selected row"))
-            : theme.fg("muted", "SETTINGS · Tab to focus"),
+            ? theme.fg("accent", theme.bold("SETTINGS (global) · focused"))
+            : theme.fg("muted", "SETTINGS (global) · Tab to focus"),
           settingsDivider,
-          settingRow(0, "Masking (global)", maskingEnabled,
+          settingRow(0, "Masking", maskingEnabled,
             maskingActivationPending ? "master switch · saved · activates next run" : "master switch for all masking · saved across projects and future sessions"),
           settingRow(1, "Model guidance", options.systemPromptGuidance,
             `tell the model how to work with masked values${optionsPendingSuffix}`),
