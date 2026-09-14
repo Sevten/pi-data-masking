@@ -242,14 +242,15 @@ test("configuration home toggles and reorders in place while retaining selection
     component.handleInput(INPUT.down);
     component.handleInput("\u001B[A");
     component.handleInput(INPUT.tab);
-    assert.ok(component.render(100).some((line) => line.includes("ALLOWLIST ·")));
-    component.handleInput(INPUT.tab);
     assert.ok(component.render(100).some((line) => line.includes("RULES · focused")));
     component.handleInput("\u001B[Z");
-    assert.ok(component.render(100).some((line) => line.includes("ALLOWLIST ·")));
-    component.handleInput("\u001B[Z");
     assert.ok(component.render(100).some((line) => line.includes("SETTINGS · focused")));
-    component.handleInput(INPUT.tab);
+    // The allowlist is the fifth settings row; arrows reach it, Enter opens the editor.
+    component.handleInput(INPUT.down);
+    component.handleInput(INPUT.down);
+    component.handleInput(INPUT.down);
+    component.handleInput(INPUT.down);
+    assert.ok(component.render(100).some((line) => line.includes("Allowlist") && line.includes("▶")));
     component.handleInput(INPUT.tab);
     component.handleInput(INPUT.space);
     await waitFor(() => configRules(projectPath)[0]?.enabled === false
@@ -577,11 +578,16 @@ test("allowlist zone opens the editor; staged entries persist as options", async
   const harness = await createHarness(dir, [
     // Scenario 1: /masking home screen.
     async (component) => {
-      assert.ok(component.render(100).some((line) => line.includes("ALLOWLIST · 0 value(s)"))),
-      component.handleInput("\u001B[Z"); // rules → allowlist zone
-      assert.ok(component.render(100).some((line) => line.includes("ALLOWLIST · 0 value(s) · focused")));
+      assert.ok(component.render(100).some((line) => line.includes("Allowlist")) &&
+        component.render(100).some((line) => line.includes("0 values")));
+      component.handleInput("\u001B[Z"); // rules → settings
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.down); // → Allowlist row
+      assert.ok(component.render(100).some((line) => line.includes("Allowlist") && line.includes("▶")));
       component.handleInput(INPUT.enter);
-      await waitFor(() => component.render(100).some((line) => line.includes("ALLOWLIST · 1 value(s)")));
+      // The editor overlay owns its own component; wait for the save to land.
       await waitFor(() => JSON.parse(readFileSync(projectPath, "utf8")).options?.allowlist?.[0] === "10.0.0.9");
       component.handleInput(INPUT.escape);
     },

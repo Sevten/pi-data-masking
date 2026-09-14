@@ -51,7 +51,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
   let selectedRuleKey: string | undefined;
   let showExactValues = true;
   let homeTestText = "";
-  let homeFocus: "settings" | "allowlist" | "rules" | "test" = "rules";
+  let homeFocus: "settings" | "rules" | "test" = "rules";
   type ScreenAction =
     | { kind: "batch"; changes: RuleEnabledChange[] }
     | { kind: "edit"; rule: ConfiguredMaskingRule; initialMode?: "form" | "json" }
@@ -69,7 +69,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
     /** Extra rows granted to the rules list so it fills the terminal
      *  down to the hint bar; corrected each render from the shortfall. */
     let listExtraRows = 0;
-    const settingsRows = ["masking", "guidance", "disclose", "status"] as const;
+    const settingsRows = ["masking", "guidance", "disclose", "status", "allowlist"] as const;
     let settingsIndex = 0;
     const testEditorTheme: EditorTheme = {
       borderColor: (text) => theme.fg("accent", text),
@@ -252,6 +252,20 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       refresh();
     }
 
+    /** Settings row 5 (Allowlist): Enter/Space opens the staged editor; the
+     *  save itself goes through the options pipeline with impact confirmation. */
+    function openAllowlistInPlace(): void {
+      mutationInProgress = true;
+      mutationMessage = "Opening allowlist…";
+      refresh();
+      void (async () => {
+        const saved = await openAllowlistEditor(bridge, ctx, bridge.effectiveConfig().options.allowlist ?? []);
+        mutationInProgress = false;
+        mutationMessage = saved ? "Saved · allowlist updated" : "";
+        refresh();
+      })();
+    }
+
     async function toggleRuleInPlace(selected: ConfiguredMaskingRule): Promise<void> {
       const stableKey = configuredRuleStableKey(selected);
       const enabling = !selected.enabled;
@@ -343,28 +357,16 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         const optionsPendingSuffix = bridge.activationPending()
           && (options.systemPromptGuidance !== activeOptions.systemPromptGuidance
             || options.disclosePlaceholders !== activeOptions.disclosePlaceholders
-            || options.showStatusBar !== activeOptions.showStatusBar)
+            || options.showStatusBar !== activeOptions.showStatusBar
+            || JSON.stringify(options.allowlist ?? []) !== JSON.stringify(activeOptions.allowlist ?? []))
           ? " · activates next run" : "";
-        // Allowlist zone: count + pending hint; edits stage in the editor and
-        // save as one options change, so the queued state mirrors settings rows.
-        const allowlistPending = bridge.activationPending()
-          && JSON.stringify(options.allowlist ?? []) !== JSON.stringify(activeOptions.allowlist ?? []);
-        const allowlistValues = options.allowlist ?? [];
-        const allowlistZone: string[] = [
-          homeFocus === "allowlist"
-            ? theme.fg("accent", theme.bold(`ALLOWLIST · ${allowlistValues.length} value(s) · focused · Enter to edit`))
-            : theme.fg("muted", `ALLOWLIST · ${allowlistValues.length} value(s) · Enter to edit`),
-        ];
-        if (allowlistPending) {
-          allowlistZone.push(...wrappedMaskingText(theme.fg("dim", "change queued · activates next run"), width));
-        }
         const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
         const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · ←/→ or Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
         const settingsDivider = theme.fg(homeFocus === "settings" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
         const settingRow = (index: number, label: string, value: boolean | string, description: string): string => {
           const selected = homeFocus === "settings" && index === settingsIndex;
           const marker = selected ? "▶" : " ";
-          const rawLabel = value === true ? "ON" : value === false ? "OFF" : "RULE";
+          const rawLabel = value === true ? "ON" : value === false ? "OFF" : String(value);
           // ‹ › pinned to fixed columns; centering biases extra space to the
           // right so ON and OFF share the same leading column.
           const pad = Math.max(0, 4 - rawLabel.length);
@@ -393,6 +395,8 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
               : "list literal-rule placeholders in the model guidance") + optionsPendingSuffix),
           settingRow(3, "Status line", options.showStatusBar,
             `show the masking summary on the status line at the bottom of the chat window${optionsPendingSuffix}`),
+          settingRow(4, "Allowlist", `${(options.allowlist ?? []).length} values`,
+            `exact values that are never masked · Enter to edit${optionsPendingSuffix}`),
         ];
         if (bridge.guidanceNoticePending() && !options.systemPromptGuidance) {
           settingsLines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: model guidance tells the model how to work with masked values — enable it above."), width));
@@ -414,7 +418,6 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           "",
           ...settingsLines,
           ...confirmDisableLines.length ? ["", ...confirmDisableLines] : [],
-          ...allowlistZone,
           "",
           homeFocus === "rules"
             ? theme.fg("accent", theme.bold("RULES · focused"))
@@ -436,7 +439,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         } else {
           const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
           lines.push(theme.fg("dim", truncateToWidth(header, Math.max(1, width))));
-          const reservedRows = 21 + settingsLines.length + confirmDisableLines.length + allowlistZone.length + browseHints.length;
+          const reservedRows = 21 + settingsLines.length + confirmDisableLines.length + browseHints.length;
           const rowCount = visibleRulesNow.length + 1;
           listRendered = true;
           listExtraCap = rowCount - (tui.terminal.rows - reservedRows);
@@ -529,7 +532,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         if (listRendered) {
           const shortfall = tui.terminal.rows - lines.length;
           if (shortfall !== 0) {
-            const reservedRows = 21 + settingsLines.length + confirmDisableLines.length + allowlistZone.length + browseHints.length;
+            const reservedRows = 21 + settingsLines.length + confirmDisableLines.length + browseHints.length;
             const baseHeight = tui.terminal.rows - reservedRows;
             const next = Math.min(Math.max(listExtraRows + shortfall, -(baseHeight + 3)), listExtraCap);
             if (next !== listExtraRows) {
@@ -625,7 +628,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
 
         if (homeFocus === "settings") {
           if (matchesKey(data, Key.tab)) {
-            homeFocus = "allowlist";
+            homeFocus = "rules";
             refresh();
             return;
           }
@@ -647,44 +650,18 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
             const direction: 1 | -1 = matchesKey(data, Key.left) ? -1 : 1;
             if (settingsIndex === 0) toggleMaskingInPlace();
+            else if (settingsIndex === 4) openAllowlistInPlace();
             else void toggleGuidanceInPlace(direction);
             return;
           }
           if (matchesKey(data, Key.space) || keybindings.matches(data, "tui.select.confirm")) {
             if (settingsIndex === 0) toggleMaskingInPlace();
+            else if (settingsIndex === 4) openAllowlistInPlace();
             else void toggleGuidanceInPlace();
             return;
           }
           if (matchesKey(data, "m") || data === "M") {
             toggleMaskingInPlace();
-            return;
-          }
-          if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
-            done(undefined);
-          }
-          return;
-        }
-        if (homeFocus === "allowlist") {
-          if (matchesKey(data, Key.tab)) {
-            homeFocus = "rules";
-            refresh();
-            return;
-          }
-          if (matchesKey(data, Key.shift("tab"))) {
-            homeFocus = "settings";
-            refresh();
-            return;
-          }
-          if (matchesKey(data, Key.enter) || keybindings.matches(data, "tui.select.confirm")) {
-            mutationInProgress = true;
-            mutationMessage = "Opening allowlist…";
-            refresh();
-            void (async () => {
-              const saved = await openAllowlistEditor(bridge, ctx, bridge.effectiveConfig().options.allowlist ?? []);
-              mutationInProgress = false;
-              mutationMessage = saved ? "Saved · allowlist updated" : "";
-              refresh();
-            })();
             return;
           }
           if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
@@ -698,7 +675,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           return;
         }
         if (matchesKey(data, Key.shift("tab"))) {
-          homeFocus = "allowlist";
+          homeFocus = "settings";
           refresh();
           return;
         }
