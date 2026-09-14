@@ -10,6 +10,7 @@
 
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Editor, Key, matchesKey, truncateToWidth, type EditorTheme } from "@earendil-works/pi-tui";
+import { type ConfigScope } from "../config-loader.ts";
 import {
   MASKING_SCREEN_OPTIONS,
   fillMaskingScreen,
@@ -18,9 +19,16 @@ import {
 } from "./masking-common.ts";
 import { saveConfigOptionsUI } from "./rule-editor.ts";
 
+/** A config file the allowlist editor can edit, picked by the caller. */
+export interface AllowlistTarget {
+  scope: ConfigScope;
+  path: string;
+}
+
 export async function openAllowlistEditor(
   bridge: MaskingUIBridge,
   ctx: ExtensionContext,
+  target: AllowlistTarget,
   current: readonly string[],
 ): Promise<boolean> {
   const original = [...current];
@@ -95,7 +103,7 @@ export async function openAllowlistEditor(
         done(false);
         return;
       }
-      const saved = await saveConfigOptionsUI(bridge, ctx, { allowlist: entries });
+      const saved = await saveConfigOptionsUI(bridge, ctx, { allowlist: entries }, target);
       done(saved);
     }
 
@@ -148,7 +156,7 @@ export async function openAllowlistEditor(
     return {
       render: (width) => {
         const title = theme.fg("accent", theme.bold(
-          `ALLOWLIST · ${entries.length} value(s) never masked${caseInsensitive ? " · case-insensitive" : ""}`,
+          `ALLOWLIST · ${target.scope} · ${entries.length} value(s) never masked${caseInsensitive ? " · case-insensitive" : ""}`,
         ));
         const lines: string[] = [title];
         if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));

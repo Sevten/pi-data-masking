@@ -54,7 +54,7 @@ test("persistent toggle survives a fresh read and is separate from rule config",
   }
 });
 
-test("project rules come first; options merge; project enabled wins", async () => {
+test("project rules come first; options are global-only; project enabled wins", async () => {
   const dir = makeTmp();
   try {
     const globalPath = join(dir, "global.json");
@@ -72,10 +72,10 @@ test("project rules come first; options merge; project enabled wins", async () =
     const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
     assert.deepEqual(config.rules.map((r) => r.id), ["p", "g"]);
     assert.equal(config.enabled, false);
-    assert.equal(config.options.caseSensitive, true);
+    assert.equal(config.options.caseSensitive, false, "project options are ignored; global wins");
     assert.equal(config.options.showStatusBar, true);
-    assert.equal(config.options.systemPromptGuidance, true);
-    assert.deepEqual(warnings, []);
+    assert.equal(config.options.systemPromptGuidance, false, "default, not the ignored project options");
+    assert.ok(warnings.some((w) => w.includes("project-level options are ignored")));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -784,21 +784,22 @@ test("watchConfigPaths is safe when neither file nor directory exists", () => {
 
 // ─── Allowlist ──────────────────────────────────────────────────────────────
 
-test("allowlist: global and project entries merge by union, project first", async () => {
+test("allowlist: global entries only; project allowlist is ignored", async () => {
   const dir = makeTmp();
   try {
     const globalPath = join(dir, "global.json");
     const projectPath = join(dir, "project.json");
     writeFileSync(globalPath, JSON.stringify({
       rules: [],
-      options: { allowlist: ["10.0.0.1", "10.0.0.2"] },
+      options: { allowlist: ["10.0.0.1", "10.0.0.2", "10.0.0.1"] },
     }));
     writeFileSync(projectPath, JSON.stringify({
       rules: [],
-      options: { allowlist: ["192.168.1.1", "10.0.0.2"] },
+      options: { allowlist: ["192.168.1.1"] },
     }));
-    const { config } = await loadConfigFromPaths(globalPath, projectPath, KEY);
-    assert.deepEqual(config.options.allowlist, ["192.168.1.1", "10.0.0.2", "10.0.0.1"]);
+    const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
+    assert.deepEqual(config.options.allowlist, ["10.0.0.1", "10.0.0.2"]);
+    assert.ok(warnings.some((w) => w.includes("project-level options are ignored")));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -828,13 +829,9 @@ test("allowlist: invalid entries are dropped with warnings, never fatal", async 
       rules: [],
       options: { allowlist: ["ok", "", 42, "ok"] },
     }));
-    writeFileSync(projectPath, JSON.stringify({
-      rules: [],
-      options: { allowlist: "not-an-array" },
-    }));
+    writeFileSync(projectPath, JSON.stringify({ rules: [] }));
     const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
     assert.deepEqual(config.options.allowlist, ["ok"]);
-    assert.ok(warnings.some((w) => w.includes("project options.allowlist is not an array")));
     assert.ok(warnings.some((w) => w.includes("non-string or empty entry")));
   } finally {
     rmSync(dir, { recursive: true, force: true });

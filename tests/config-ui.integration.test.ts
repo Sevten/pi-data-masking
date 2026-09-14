@@ -1,9 +1,12 @@
+import { TEST_AGENT_DIR, globalConfigPath } from "./helpers/test-agent-dir.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { visibleWidth } from "@earendil-works/pi-tui";
+
+process.on("unhandledRejection", (reason) => console.error("UNHANDLED:", reason));
 
 type Component = {
   render(width: number): string[];
@@ -12,10 +15,6 @@ type Component = {
 
 type StyleCall = { color: string; text: string };
 type Scenario = (component: Component, styleCalls: StyleCall[]) => Promise<void>;
-
-const TEST_AGENT_DIR = mkdtempSync(join(tmpdir(), "masking-ui-agent-"));
-process.env.PI_CODING_AGENT_DIR = TEST_AGENT_DIR;
-process.on("exit", () => rmSync(TEST_AGENT_DIR, { recursive: true, force: true }));
 
 const INPUT = {
   space: " ",
@@ -589,8 +588,10 @@ test("allowlist zone opens the editor; staged entries persist as options", async
       component.handleInput(INPUT.enter);
       // The editor overlay owns its own component; wait until it has fully
       // finished saving (main screen shows the saved message) before closing.
-      await waitFor(() => JSON.parse(readFileSync(projectPath, "utf8")).options?.allowlist?.[0] === "10.0.0.9");
-      await waitFor(() => component.render(100).some((line) => line.includes("Saved · allowlist updated")));
+      // Options are global-only: the entry lands in the global config.
+      await waitFor(() => existsSync(globalConfigPath)
+        && JSON.parse(readFileSync(globalConfigPath, "utf8")).options?.allowlist?.[0] === "10.0.0.9");
+      await waitFor(() => component.render(100).some((line) => line.includes("Saved · global allowlist updated")));
       component.handleInput(INPUT.escape);
     },
     // Scenario 2: allowlist editor overlay with an always-focused input line.
@@ -607,7 +608,7 @@ test("allowlist zone opens the editor; staged entries persist as options", async
   try {
     assert.equal(harness.commands.has("masking"), true);
     await harness.commands.get("masking")!.handler("", harness.ctx);
-    const saved = JSON.parse(readFileSync(projectPath, "utf8")) as { options?: { allowlist?: string[] } };
+    const saved = JSON.parse(readFileSync(globalConfigPath, "utf8")) as { options?: { allowlist?: string[] } };
     assert.deepEqual(saved.options?.allowlist, ["10.0.0.9"]);
   } finally {
     await harness.shutdown();

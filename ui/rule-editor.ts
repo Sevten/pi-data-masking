@@ -1278,13 +1278,10 @@ export async function exportConfigRules(bridge: MaskingUIBridge, ctx: ExtensionC
   }
 }
 
-/** Which config file option edits target: the project config when it
- *  exists (its options override the global file's), else the global one. */
-function optionsEditTarget(ctx: ExtensionContext): { scope: ConfigScope; path: string } | undefined {
-  const projectPath = getProjectConfigPath(ctx.cwd);
-  if (existsSync(projectPath)) return { scope: "project", path: projectPath };
-  if (existsSync(GLOBAL_CONFIG_PATH)) return { scope: "global", path: GLOBAL_CONFIG_PATH };
-  return undefined;
+/** Options are global-only settings: they always live in the global config
+ *  (created on first save if it does not exist yet). */
+function optionsEditTarget(_ctx: ExtensionContext): { scope: ConfigScope; path: string } {
+  return { scope: "global", path: GLOBAL_CONFIG_PATH };
 }
 
 /** Save options changes with the same cache-impact preflight as rule edits. */
@@ -1292,21 +1289,19 @@ export async function saveConfigOptionsUI(
   bridge: MaskingUIBridge,
   ctx: ExtensionContext,
   options: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders" | "showStatusBar" | "allowlist">>,
+  target?: { scope: ConfigScope; path: string },
 ): Promise<boolean> {
-  const target = optionsEditTarget(ctx);
-  if (!target) {
-    ctx.ui.notify("Add a rule first to create a project or global config", "warning");
-    return false;
-  }
+  const resolvedTarget = target ?? optionsEditTarget(ctx);
   try {
-    const preview = await previewConfigOptionChanges(target.path, options);
+    const preview = await previewConfigOptionChanges(resolvedTarget.path, options);
+    console.error("DBG preview ok");
     const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
     if (!await bridge.confirmConfigSave(
       ctx,
       candidate.config,
-      { title: "Save masking options?", warning: `Options are written to the ${target.scope} config (${target.path}).` },
+      { title: "Save masking options?", warning: `Options are written to the ${resolvedTarget.scope} config (${resolvedTarget.path}).` },
     )) return false;
-    await saveConfigOptionChanges(target.path, options);
+    await saveConfigOptionChanges(resolvedTarget.path, options);
     bridge.notifyWarnings(ctx, candidate.warnings);
     await bridge.reloadConfigNow(ctx);
     return true;

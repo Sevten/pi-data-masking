@@ -25,13 +25,22 @@
       "description": "Ordered rules. Earlier entries have higher priority.",
       "items": {
         "oneOf": [
-          { "$ref": "#/$defs/literalRule" },
-          { "$ref": "#/$defs/regexRule" },
-          { "$ref": "#/$defs/presetRule" }
+          {
+            "$ref": "#/$defs/literalRule"
+          },
+          {
+            "$ref": "#/$defs/regexRule"
+          },
+          {
+            "$ref": "#/$defs/presetRule"
+          }
         ]
       }
     },
-    "options": { "$ref": "#/$defs/options" }
+    "options": {
+      "$ref": "#/$defs/options",
+      "description": "Settings are global-level: options are read from the global config only; an options object in a project config is ignored with a warning."
+    }
   },
   "$defs": {
     "preserveStructure": {
@@ -41,8 +50,13 @@
       "properties": {
         "keepPrefix": {
           "oneOf": [
-            { "type": "boolean" },
-            { "type": "integer", "minimum": 0 }
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
           ],
           "description": "Keep the first structural segment, optionally capped to this many characters."
         },
@@ -59,14 +73,42 @@
       "additionalProperties": false,
       "description": "Replace one exact value, supplied directly or through an environment variable.",
       "properties": {
-        "id": { "type": "string", "minLength": 1, "description": "Unique ID within this file." },
-        "name": { "type": "string", "minLength": 1, "description": "Short human-readable rule name shown in the configuration center." },
-        "type": { "const": "literal", "description": "Optional for literal rules." },
-        "enabled": { "type": "boolean", "default": true },
-        "description": { "type": "string" },
-        "real": { "type": "string", "minLength": 1, "description": "Exact sensitive value. Prefer realFromEnv for secrets." },
-        "realFromEnv": { "type": "string", "minLength": 1, "description": "Environment variable containing the exact sensitive value." },
-        "placeholder": { "type": "string", "minLength": 1, "default": "auto" },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique ID within this file."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short human-readable rule name shown in the configuration center."
+        },
+        "type": {
+          "const": "literal",
+          "description": "Optional for literal rules."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "description": {
+          "type": "string"
+        },
+        "real": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact sensitive value. Prefer realFromEnv for secrets."
+        },
+        "realFromEnv": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Environment variable containing the exact sensitive value."
+        },
+        "placeholder": {
+          "type": "string",
+          "minLength": 1,
+          "default": "auto"
+        },
         "disclosePlaceholder": {
           "type": "boolean",
           "description": "Rule-level disclosure preference, applied when options.disclosePlaceholders is \"per-rule\"; omit or false to not disclose. While the global mode is true/false this value is paused (kept, not applied). Literal rules only."
@@ -76,16 +118,47 @@
           "default": false,
           "description": "Acknowledge the accidental tool-restoration risk of using a bundled common semantic value as a custom placeholder."
         },
-        "preserveStructure": { "$ref": "#/$defs/preserveStructure" },
-        "lowEntropy": { "type": "boolean", "default": false }
+        "preserveStructure": {
+          "$ref": "#/$defs/preserveStructure"
+        },
+        "lowEntropy": {
+          "type": "boolean",
+          "default": false
+        }
       },
-      "required": ["id"],
+      "required": [
+        "id"
+      ],
       "oneOf": [
-        { "required": ["real"], "not": { "required": ["realFromEnv"] } },
-        { "required": ["realFromEnv"], "not": { "required": ["real"] } }
+        {
+          "required": [
+            "real"
+          ],
+          "not": {
+            "required": [
+              "realFromEnv"
+            ]
+          }
+        },
+        {
+          "required": [
+            "realFromEnv"
+          ],
+          "not": {
+            "required": [
+              "real"
+            ]
+          }
+        }
       ],
       "examples": [
-        { "id": "prod_api_key", "realFromEnv": "PROD_API_KEY", "preserveStructure": { "keepPrefix": true } }
+        {
+          "id": "prod_api_key",
+          "realFromEnv": "PROD_API_KEY",
+          "preserveStructure": {
+            "keepPrefix": true
+          }
+        }
       ]
     },
     "regexRule": {
@@ -93,19 +166,55 @@
       "additionalProperties": false,
       "description": "Discover values matching a JavaScript regular expression. Fixed placeholders are not supported.",
       "properties": {
-        "id": { "type": "string", "minLength": 1, "description": "Unique ID within this file." },
-        "name": { "type": "string", "minLength": 1, "description": "Short human-readable rule name shown in the configuration center." },
-        "type": { "const": "regex" },
-        "enabled": { "type": "boolean", "default": true },
-        "description": { "type": "string" },
-        "pattern": { "type": "string", "minLength": 1, "description": "JavaScript regex source without delimiters." },
-        "flags": { "type": "string", "pattern": "^[dgimsuvy]*$", "description": "Optional JavaScript regex flags; global scanning and capture indices are added internally." },
-        "preserveStructure": { "$ref": "#/$defs/preserveStructure" },
-        "lowEntropy": { "type": "boolean", "default": false }
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique ID within this file."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short human-readable rule name shown in the configuration center."
+        },
+        "type": {
+          "const": "regex"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "description": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": "JavaScript regex source without delimiters."
+        },
+        "flags": {
+          "type": "string",
+          "pattern": "^[dgimsuvy]*$",
+          "description": "Optional JavaScript regex flags; global scanning and capture indices are added internally."
+        },
+        "preserveStructure": {
+          "$ref": "#/$defs/preserveStructure"
+        },
+        "lowEntropy": {
+          "type": "boolean",
+          "default": false
+        }
       },
-      "required": ["id", "type", "pattern"],
+      "required": [
+        "id",
+        "type",
+        "pattern"
+      ],
       "examples": [
-        { "id": "custom_token", "type": "regex", "pattern": "\\btoken_[A-Za-z0-9]{24}\\b" }
+        {
+          "id": "custom_token",
+          "type": "regex",
+          "pattern": "\\btoken_[A-Za-z0-9]{24}\\b"
+        }
       ]
     },
     "presetRule": {
@@ -113,8 +222,16 @@
       "additionalProperties": false,
       "description": "Reference a tested built-in regex preset by name.",
       "properties": {
-        "id": { "type": "string", "minLength": 1, "description": "Unique ID within this file." },
-        "name": { "type": "string", "minLength": 1, "description": "Short human-readable rule name shown in the configuration center." },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique ID within this file."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short human-readable rule name shown in the configuration center."
+        },
         "preset": {
           "enum": [
             "github-pat",
@@ -130,37 +247,74 @@
             "public-ipv4"
           ]
         },
-        "enabled": { "type": "boolean", "default": true },
-        "description": { "type": "string", "description": "Optional override for the built-in description." },
-        "preserveStructure": { "$ref": "#/$defs/preserveStructure" },
-        "lowEntropy": { "type": "boolean", "default": false }
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional override for the built-in description."
+        },
+        "preserveStructure": {
+          "$ref": "#/$defs/preserveStructure"
+        },
+        "lowEntropy": {
+          "type": "boolean",
+          "default": false
+        }
       },
-      "required": ["id", "preset"],
+      "required": [
+        "id",
+        "preset"
+      ],
       "examples": [
-        { "id": "github_pat", "preset": "github-pat", "enabled": true }
+        {
+          "id": "github_pat",
+          "preset": "github-pat",
+          "enabled": true
+        }
       ]
     },
     "options": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "caseSensitive": { "type": "boolean", "default": true },
-        "showStatusBar": { "type": "boolean", "default": true },
+        "caseSensitive": {
+          "type": "boolean",
+          "default": true
+        },
+        "showStatusBar": {
+          "type": "boolean",
+          "default": true
+        },
         "systemPromptGuidance": {
           "type": "boolean",
           "default": false,
           "description": "Append model guidance to the system prompt establishing the behavioral contract for masked values: exact full-string comparison, verbatim passthrough into tool calls, transformations via tools, and no investigation of inconsistencies (ask the user instead). Cache-impacting when toggled mid-session."
         },
         "disclosePlaceholders": {
-          "type": ["boolean", "string"],
-          "enum": [true, false, "per-rule"],
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "enum": [
+            true,
+            false,
+            "per-rule"
+          ],
           "default": false,
           "description": "Placeholder-disclosure master mode: true discloses all eligible literal rules; false discloses none; \"per-rule\" lets each rule's disclosePlaceholder decide (rules without it are not disclosed). In true/false mode rule-level values are paused, not lost. Requires systemPromptGuidance (auto-enabled otherwise). Regex placeholders are never listed."
         },
-        "persistHistory": { "type": "boolean", "default": true },
+        "persistHistory": {
+          "type": "boolean",
+          "default": true
+        },
         "allowlist": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "default": [],
           "description": "Exact literal values that are never masked, regardless of which rule would otherwise match them. Matching follows caseSensitive. Global and project lists merge by union (project entries first)."
         }
@@ -173,8 +327,15 @@
       "version": 1,
       "enabled": true,
       "rules": [
-        { "id": "github_pat", "preset": "github-pat", "enabled": true },
-        { "id": "prod_api_key", "realFromEnv": "PROD_API_KEY" }
+        {
+          "id": "github_pat",
+          "preset": "github-pat",
+          "enabled": true
+        },
+        {
+          "id": "prod_api_key",
+          "realFromEnv": "PROD_API_KEY"
+        }
       ]
     }
   ]

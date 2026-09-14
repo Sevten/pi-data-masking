@@ -332,7 +332,8 @@ export async function savePersistentToggle(
 /**
  * Merge strategy:
  *  - rules: project-level rules first (higher priority), global rules appended after
- *  - options: project-level fields override global fields of the same name
+ *  - options: global only. Settings are user preferences, not project data;
+ *    project-level options are ignored with a warning at load time.
  *  - enabled: project-level value wins if explicitly set, otherwise falls back to global
  */
 function mergeConfigs(
@@ -347,44 +348,35 @@ function mergeConfigs(
   const options: MaskingOptions = {
     ...base.options,
     ...(global?.options ?? {}),
-    ...(project?.options ?? {}),
   };
   return { enabled, rules: [], configuredRules: [], options };
 }
 
 /**
- * Allowlist union merge with per-entry validation. Project entries come
- * first (they are the more specific intent); exact duplicates are dropped;
- * non-string / empty entries are dropped with a warning. An array of the
- * wrong type disables that file's contribution entirely rather than
- * partially, so the user sees the full effect of fixing it.
+ * Allowlist validation (global config only). Exact duplicates are dropped;
+ * non-string / empty entries are dropped with a warning.
  */
 function sanitizeAllowlist(
-  projectRaw: unknown,
   globalRaw: unknown,
   warnings: string[],
 ): string[] {
-  function side(raw: unknown, scope: ConfigScope): string[] {
-    if (raw === undefined) return [];
-    if (!Array.isArray(raw)) {
-      warnings.push(`${scope} options.allowlist is not an array; its entries were ignored`);
-      return [];
-    }
-    const entries: string[] = [];
-    const seen = new Set<string>();
-    for (const entry of raw) {
-      if (typeof entry !== "string" || entry.length === 0) {
-        warnings.push(`${scope} options.allowlist contains a non-string or empty entry; it was dropped`);
-        continue;
-      }
-      if (seen.has(entry)) continue;
-      seen.add(entry);
-      entries.push(entry);
-    }
-    return entries;
+  if (globalRaw === undefined) return [];
+  if (!Array.isArray(globalRaw)) {
+    warnings.push("options.allowlist is not an array; its entries were ignored");
+    return [];
   }
-  const result = [...side(projectRaw, "project"), ...side(globalRaw, "global")];
-  return [...new Set(result)];
+  const entries: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of globalRaw) {
+    if (typeof entry !== "string" || entry.length === 0) {
+      warnings.push("options.allowlist contains a non-string or empty entry; it was dropped");
+      continue;
+    }
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    entries.push(entry);
+  }
+  return entries;
 }
 
 // ─── Validation ────────────────────────────────────────────────────────────
@@ -890,10 +882,19 @@ function buildLoadResult(
   const config = mergeConfigs(globalData, projectData);
   const configuredRules: ConfiguredMaskingRule[] = [];
 
-  // Allowlist: union merge (project first) with per-entry validation; the
-  // scalar spread in mergeConfigs is overridden by the merged result.
+  // Options are global-only: a project config carrying an options object is
+  // ignored with a warning so stale per-project settings never surprise.
+  if (projectData?.options !== undefined
+    && typeof projectData.options === "object"
+    && !Array.isArray(projectData.options)
+    && Object.keys(projectData.options).length > 0) {
+    warnings.push(
+      `project-level options are ignored; settings live in the global config (${globalPath})`,
+    );
+  }
+
+  // Allowlist: global entries only, with per-entry validation.
   config.options.allowlist = sanitizeAllowlist(
-    (projectData?.options as Record<string, unknown> | undefined)?.allowlist,
     (globalData?.options as Record<string, unknown> | undefined)?.allowlist,
     warnings,
   );
@@ -1057,8 +1058,13 @@ async function publishConfigWrites(
       await chmod(item.tempPath, 0o600);
     }
     for (const item of prepared) {
-      await link(item.path, item.backupPath);
-      backups.add(item.backupPath);
+      try {
+        await link(item.path, item.backupPath);
+        backups.add(item.backupPath);
+      } catch (err) {
+        // A brand-new config file has nothing to back up.
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
     }
     for (let index = 0; index < prepared.length; index++) {
       const item = prepared[index]!;
@@ -1095,12 +1101,21 @@ async function publishConfigWrites(
   }));
 }
 
-/** Prepare options changes in memory without writing any file. */
+/** Prepare options changes in memory without writing any file. When the
+ *  target file does not exist yet (settings are global-only, so the global
+ *  config may not exist while a project has rules), start from a minimal
+ *  skeleton. */
 export async function previewConfigOptionChanges(
   path: string,
   options: Partial<MaskingOptions>,
 ): Promise<ConfigChangePreview> {
-  const data = await readRawConfigFile(path);
+  let data: RawConfigFile;
+  try {
+    data = await readRawConfigFile(path);
+  } catch (err) {
+    if (!(err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT")) throw err;
+    data = { rules: [] } as RawConfigFile;
+  }
   data.options = { ...(data.options as RawConfigOptions | undefined), ...options };
   return { warnings: [], sources: [{ path, data }] };
 }

@@ -259,9 +259,12 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       mutationMessage = "Opening allowlist…";
       refresh();
       void (async () => {
-        const saved = await openAllowlistEditor(bridge, ctx, bridge.effectiveConfig().options.allowlist ?? []);
+        // Options are global-only: always edit the global config's own
+        // allowlist (the file is created on save if it does not exist yet).
+        const target = { scope: "global" as const, path: GLOBAL_CONFIG_PATH };
+        const saved = await openAllowlistEditor(bridge, ctx, target, bridge.effectiveConfig().options.allowlist ?? []);
         mutationInProgress = false;
-        mutationMessage = saved ? "Saved · allowlist updated" : "";
+        mutationMessage = saved ? "Saved · global allowlist updated" : "";
         refresh();
       })();
     }
