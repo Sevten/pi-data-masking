@@ -615,3 +615,41 @@ test("allowlist zone opens the editor; staged entries persist as options", async
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("stale project options are offered for migration into the global config", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  // Other tests in this process may have created the shared global config.
+  rmSync(globalConfigPath, { force: true });
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  writeFileSync(projectPath, JSON.stringify({
+    rules: [{ id: "ip", preset: "private-ipv4" }],
+    options: { caseSensitive: false, allowlist: ["10.0.0.5"] },
+  }));
+  const harness = await createHarness(dir, [
+    // Scenario 1: the migration dialog; Enter picks "Move to global config".
+    async (component) => {
+      await waitFor(() => component.render(100).some((line) => line.includes("Project-level settings detected")));
+      const dialog = component.render(100).join("\n");
+      assert.ok(dialog.includes("caseSensitive") && dialog.includes("allowlist"));
+      component.handleInput(INPUT.enter);
+    },
+    // Scenario 2: the main screen; leave it via Esc so the handler resolves.
+    async (component) => {
+      await waitFor(() => component.render(100).some((line) => line.includes("Migrated to global config: caseSensitive, allowlist")));
+      component.handleInput(INPUT.escape);
+    },
+  ]);
+  try {
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    const globalData = JSON.parse(readFileSync(globalConfigPath, "utf8"));
+    assert.equal(globalData.options.caseSensitive, false);
+    assert.deepEqual(globalData.options.allowlist, ["10.0.0.5"]);
+    const projectData = JSON.parse(readFileSync(projectPath, "utf8"));
+    assert.equal(projectData.options, undefined);
+    assert.deepEqual(projectData.rules.map((r: { id: string }) => r.id), ["ip"]);
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

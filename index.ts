@@ -67,6 +67,7 @@ import {
   loadPersistentToggle,
   savePersistentToggle,
   watchConfigs,
+  migrateProjectOptionsToGlobalFiles,
 } from "./config-loader.ts";
 import type {
   ConfigSourceSnapshot,
@@ -1325,6 +1326,21 @@ export default async function (pi: ExtensionAPI) {
     confirmConfigSave,
     reloadConfigNow,
     notifyWarnings,
+    staleProjectOptions: () => {
+      const options = configSnapshot?.project?.options as Record<string, unknown> | undefined;
+      if (!options || typeof options !== "object" || Array.isArray(options)) return [];
+      return Object.keys(options);
+    },
+    migrateProjectOptionsToGlobal: async (ctx) => {
+      try {
+        const fields = await migrateProjectOptionsToGlobalFiles(getProjectConfigPath(ctx.cwd), GLOBAL_CONFIG_PATH);
+        if (fields) await reloadConfigNow(ctx);
+        return fields;
+      } catch (err) {
+        notifyWarnings(ctx, [(err as Error).message]);
+        return undefined;
+      }
+    },
   };
 
   pi.registerCommand("masking", {

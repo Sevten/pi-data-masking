@@ -259,4 +259,12 @@ export interface MaskingUIBridge {
   ): Promise<boolean>;
   reloadConfigNow(ctx: ExtensionContext): Promise<void>;
   notifyWarnings(ctx: ExtensionContext, warnings: string[]): void;
+  /** Field names of an options object present in the project config
+   *  (ignored: settings are global-level). Empty when there is none. */
+  staleProjectOptions(): string[];
+  /** Move the ignored project options into the global config (scalars
+   *  overwrite, allowlist unions) and drop the options object from the
+   *  project config. Returns the migrated field names, or undefined when
+   *  there was nothing to migrate or the write failed. */
+  migrateProjectOptionsToGlobal(ctx: ExtensionContext): Promise<string[] | undefined>;
 }

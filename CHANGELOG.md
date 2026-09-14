@@ -4,7 +4,7 @@
 
 ### Added
 
-- Global allowlist: exact literal values listed under `options.allowlist` are never masked, even when a rule matches them. Matching follows the case-sensitivity option. Manage it in `/masking` (Settings → Allowlist, Enter opens a list editor: type and Enter adds, Delete removes, F2 edits the list as JSON) or edit the config file directly; options (including the allowlist) are global-level — a project config's options object is ignored with a warning; changes are cache-impacting and confirm before saving, and the `/masking` test preview reports allowlisted values as left unmasked.
+- Global allowlist: exact literal values listed under `options.allowlist` are never masked, even when a rule matches them. Matching follows the case-sensitivity option. Manage it in `/masking` (Settings → Allowlist, Enter opens a list editor: type and Enter adds, Delete removes, F2 edits the list as JSON) or edit the config file directly; options (including the allowlist) are global-level — a project config's options object is ignored with a warning, and /masking offers a one-time dialog to move those values into the global config (scalars overwrite, allowlist entries merge in) and drop the stale object from the project config; changes are cache-impacting and confirm before saving, and the `/masking` test preview reports allowlisted values as left unmasked.
 
 ### Changed
 

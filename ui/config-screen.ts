@@ -45,6 +45,23 @@ import {
 } from "./rule-editor.ts";
 
 export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionContext): Promise<void> {
+  // One-time migration offer: a project config carrying an options object
+  // (settings are global-level now) is offered to move into the global
+  // config on first /masking visit in that project.
+  let migrationNote = "";
+  const staleFields = bridge.staleProjectOptions();
+  if (staleFields.length > 0) {
+    const choice = await selectMaskingOption(
+      ctx,
+      "Project-level settings detected",
+      ["Move to global config", "Leave as is"],
+      `options (${staleFields.join(", ")}) in the project config are ignored — settings are global-level now. Move the values to the global config?`,
+    );
+    if (choice === "Move to global config") {
+      const moved = await bridge.migrateProjectOptionsToGlobal(ctx);
+      migrationNote = moved ? `Migrated to global config: ${moved.join(", ")}` : "";
+    }
+  }
   const filters = ["all", "enabled", "disabled", "project", "global", "literal", "regex", "preset"] as const;
   let filterIndex = 0;
   let searchQuery = "";
@@ -65,7 +82,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
     let rulePageSize = 1;
     let searchMode = false;
     let mutationInProgress = false;
-    let mutationMessage = "";
+    let mutationMessage = migrationNote;
     /** Extra rows granted to the rules list so it fills the terminal
      *  down to the hint bar; corrected each render from the shortfall. */
     let listExtraRows = 0;

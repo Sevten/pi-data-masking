@@ -1121,6 +1121,49 @@ export async function previewConfigOptionChanges(
   return { warnings: [], sources: [{ path, data }] };
 }
 
+/**
+ * Move the ignored project-level options into the global config, then drop
+ * the options object from the project config. Scalars overwrite the global
+ * value; `allowlist` entries are appended (union, deduplicated). Both files
+ * are published atomically as one change. Returns the migrated field names,
+ * or undefined when the project config has no options object.
+ */
+export async function migrateProjectOptionsToGlobalFiles(
+  projectPath: string,
+  globalPath: string,
+): Promise<string[] | undefined> {
+  const projectData = await readRawConfigFile(projectPath);
+  const projectOptions = projectData.options as RawConfigOptions | undefined;
+  if (!projectOptions || typeof projectOptions !== "object"
+    || Array.isArray(projectOptions) || Object.keys(projectOptions).length === 0) {
+    return undefined;
+  }
+  let globalData: RawConfigFile;
+  try {
+    globalData = await readRawConfigFile(globalPath);
+  } catch (err) {
+    if (!(err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT")) throw err;
+    globalData = { rules: [] } as RawConfigFile;
+  }
+  const globalOptions = { ...((globalData.options ?? {}) as RawConfigOptions) };
+  for (const [key, value] of Object.entries(projectOptions)) {
+    if (key === "allowlist") {
+      const existing = Array.isArray(globalOptions.allowlist) ? globalOptions.allowlist as string[] : [];
+      const incoming = Array.isArray(value) ? value as string[] : [];
+      globalOptions.allowlist = [...new Set([...existing, ...incoming])];
+    } else {
+      globalOptions[key] = value;
+    }
+  }
+  globalData.options = globalOptions;
+  delete projectData.options;
+  await publishConfigWrites([
+    { path: globalPath, content: `${JSON.stringify(globalData, null, 2)}\n` },
+    { path: projectPath, content: `${JSON.stringify(projectData, null, 2)}\n` },
+  ]);
+  return Object.keys(projectOptions);
+}
+
 /** Atomically persist options changes to one config file. */
 export async function saveConfigOptionChanges(
   path: string,
