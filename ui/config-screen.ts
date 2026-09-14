@@ -543,18 +543,35 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           if (showTestPanel) {
             testEditor.focused = homeFocus === "test";
             testEditor.borderColor = (text) => theme.fg(homeFocus === "test" ? "accent" : "dim", text);
+            const preview = previewActiveRules(bridge, testEditor.getExpandedText());
+            // Empty input folds the "enter text" hint into the title line so the
+            // preview rows stay free for actual results.
+            const emptyHint = preview.text === testEditor.getExpandedText() && !testEditor.getExpandedText()
+              ? " · Enter text to preview locally"
+              : "";
             const testTitle = homeFocus === "test"
-              ? theme.fg("accent", theme.bold(`TEST ACTIVE RULES · focused${bridge.config().enabled ? "" : " · masking is off; preview only"}`))
-              : theme.fg("muted", `TEST ACTIVE RULES · Tab to focus${bridge.config().enabled ? "" : " · masking is off; preview only"}`);
+              ? theme.fg("accent", theme.bold(`TEST ACTIVE RULES · focused${emptyHint}${bridge.config().enabled ? "" : " · masking is off; preview only"}`))
+              : theme.fg("muted", `TEST ACTIVE RULES · Tab to focus${emptyHint}${bridge.config().enabled ? "" : " · masking is off; preview only"}`);
             lines.push(...wrappedMaskingText(testTitle, width));
             lines.push(...testEditor.render(width));
-            const preview = previewActiveRules(bridge, testEditor.getExpandedText());
+            // Emit a fixed-height preview block (status + matched rule on one
+            // line, then 1 text line) so hits never grow the panel and shift
+            // the hints below.
             const status = preview.count > 0 ? `${preview.count} value(s) masked` : preview.attribution;
-            lines.push(theme.fg(preview.count > 0 ? "accent" : "muted", `Preview: ${status}`));
-            for (const line of preview.text.split("\n").slice(0, 2)) {
-              if (line) lines.push(line);
+            const matched = preview.count > 0 ? `Matched: ${preview.attribution}` : "";
+            const statusLine = `Preview: ${status}`;
+            lines.push(testEditor.getExpandedText()
+              ? truncateToWidth(
+                  (testEditor.getExpandedText()
+                    ? theme.fg(preview.count > 0 ? "accent" : "muted", statusLine)
+                    : "") + (matched ? `  ${theme.fg("muted", matched)}` : ""),
+                  Math.max(1, width),
+                )
+              : "");
+            const previewTextLines = preview.text.split("\n").slice(0, 1);
+            for (let index = 0; index < 1; index++) {
+              lines.push(previewTextLines[index] ?? "");
             }
-            if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
           } else {
             lines.push(theme.fg("muted", "TEST ACTIVE RULES · Tab to focus"));
           }

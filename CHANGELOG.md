@@ -4,19 +4,20 @@
 
 ### Added
 
-- Global allowlist: literal text listed under `options.allowlist` is never masked — every boundary-aligned occurrence of each entry stays untouched even when a rule would match inside it, so an entry can exempt a bare value ("10.0.0.5") or a whole line ("Authorization: Bearer tok123") containing one. A match continuing into a longer token run does not count ("Bearer test" never exempts "Bearer test123"). Matching follows the case-sensitivity option. Manage it in `/masking` (Settings → Allowlist, Enter opens a list editor: type and Enter adds, Delete removes, F2 edits the list as JSON) or edit the config file directly; options (including the allowlist) are global-level — a project config's options object is ignored with a warning, and /masking offers a one-time dialog to move those values into the global config (scalars overwrite, allowlist entries merge in) and drop the stale object from the project config; changes are cache-impacting and confirm before saving, and the `/masking` test preview reports allowlisted values as left unmasked.
+- Global allowlist: list values or whole lines under `/masking` → Settings → Allowlist (or `options.allowlist` in the global config) and they stay unmasked even when a rule would otherwise match them — handy for keeping a specific IP address visible while a rule masks IP addresses in general; matching respects the case-sensitivity option.
 
 ### Changed
 
-- Placeholder disclosure is now a three-position master switch: on (disclose all literal rules), off (disclose none), or per-rule (each rule's Disclose setting decides, default off). Note for upgraders: rule-level `disclosePlaceholder` values now apply only in per-rule mode — previously they overrode the global switch. Existing boolean configs keep their meaning, and `systemPromptGuidance` still auto-enables when disclosure needs it.
-- Rule-level Disclose is a plain OFF/ON toggle (default off), replacing the inherit/always/never selector; `/masking` always shows the effective value with the paused rule setting dimmed.
-- `/masking` polish: settings rows and rule toggles share ‹ › selector cells with ←/→ support (Disclose cycles off → on → RULE), the global switch row is labeled "Masking (global)", and the read-only WAIT state keeps square brackets.
-- Masking config saves and hot reloads no longer post explanations into the chat conversation; the pending state is shown on the masking status line and inside the `/masking` screen with an "activates next run" hint.
+- `/masking` now always edits the global config's settings (previously it edited whichever config file carried an `options` object): an `options` object still present in a project config is ignored, and `/masking` asks once whether to migrate its values into the global config.
+- Placeholder disclosure redesigned around a three-position master switch: on (disclose all literal rules), off (none), or per-rule (default; each rule's Disclose toggle decides). The rule-level setting is now a plain OFF/ON toggle (was inherit/always/never); existing boolean configs keep their meaning, and `systemPromptGuidance` still auto-enables when needed.
+- Masking config saves and hot reloads no longer post explanations into the chat conversation.
+- The masking UI now reflects the next-to-run config immediately: pending changes show on the masking status line and inside `/masking` with an "activates next run" hint.
+- `/masking` visual polish: consistent ‹ › toggle cells for settings rows and rules, ←/→ support, and a clearer "Masking (global)" label.
 
 ### Fixed
 
-- `/masking` toggles (settings rows and rule enable/disable) now reflect the next-to-run config immediately after saving, even mid-run, with an "activates next run" hint on each queued row; repeated toggles during a run no longer swallow the second change.
 - Disabled rules no longer produce quality warnings at load time; advisory checks re-fire when the rule is re-enabled. Structural problems (invalid or duplicate rules) are still reported.
+- `/masking` test panel no longer jumps when a test input hits rules; results fit on a single line and the empty-state hint moved into the panel title.
 
 ## [0.7.0] - 2026-09-12
 
