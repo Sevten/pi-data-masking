@@ -124,7 +124,6 @@ export function previewWithRules(
   if (rules.length === 0) return { text: input, count: 0, attribution: "No valid rules available for this preview", warnings };
   const tempMasker = new Masker(
     rules,
-    bridge.config().options.caseSensitive,
     bridge.sessionKey(),
     new Map(),
     new Set(),
@@ -142,11 +141,10 @@ export function previewWithRules(
     // Surface allowlisted values in the preview: they match rules but stay
     // unmasked by design, so "No values matched" would be misleading.
     const allowlist = bridge.config().options.allowlist ?? [];
-    const caseInsensitive = !bridge.config().options.caseSensitive;
-    const present = allowlist.filter((entry) => entry
-      && (caseInsensitive
-        ? input.toLowerCase().includes(entry.toLowerCase())
-        : input.includes(entry)));
+    const present = allowlist.filter((entry) => entry.text.length > 0
+      && (entry.caseSensitive === false
+        ? input.toLowerCase().includes(entry.text.toLowerCase())
+        : input.includes(entry.text)));
     attribution = present.length > 0
       ? `${present.length} allowlisted value(s) left unmasked`
       : "No values matched";
@@ -229,7 +227,7 @@ export async function addConfigRule(
   }
 
   type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
-  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "json" | "test";
+  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "json" | "test";
   const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
   let selectedSource: (typeof sources)[number] = sources.find((source) => source.scope === "global")!;
   let selectedType: BuilderType | undefined;
@@ -354,6 +352,7 @@ export async function addConfigRule(
     // Disclosure preference for literal rules: off is the default; the
     // global on/off master switch pauses it anyway.
     let discloseOn = editing && editing.initial.disclosePlaceholder === true;
+    let caseSensitiveOn = editing ? editing.initial.caseSensitive !== false : true;
     const discloseGlobalMode = bridge.config().options.disclosePlaceholders;
     let mode: "form" | "json" = options.initialMode ?? "form";
     let focusIndex = !editing && mode === "form" ? 2 : 0;
@@ -449,16 +448,18 @@ export async function addConfigRule(
     function formFields(): BuilderField[] {
       const common: BuilderField[] = [];
       common.push("type", "scope", "name", "description");
+      // Case sensitivity is a literal-rule field: regex rules control it
+      // through their own flags.
       if (currentType() === "Built-in preset template" || currentType() === "Custom regex") common.push("pattern", "flags");
       else if (currentType() === "Literal from environment") {
         common.push("env", "replacement");
         if (replacementIndex === 1) common.push("placeholder");
-        common.push("disclose");
+        common.push("disclose", "case");
       }
       else {
         common.push("real", "replacement");
         if (replacementIndex === 1) common.push("placeholder");
-        common.push("disclose");
+        common.push("disclose", "case");
       }
       common.push("test");
       return common;
@@ -526,6 +527,7 @@ export async function addConfigRule(
             : {}),
         };
         if (!flags) delete regexRule.flags;
+        delete regexRule.caseSensitive;
         delete regexRule.real;
         delete regexRule.realFromEnv;
         delete regexRule.placeholder;
@@ -542,6 +544,8 @@ export async function addConfigRule(
         delete envRule.type;
         delete envRule.disclosePlaceholder;
         if (discloseOn) envRule.disclosePlaceholder = true;
+        if (!caseSensitiveOn) envRule.caseSensitive = false;
+        else delete envRule.caseSensitive;
         delete envRule.pattern;
         delete envRule.pattern;
         delete envRule.flags;
@@ -556,6 +560,8 @@ export async function addConfigRule(
       };
       delete literalRule.disclosePlaceholder;
       if (discloseOn) literalRule.disclosePlaceholder = true;
+      if (!caseSensitiveOn) literalRule.caseSensitive = false;
+      else delete literalRule.caseSensitive;
       delete literalRule.pattern;
       delete literalRule.flags;
       delete literalRule.realFromEnv;
@@ -610,6 +616,7 @@ export async function addConfigRule(
       builderType = isRegex ? "Custom regex" : hasEnv ? "Literal from environment" : "Exact literal value";
       advancedFields = { ...rule };
       discloseOn = rule.disclosePlaceholder === true;
+      caseSensitiveOn = rule.caseSensitive !== false;
       explicitId = typeof rule.id === "string" ? rule.id : undefined;
       editors.name.setText(typeof rule.name === "string" ? rule.name : "");
       editors.description.setText(typeof rule.description === "string" ? rule.description : "");
@@ -888,11 +895,15 @@ export async function addConfigRule(
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, disclosePrefix);
+            renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
+              "←/→ or Space toggles case-sensitive matching for this rule");
           } else {
             renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, disclosePrefix);
+            renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
+              "←/→ or Space toggles case-sensitive matching for this rule");
           }
           const fixedFieldRowCount = 8;
           while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
@@ -1037,6 +1048,8 @@ export async function addConfigRule(
             focusIndex = Math.min(focusIndex, fields().length - 1);
           } else if (field === "disclose") {
             discloseOn = !discloseOn;
+          } else if (field === "case") {
+            caseSensitiveOn = !caseSensitiveOn;
           } else {
             editorForField(field)?.handleInput(data);
             return;
@@ -1137,6 +1150,7 @@ export async function showRuleConfigurationHelp(ctx: ExtensionContext): Promise<
         "Without capture groups the whole match is masked; with groups, only captured portions are masked.");
       section("Keyboard shortcuts",
         "↑/↓ select · PgUp/PgDn page · Home/End first/add · Enter edit/add · F2 JSON · Space rule on/off · M global masking on/off",
+        "Case field: per-rule case-sensitive matching; regex rules with explicit flags keep their own flags.",
         "R show/hide exact values · F filter · / search · Ctrl+↑/↓ reorder · A add · D/Delete remove",
         "Tab test area · B batch · I import · X export · H/Enter/Esc close help");
       lines.push(...wrappedMaskingText(theme.fg("muted", "Rules run from top to bottom. Prefer narrow patterns and use the embedded test area before relying on them."), width));

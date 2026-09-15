@@ -65,7 +65,7 @@ const messages = buildConversation();
 
 // Cold fill through the real engine (also populates dynamicMap state).
 const fillStart = performance.now();
-const engine = new Masker(rules, true, KEY);
+const engine = new Masker(rules, KEY);
 runUncached(messages, engine);
 const fillMs = performance.now() - fillStart;
 

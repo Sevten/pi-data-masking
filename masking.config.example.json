@@ -17,7 +17,9 @@
       "enabled": true,
       "description": "Production API key read without storing its value in this file",
       "realFromEnv": "PROD_API_KEY",
-      "preserveStructure": { "keepPrefix": true }
+      "preserveStructure": {
+        "keepPrefix": true
+      }
     },
     {
       "id": "application-token",
@@ -35,10 +37,16 @@
     }
   ],
   "options": {
-    "caseSensitive": true,
     "showStatusBar": true,
     "systemPromptGuidance": false,
     "disclosePlaceholders": false,
-    "persistHistory": true
+    "persistHistory": true,
+    "allowlist": [
+      "10.0.0.5",
+      {
+        "text": "authorization: bearer example",
+        "caseSensitive": false
+      }
+    ]
   }
 }

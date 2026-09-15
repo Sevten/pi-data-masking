@@ -32,7 +32,7 @@
  *    may pass results through other extensions or provider adapters that
  *    mutate objects; those writes must never corrupt a future cache hit.
  *  - invalidate() must be called whenever masker inputs change: rebuild()
- *    (rules, caseSensitive), global masking-state changes (which bypass
+ *    (rules, per-rule case flags), global masking-state changes (which bypass
  *    rebuild()), and
  *    session_start (fresh sessionKey + provenance sets). Clearing is always
  *    safe — misses merely refill.

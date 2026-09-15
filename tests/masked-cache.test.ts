@@ -113,7 +113,7 @@ test("masking stays deterministic while the dynamic map and provenance sets grow
   const llmInventedValues = new Set<string>();
   const protectedValues = new Set<string>();
   const rules: MaskingRule[] = [{ id: "phone", type: "regex", pattern: "\\d{3}-\\d{4}" }];
-  const masker = new Masker(rules, true, KEY, dynamicMap, llmInventedValues, protectedValues);
+  const masker = new Masker(rules, KEY, dynamicMap, llmInventedValues, protectedValues);
 
   const historyMessage = { role: "user", content: "call 555-1234 now" };
   const first = masker.maskValue(historyMessage, { discover: true });

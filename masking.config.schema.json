@@ -124,6 +124,11 @@
         "lowEntropy": {
           "type": "boolean",
           "default": false
+        },
+        "caseSensitive": {
+          "type": "boolean",
+          "default": true,
+          "description": "Per-rule case-sensitivity switch (literal rules only; regex rules use flags). Omitted or true = case-sensitive matching; false = case-insensitive."
         }
       },
       "required": [
@@ -279,10 +284,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "caseSensitive": {
-          "type": "boolean",
-          "default": true
-        },
         "showStatusBar": {
           "type": "boolean",
           "default": true
@@ -311,12 +312,34 @@
         },
         "allowlist": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
           "default": [],
-          "description": "Literal text that is never masked: every boundary-aligned occurrence of each entry is left untouched, even when a rule would match inside it — so an entry may be a bare value (\"10.0.0.5\") or a whole line (\"Authorization: Bearer tok123\") containing one. A match continuing into a longer token run does not count (\"Bearer test\" never exempts \"Bearer test123\"). Matching follows caseSensitive. Global and project lists merge by union (project entries first)."
+          "description": "Literal text that is never masked: every boundary-aligned occurrence of each entry is left untouched, even when a rule would match inside it — so an entry may be a bare value (\"10.0.0.5\") or a whole line (\"Authorization: Bearer tok123\") containing one. A match continuing into a longer token run does not count (\"Bearer test\" never exempts \"Bearer test123\"). Each entry carries its own case-sensitivity flag (bare strings are case-sensitive). Global and project lists merge by union (project entries first).",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "caseSensitive": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Omitted or true = case-sensitive matching; false = case-insensitive."
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            ]
+          }
         }
       }
     }

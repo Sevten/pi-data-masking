@@ -62,20 +62,20 @@ test("project rules come first; options are global-only; project enabled wins", 
     writeFileSync(globalPath, JSON.stringify({
       enabled: true,
       rules: [{ id: "g", real: "g.example.com", placeholder: "g.example.net" }],
-      options: { caseSensitive: false, showStatusBar: true },
+      options: { showStatusBar: false, persistHistory: true },
     }));
     writeFileSync(projectPath, JSON.stringify({
       enabled: false,
       rules: [{ id: "p", real: "p.example.com", placeholder: "p.example.net" }],
-      options: { caseSensitive: true, systemPromptGuidance: true },
+      options: { showStatusBar: true, systemPromptGuidance: true },
     }));
     const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
     assert.deepEqual(config.rules.map((r) => r.id), ["p", "g"]);
     assert.equal(config.enabled, false);
-    assert.equal(config.options.caseSensitive, false, "project options are ignored; global wins");
-    assert.equal(config.options.showStatusBar, true);
+    assert.equal(config.options.showStatusBar, false, "project options are ignored; global wins");
+    assert.equal(config.options.persistHistory, true);
     assert.equal(config.options.systemPromptGuidance, false, "default, not the ignored project options");
-    assert.ok(warnings.some((w) => w.includes('project-level options are ignored (caseSensitive')));
+    assert.ok(warnings.some((w) => w.includes('project-level options are ignored')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -227,7 +227,7 @@ test("preset references expand in place while unknown presets stay inactive", as
     assert.equal((config.rules[1]!.preserveStructure?.keepIPv4Octets), 1);
     assert.ok(warnings.some((warning) => warning.includes("unknown preset")));
 
-    const masker = new Masker(config.rules, true, KEY);
+    const masker = new Masker(config.rules, KEY);
     assert.equal(masker.mask("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").count, 1);
     const ipResult = masker.mask("valid=10.1.2.3 invalid=10.999.2.3");
     assert.equal(ipResult.count, 1);
@@ -521,7 +521,7 @@ test("literal placeholder collision is resolved (ao/bq regression)", async () =>
     const [pa, pb] = config.rules.map((r) => literalPh(r as { id: string; placeholder?: string; type?: string }));
     assert.notEqual(pa, pb);
     assert.deepEqual(warnings, []);
-    const m = new Masker(config.rules, true, KEY);
+    const m = new Masker(config.rules, KEY);
     const masked = m.mask("first=ao second=bq");
     assert.equal(m.unmask(masked.text).text, "first=ao second=bq");
   } finally {
@@ -798,7 +798,7 @@ test("allowlist: global entries only; project allowlist is ignored", async () =>
       options: { allowlist: ["192.168.1.1"] },
     }));
     const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
-    assert.deepEqual(config.options.allowlist, ["10.0.0.1", "10.0.0.2"]);
+    assert.deepEqual(config.options.allowlist, [{ text: "10.0.0.1" }, { text: "10.0.0.2" }]);
     assert.ok(warnings.some((w) => w.includes('project-level options are ignored (allowlist')));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -827,12 +827,12 @@ test("allowlist: invalid entries are dropped with warnings, never fatal", async 
     const projectPath = join(dir, "project.json");
     writeFileSync(globalPath, JSON.stringify({
       rules: [],
-      options: { allowlist: ["ok", "", 42, "ok"] },
+      options: { allowlist: ["ok", "", 42, { text: "obj" }, { text: "" }, { text: "bad", caseSensitive: "yes" }, "ok"] },
     }));
     writeFileSync(projectPath, JSON.stringify({ rules: [] }));
     const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
-    assert.deepEqual(config.options.allowlist, ["ok"]);
-    assert.ok(warnings.some((w) => w.includes("non-string or empty entry")));
+    assert.deepEqual(config.options.allowlist, [{ text: "ok" }, { text: "obj" }]);
+    assert.ok(warnings.some((w) => w.includes("invalid or empty entry")));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -849,7 +849,7 @@ test("allowlist: loaded entries exempt matching values end to end", async () => 
     }));
     writeFileSync(projectPath, JSON.stringify({ rules: [] }));
     const { config } = await loadConfigFromPaths(globalPath, projectPath, KEY);
-    const masker = new Masker(config.rules, config.options.caseSensitive, KEY, new Map(), new Set(), new Set(), config.options.allowlist);
+    const masker = new Masker(config.rules, KEY, new Map(), new Set(), new Set(), config.options.allowlist);
     const masked = masker.mask("host 10.0.0.5 and 10.0.0.6", { discover: true });
     assert.equal(masked.text.includes("10.0.0.5"), true);
     assert.equal(masked.text.includes("10.0.0.6"), false);

@@ -1063,9 +1063,7 @@ function otherEpochChanges(
     if (change.kind === "masking_enabled") labels.push("Global masking enabled");
     else if (change.kind === "masking_disabled") labels.push("Global masking disabled");
     else if (change.kind === "configuration_changed") labels.push("Configuration changed");
-    else if (change.kind === "option_changed" && change.option === "caseSensitive") {
-      labels.push(`Case-sensitive matching ${view.epoch.caseSensitive ? "enabled" : "disabled"}`);
-    } else if (change.kind === "option_changed" && change.option === "systemPromptGuidance") {
+    else if (change.kind === "option_changed" && change.option === "systemPromptGuidance") {
       labels.push(`System-prompt guidance ${view.epoch.systemPromptGuidance ? "enabled" : "disabled"}`);
     }
   }

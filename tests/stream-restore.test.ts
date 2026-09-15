@@ -17,8 +17,8 @@ import { createStreamRestore, type StreamRestoreBlockState } from "../stream-res
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 
-function makeMasker(rules: Array<Record<string, unknown>>, caseSensitive = true, dynamicMap?: Map<string, never>): Masker {
-  return new Masker(rules as never, caseSensitive, KEY, dynamicMap ?? new Map(), new Set(), new Set());
+function makeMasker(rules: Array<Record<string, unknown>>, dynamicMap?: Map<string, never>): Masker {
+  return new Masker(rules as never, KEY, dynamicMap ?? new Map(), new Set(), new Set());
 }
 
 let messageSeq = 0;
@@ -190,7 +190,7 @@ test("displayHoldbackLength: strict prefixes only, case-insensitive support", ()
   // Non-placeholder text without placeholder-prefix tails holds back nothing.
   assert.equal(cs.displayHoldbackLength("plain text"), 0);
 
-  const ci = makeMasker([{ id: "tok", real: "real", placeholder: "@Secret@" }], false);
+  const ci = makeMasker([{ id: "tok", real: "real", placeholder: "@Secret@", caseSensitive: false }]);
   assert.equal(ci.displayHoldbackLength("value @SECR"), 5);
   assert.equal(ci.displayHoldbackLength("value @secre"), 6);
   assert.equal(ci.displayHoldbackLength("unrelated"), 0);
@@ -198,7 +198,7 @@ test("displayHoldbackLength: strict prefixes only, case-insensitive support", ()
 
 test("dynamic placeholders participate in restoration and hold-back", async () => {
   const dynamicMap = new Map();
-  const m = makeMasker([{ id: "tok", type: "regex", pattern: "token-[a-z]+" }], true, dynamicMap as never);
+  const m = makeMasker([{ id: "tok", type: "regex", pattern: "token-[a-z]+" }], dynamicMap as never);
   const { text, count } = m.mask("use token-abc now");
   assert.equal(count, 1);
   const placeholder = /use (\S+) now/.exec(text)?.[1];

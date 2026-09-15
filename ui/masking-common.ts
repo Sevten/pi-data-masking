@@ -261,6 +261,12 @@ export interface MaskingUIBridge {
   notifyWarnings(ctx: ExtensionContext, warnings: string[]): void;
   /** Field names of an options object present in the project config
    *  (ignored: settings are global-level). Empty when there is none. */
+  /** True while the global config file still carries the legacy
+   *  options.caseSensitive key (in-memory migration is active). */
+  legacyCasePending(): boolean;
+  /** One-click repair of the legacy key in the global config file; returns
+   *  the applied change descriptions, or undefined when nothing to repair. */
+  repairLegacyCase(ctx: ExtensionContext): Promise<string[] | undefined>;
   staleProjectOptions(): string[];
   /** Move the ignored project options into the global config (scalars
    *  overwrite, allowlist unions) and drop the options object from the

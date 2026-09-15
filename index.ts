@@ -68,6 +68,7 @@ import {
   savePersistentToggle,
   watchConfigs,
   migrateProjectOptionsToGlobalFiles,
+  repairLegacyCaseSensitiveFile,
 } from "./config-loader.ts";
 import type {
   ConfigSourceSnapshot,
@@ -186,11 +187,15 @@ export default async function (pi: ExtensionAPI) {
     enabled: false,
     rules: [],
     configuredRules: [],
-    options: { caseSensitive: true, showStatusBar: true, systemPromptGuidance: false, disclosePlaceholders: false, persistHistory: true, allowlist: [] },
+    options: { showStatusBar: true, systemPromptGuidance: false, disclosePlaceholders: false, persistHistory: true, allowlist: [] },
   };
-  let masker = new Masker([], true);
+  let masker = new Masker([]);
   let stopWatching: (() => void) | null = null;
   let configSnapshot: ConfigSourceSnapshot | undefined;
+  /** True while the global config file still carries the legacy
+   *  options.caseSensitive key; captured at load time because the in-memory
+   *  migration deletes the key from the parsed snapshot. */
+  let legacyCaseRepairPending = false;
 
   // Session key: generated on session_start, stays constant for the whole
   // session (including config hot reloads). Pre-initialized to a valid value to
@@ -272,7 +277,6 @@ export default async function (pi: ExtensionAPI) {
   function buildMasker(cfg: MaskingConfig): Masker {
     return new Masker(
       cfg.enabled ? cfg.rules : [],
-      cfg.options.caseSensitive,
       sessionKey,
       dynamicPlaceholderMap,
       llmInventedValues,
@@ -467,7 +471,8 @@ export default async function (pi: ExtensionAPI) {
     const behaviorChanged = activeRuleEpoch?.behaviorFingerprint !== fingerprint;
     config = cfg;
     masker = buildMasker(cfg);
-    // Rules/caseSensitive changed → cached masked outputs are stale.
+    // Rule behavior (including per-rule case flags) changed → cached masked
+    // outputs are stale.
     invalidateMaskedCaches();
     if (behaviorChanged) {
       const epoch = createRuleEpoch({
@@ -511,7 +516,6 @@ export default async function (pi: ExtensionAPI) {
     const baseCfg = pendingConfigActivation?.config ?? config;
     const previewMaskerFor = (c: MaskingConfig) => new Masker(
       c.enabled ? c.rules : [],
-      c.options.caseSensitive,
       sessionKey,
       new Map(dynamicPlaceholderMap),
       new Set(llmInventedValues),
@@ -702,6 +706,7 @@ export default async function (pi: ExtensionAPI) {
   async function reloadConfigNow(ctx: ExtensionContext): Promise<void> {
     const loaded = await loadConfig(ctx.cwd, sessionKey, configSnapshot);
     configSnapshot = loaded.snapshot;
+    legacyCaseRepairPending = loaded.legacyCasePending;
     const persisted = await applyPersistentToggle(loaded.config);
     // Queued vs activated is surfaced by the status bar ("· changes pending")
     // and the /masking UI, not by chat notifications.
@@ -969,6 +974,7 @@ export default async function (pi: ExtensionAPI) {
     configSnapshot = undefined;
     const loaded = await loadConfig(ctx.cwd, sessionKey);
     configSnapshot = loaded.snapshot;
+    legacyCaseRepairPending = loaded.legacyCasePending;
     const persisted = await applyPersistentToggle(loaded.config);
     const compileWarnings = activateConfig(persisted.config, "session_start", ctx);
 
@@ -1006,6 +1012,7 @@ export default async function (pi: ExtensionAPI) {
       // Hot reload: reuse the current session's sessionKey and dynamicPlaceholderMap
       const reloaded = await loadConfig(ctx.cwd, sessionKey, configSnapshot);
       configSnapshot = reloaded.snapshot;
+      legacyCaseRepairPending = reloaded.legacyCasePending;
       const persistedReload = await applyPersistentToggle(reloaded.config);
       const disposition = acceptConfigChange(
         ctx,
@@ -1330,6 +1337,18 @@ export default async function (pi: ExtensionAPI) {
       const options = configSnapshot?.project?.options as Record<string, unknown> | undefined;
       if (!options || typeof options !== "object" || Array.isArray(options)) return [];
       return Object.keys(options);
+    },
+    legacyCasePending: () => legacyCaseRepairPending,
+    repairLegacyCase: async (ctx) => {
+      try {
+        const changes = await repairLegacyCaseSensitiveFile(GLOBAL_CONFIG_PATH);
+        legacyCaseRepairPending = false;
+        if (changes) await reloadConfigNow(ctx);
+        return changes ?? undefined;
+      } catch (err) {
+        notifyWarnings(ctx, [(err as Error).message]);
+        return undefined;
+      }
     },
     migrateProjectOptionsToGlobal: async (ctx) => {
       try {

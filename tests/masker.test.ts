@@ -16,7 +16,6 @@ const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 test("literal rule: mask and unmask roundtrip", () => {
   const m = new Masker(
     [{ id: "d", real: "company-internal.com", placeholder: "northstar-systems.com" }],
-    true,
     KEY
   );
   const text = "My mail is user@company-internal.com and docs are at docs.company-internal.com";
@@ -34,7 +33,6 @@ test("disabled rules are ignored even when Masker is constructed directly", () =
       { id: "literal-off", enabled: false, real: "company-internal.com", placeholder: "example.test" },
       { id: "regex-off", enabled: false, type: "regex", pattern: "token-[a-z]+" },
     ],
-    true,
     KEY,
     dynamicMap,
   );
@@ -47,7 +45,6 @@ test("literal rule with auto placeholder: roundtrip", () => {
   const real = "sk-prod-abc123456789";
   const m = new Masker(
     [{ id: "k", real, placeholder: generatePlaceholder(real, KEY) }],
-    true,
     KEY
   );
   const text = `key=${real}`;
@@ -60,7 +57,6 @@ test("literal rule with auto placeholder: roundtrip", () => {
 test("regex rule: whole-match replacement roundtrip via dynamic map", () => {
   const m = new Masker(
     [{ id: "phone", type: "regex", pattern: "\\b\\d{3}-\\d{4}\\b" }],
-    true,
     KEY
   );
   const text = "Call 123-4567 now or 987-6543 later";
@@ -77,7 +73,6 @@ test("regex rule: whole-match replacement roundtrip via dynamic map", () => {
 test("regex rule with capture group replaces only the captured part", () => {
   const m = new Masker(
     [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
-    true,
     KEY
   );
   const text = "Authorization: Bearer abcDEF123456";
@@ -94,7 +89,6 @@ test("priority: earlier rule claims a region, later overlapping rule skips it", 
       { id: "first", real: "abc", placeholder: "xyz" },
       { id: "second", type: "regex", pattern: "a.c" },
     ],
-    true,
     KEY
   );
   const masked = m.mask("prefix abc suffix");
@@ -109,7 +103,6 @@ test("lookahead keeps adjacent rules from claiming each other's text", () => {
       { id: "local", type: "regex", pattern: "[A-Za-z0-9._%+-]+(?=@corp\\.com)" },
       { id: "domain", real: "corp.com", placeholder: "example.org" },
     ],
-    true,
     KEY
   );
   const text = "user@corp.com";
@@ -121,7 +114,7 @@ test("lookahead keeps adjacent rules from claiming each other's text", () => {
 });
 
 test("zero-width regex matches do not hang or crash", () => {
-  const m = new Masker([{ id: "z", type: "regex", pattern: "a*" }], true, KEY);
+  const m = new Masker([{ id: "z", type: "regex", pattern: "a*" }], KEY);
   const masked = m.mask("aaa bbb");
   assert.equal(masked.count, 1);
   assert.ok(masked.text.endsWith(" bbb"));
@@ -137,7 +130,6 @@ test("dynamic placeholder retries when it collides with an existing placeholder"
       { id: "lit", real: "some-other-real", placeholder: p0 },
       { id: "re", type: "regex", pattern: "[a-z]{3}\\d{3}" },
     ],
-    true,
     KEY
   );
   const masked = m.mask(`value ${real}`);
@@ -147,18 +139,17 @@ test("dynamic placeholder retries when it collides with an existing placeholder"
 });
 
 test("caseSensitive false masks and unmasks case-insensitively", () => {
-  const rules = [{ id: "s", real: "SecretKey", placeholder: "FakeKey" }];
-  const m = new Masker(rules, false, KEY);
+  const rules = [{ id: "s", real: "SecretKey", placeholder: "FakeKey", caseSensitive: false }];
+  const m = new Masker(rules, KEY);
   assert.equal(m.mask("my SecretKey and secretkey").text, "my FakeKey and FakeKey");
   assert.equal(m.unmask("my FakeKey and fakekey").text, "my SecretKey and SecretKey");
-  const strict = new Masker(rules, true, KEY);
+  const strict = new Masker([{ ...rules[0]!, caseSensitive: undefined }], KEY);
   assert.equal(strict.mask("my secretkey").text, "my secretkey");
 });
 
 test("IPv4 regex values produce syntactically valid IPv4 placeholders", () => {
   const m = new Masker(
     [{ id: "ip", type: "regex", pattern: "\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b" }],
-    true,
     KEY
   );
   const text = "host 10.0.0.1";
@@ -172,7 +163,6 @@ test("IPv4 regex values produce syntactically valid IPv4 placeholders", () => {
 test("connection-string regex keeps scheme, port and path; replaces userinfo", () => {
   const m = new Masker(
     [{ id: "db", type: "regex", pattern: "(?:postgresql|mysql)://([^\\s]+)@" }],
-    true,
     KEY
   );
   const text = "conn postgresql://admin:secret@db.internal:5432/prod";
@@ -190,7 +180,6 @@ test("connection-string regex keeps scheme, port and path; replaces userinfo", (
 test("maskValue/unmaskValue recurse deeply and preserve non-strings", () => {
   const m = new Masker(
     [{ id: "e", real: "a@corp.com", placeholder: "b@corp.com" }],
-    true,
     KEY
   );
   const input = { user: "a@corp.com", meta: { tags: ["x", "a@corp.com"], n: 42 }, flag: true, nil: null };
@@ -213,7 +202,6 @@ test("maskValue/unmaskValue recurse deeply and preserve non-strings", () => {
 test("details group distinct real values per rule with occurrence counts", () => {
   const m = new Masker(
     [{ id: "ip", type: "regex", pattern: "\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b" }],
-    true,
     KEY
   );
   const r = m.mask("10.0.0.1 then 10.0.0.1 then 192.168.1.5");
@@ -227,7 +215,7 @@ test("details group distinct real values per rule with occurrence counts", () =>
 });
 
 test("unmask leaves text without known placeholders unchanged", () => {
-  const m = new Masker([{ id: "d", real: "abc", placeholder: "xyz" }], true, KEY);
+  const m = new Masker([{ id: "d", real: "abc", placeholder: "xyz" }], KEY);
   const r = m.unmask("nothing sensitive here");
   assert.equal(r.text, "nothing sensitive here");
   assert.equal(r.count, 0);
@@ -241,7 +229,6 @@ test("masking already-masked text is idempotent (provider-boundary double-mask r
   // see P2, and unmask could only restore P2 -> P1, never the real digits.
   const m = new Masker(
     [{ id: "phone", type: "regex", pattern: "\\b\\d{3}-\\d{4}\\b" }],
-    true,
     KEY
   );
   const real = "Call 123-4567 now or 987-6543 later";
@@ -254,7 +241,6 @@ test("masking already-masked text is idempotent (provider-boundary double-mask r
 test("second masking pass still masks genuinely new values and keeps old placeholders", () => {
   const m = new Masker(
     [{ id: "phone", type: "regex", pattern: "\\b\\d{3}-\\d{4}\\b" }],
-    true,
     KEY
   );
   const first = m.mask("Call 123-4567 now");
@@ -273,7 +259,6 @@ test("literal placeholders are protected from a generic shape regex on re-mask",
       { id: "company_root_domain", real: "company-internal.com", placeholder: "northstar-systems.com" },
       { id: "generic", type: "regex", pattern: "[A-Za-z0-9._-]+" },
     ],
-    true,
     KEY
   );
   const real = "internal host is company-internal.com";
@@ -290,7 +275,6 @@ test("placeholder contained as a substring of a new secret is still masked (no o
       { id: "lit", real: "some-internal-key", placeholder: "10.0.0.1" },
       { id: "privip", type: "regex", pattern: "\\b(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})\\b" },
     ],
-    true,
     KEY
   );
   // "10.0.0.15" begins with the placeholder "10.0.0.1": covering only the
@@ -310,7 +294,6 @@ test("manual placeholder conflicts produce warnings", () => {
       { id: "b", real: "bb", placeholder: "dup" },
       { id: "c", real: "cc", placeholder: "cc" },
     ],
-    true,
     KEY
   );
   assert.ok(m.warnings.some((w) => w.includes("already used by rule")));
@@ -321,7 +304,7 @@ test("manual placeholder conflicts produce warnings", () => {
 
 /** Build a Masker with fresh provenance state for one test. */
 function makeMasker(rules: MaskingRule[]) {
-  return new Masker(rules, true, KEY, new Map(), new Set(), new Set());
+  return new Masker(rules, KEY, new Map(), new Set(), new Set());
 }
 
 test("user message (discover) masks and registers new regex values", () => {
@@ -487,10 +470,9 @@ test("unmaskDisplay: longest placeholder wins when one contains another", () => 
   );
 });
 
-test("unmaskDisplay: case-insensitive mode restores case-variant placeholders", () => {
+test("unmaskDisplay: case-insensitive rule restores case-variant placeholders", () => {
   const m = new Masker(
-    [{ id: "k", real: "real-value", placeholder: "Ph-Holder" }],
-    false,
+    [{ id: "k", real: "real-value", placeholder: "Ph-Holder", caseSensitive: false }],
     KEY,
     new Map(),
     new Set(),
@@ -507,10 +489,33 @@ test("unmaskDisplay: empty masker returns the input unchanged", () => {
 
 // ─── Allowlist ──────────────────────────────────────────────────────────────
 
+test("regex rule case sensitivity is controlled solely by its flags", () => {
+  const cs = new Masker([{ id: "tok", type: "regex", pattern: "token-[a-z]+" }], KEY, new Map(), new Set(), new Set());
+  assert.equal(cs.mask("see TOKEN-abc now", { discover: true }).count, 0);
+
+  // The "i" flag makes the rule case-insensitive.
+  const ci = new Masker([{ id: "tok", type: "regex", pattern: "token-[a-z]+", flags: "i" }], KEY, new Map(), new Set(), new Set());
+  assert.equal(ci.mask("see TOKEN-abc now", { discover: true }).count, 1);
+});
+
+test("regex-discovered dynamic placeholders inherit the rule's flags for restoration", () => {
+  const dynamicMap = new Map();
+  const ci = new Masker([{ id: "tok", type: "regex", pattern: "token-[a-z]+", flags: "i" }], KEY, dynamicMap, new Set(), new Set());
+  const masked = ci.mask("see token-abc now", { discover: true });
+  assert.equal(masked.count, 1);
+  const placeholder = masked.text.replace("see ", "").replace(" now", "");
+  assert.equal(ci.unmaskDisplay(`x ${placeholder.toUpperCase()} y`), "x token-abc y");
+  // Case-sensitive rules keep exact-case restoration.
+  const dynamicMap2 = new Map();
+  const cs = new Masker([{ id: "tok", type: "regex", pattern: "token-[a-z]+" }], KEY, dynamicMap2, new Set(), new Set());
+  const masked2 = cs.mask("see token-abc now", { discover: true });
+  const placeholder2 = masked2.text.replace("see ", "").replace(" now", "");
+  assert.equal(cs.unmaskDisplay(`x ${placeholder2.toUpperCase()} y`), `x ${placeholder2.toUpperCase()} y`);
+});
+
 test("allowlist: literal rule match is exempt and not registered anywhere", () => {
   const m = new Masker(
     [{ id: "ip", type: "regex", pattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b" }],
-    true,
     KEY,
     new Map(),
     new Set(),
@@ -528,7 +533,6 @@ test("allowlist: removing an entry masks the value again", () => {
   const sharedInvented = new Set<string>();
   const withEntry = new Masker(
     [{ id: "ip", type: "regex", pattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b" }],
-    true,
     KEY,
     new Map(),
     sharedInvented,
@@ -538,7 +542,6 @@ test("allowlist: removing an entry masks the value again", () => {
   assert.equal(withEntry.mask("host 10.0.0.5", { discover: true }).count, 0);
   const withoutEntry = new Masker(
     [{ id: "ip", type: "regex", pattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b" }],
-    true,
     KEY,
     new Map(),
     sharedInvented,
@@ -550,7 +553,6 @@ test("allowlist: removing an entry masks the value again", () => {
 test("allowlist: beats a lower-priority literal rule that also matches", () => {
   const m = new Masker(
     [{ id: "lit", real: "10.0.0.5", placeholder: "masked-ip" }],
-    true,
     KEY,
     new Map(),
     new Set(),
@@ -562,23 +564,21 @@ test("allowlist: beats a lower-priority literal rule that also matches", () => {
   assert.equal(masked.count, 0);
 });
 
-test("allowlist: case-insensitive masker matches entries case-insensitively", () => {
+test("allowlist: case-insensitive entry matches case-insensitively", () => {
   const m = new Masker(
     [{ id: "lit", real: "MyHost", placeholder: "masked-host" }],
-    false,
     KEY,
     new Map(),
     new Set(),
     new Set(),
-    ["myhost"],
+    [{ text: "myhost", caseSensitive: false }],
   );
   assert.equal(m.mask("see MyHost now", { discover: true }).count, 0);
 });
 
-test("allowlist: case-sensitive masker only matches exact case", () => {
+test("allowlist: case-sensitive entry only matches exact case", () => {
   const m = new Masker(
     [{ id: "lit", real: "MyHost", placeholder: "masked-host" }],
-    true,
     KEY,
     new Map(),
     new Set(),
@@ -591,7 +591,6 @@ test("allowlist: case-sensitive masker only matches exact case", () => {
 test("allowlist: entry equal to a rule's placeholder produces a warning", () => {
   const m = new Masker(
     [{ id: "lit", real: "secret", placeholder: "masked-secret" }],
-    true,
     KEY,
     new Map(),
     new Set(),
@@ -604,7 +603,6 @@ test("allowlist: entry equal to a rule's placeholder produces a warning", () => 
 test("allowlist: regex capture group exemption masks sibling groups", () => {
   const m = new Masker(
     [{ id: "pair", type: "regex", pattern: "(\\w+)=(\\w+)" }],
-    true,
     KEY,
     new Map(),
     new Set(),
@@ -622,7 +620,6 @@ test("allowlist: regex capture group exemption masks sibling groups", () => {
 test("allowlist: whole-line entry exempts a capture-group match inside it", () => {
   const m = new Masker(
     [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
-    false,
     KEY,
     new Map(),
     new Set(),
@@ -638,7 +635,6 @@ test("allowlist: whole-line entry exempts a capture-group match inside it", () =
 test("allowlist: prefix-only entry shields the captured token it overlaps", () => {
   const m = new Masker(
     [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
-    false,
     KEY,
     new Map(),
     new Set(),
@@ -652,7 +648,6 @@ test("allowlist: prefix-only entry shields the captured token it overlaps", () =
 test("allowlist: entry that is a prefix of the token does NOT exempt the longer token", () => {
   const m = new Masker(
     [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
-    false,
     KEY,
     new Map(),
     new Set(),
@@ -671,12 +666,11 @@ test("allowlist: entry that is a prefix of the token does NOT exempt the longer 
 test("allowlist: whole-line entry matches case-insensitively when allowed", () => {
   const m = new Masker(
     [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
-    false,
     KEY,
     new Map(),
     new Set(),
     new Set(),
-    ["authorization: bearer TEST123456"],
+    [{ text: "authorization: bearer TEST123456", caseSensitive: false }],
   );
   const masked = m.mask("Authorization: Bearer test123456", { discover: true });
   assert.equal(masked.count, 0);
@@ -685,7 +679,6 @@ test("allowlist: whole-line entry matches case-insensitively when allowed", () =
 test("allowlist: whole-line entry needs exact case when caseSensitive", () => {
   const m = new Masker(
     [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
-    true,
     KEY,
     new Map(),
     new Set(),
@@ -699,7 +692,6 @@ test("allowlist: whole-line entry needs exact case when caseSensitive", () => {
 test("allowlist: prefix entry inside a longer value does NOT shield it", () => {
   const m = new Masker(
     [{ id: "tok", type: "regex", pattern: "tok-[A-Za-z0-9]+" }],
-    true,
     KEY,
     new Map(),
     new Set(),
@@ -717,7 +709,6 @@ test("allowlist: prefix entry inside a longer value does NOT shield it", () => {
 test("allowlist: boundary-aligned bare value is still exempt", () => {
   const m = new Masker(
     [{ id: "tok", type: "regex", pattern: "tok-[A-Za-z0-9]+" }],
-    true,
     KEY,
     new Map(),
     new Set(),
@@ -737,7 +728,6 @@ test("allowlist: boundary-aligned bare value is still exempt", () => {
 test("allowlist: every occurrence of an entry is shielded", () => {
   const m = new Masker(
     [{ id: "ip", type: "regex", pattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b" }],
-    true,
     KEY,
     new Map(),
     new Set(),
@@ -752,7 +742,6 @@ test("allowlist: every occurrence of an entry is shielded", () => {
 test("allowlist: token-only entry still exempts the bare value", () => {
   const m = new Masker(
     [{ id: "bearer", type: "regex", pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)", flags: "i" }],
-    false,
     KEY,
     new Map(),
     new Set(),

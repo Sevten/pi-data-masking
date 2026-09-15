@@ -27,6 +27,7 @@ function literalConfig(args: {
     real: args.real ?? "secret-service-token",
     placeholder: args.placeholder ?? "masked-service-token",
     enabled: args.ruleEnabled ?? true,
+    caseSensitive: args.caseSensitive,
     description: "operator notes must not be persisted",
   };
   const configured: ConfiguredMaskingRule = {
@@ -44,7 +45,6 @@ function literalConfig(args: {
     configuredRules: [configured],
     rules: configured.enabled ? [rule] : [],
     options: {
-      caseSensitive: args.caseSensitive ?? true,
       showStatusBar: true,
       systemPromptGuidance: false,
       disclosePlaceholders: false,

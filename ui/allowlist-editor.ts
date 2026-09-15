@@ -1,7 +1,8 @@
 /**
  * ui/allowlist-editor.ts
  * Overlay editor for the global allowlist (options.allowlist): a flat list
- * of exact literal values that are never masked. The list ends in an
+ * of exact literal values that are never masked, each with its own
+ * case-sensitivity flag (C toggles it). The list ends in an
  * always-present "add value" row — navigating onto it focuses an inline
  * input; typing + Enter stages the value immediately. Up/Down select,
  * D or Delete remove, F2 stages the whole list as JSON. Exit saves via the
@@ -10,7 +11,7 @@
 
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Editor, Key, matchesKey, truncateToWidth, type EditorTheme } from "@earendil-works/pi-tui";
-import { type ConfigScope } from "../config-loader.ts";
+import { type AllowlistEntry, type ConfigScope } from "../config-loader.ts";
 import {
   MASKING_SCREEN_OPTIONS,
   fillMaskingScreen,
@@ -29,11 +30,10 @@ export async function openAllowlistEditor(
   bridge: MaskingUIBridge,
   ctx: ExtensionContext,
   target: AllowlistTarget,
-  current: readonly string[],
+  current: readonly AllowlistEntry[],
 ): Promise<boolean> {
-  const original = [...current];
-  const caseInsensitive = !bridge.config().options.caseSensitive;
-  let entries = [...current];
+  const original: AllowlistEntry[] = current.map((entry) => ({ ...entry }));
+  let entries: AllowlistEntry[] = current.map((entry) => ({ ...entry }));
   // Selection range: 0..entries.length — the index entries.length is the
   // trailing "add value" row with its inline input.
   let selectedIndex = entries.length > 0 ? 0 : 0;
@@ -57,20 +57,38 @@ export async function openAllowlistEditor(
     const onAddRow = () => selectedIndex === entries.length;
     const refresh = () => tui.requestRender();
 
+    const entryKey = (entry: AllowlistEntry): string =>
+      `${entry.caseSensitive === false ? "i" : "s"}:${entry.text}`;
+
     function addValue(raw: string): void {
       const value = raw.trim();
       if (!value) return;
-      const duplicate = entries.some((entry) => caseInsensitive
-        ? entry.toLowerCase() === value.toLowerCase()
-        : entry === value);
-      if (duplicate) {
+      const entry: AllowlistEntry = { text: value };
+      if (entries.some((existing) => entryKey(existing) === entryKey(entry))) {
         message = "Entry already in the allowlist";
         refresh();
         return;
       }
-      entries.push(value);
+      entries.push(entry);
       selectedIndex = entries.length - 1;
       message = "Staged · saved on exit";
+      refresh();
+    }
+
+    function toggleSelectedCase(): void {
+      if (onAddRow() || selectedIndex < 0 || selectedIndex >= entries.length) return;
+      const entry = entries[selectedIndex]!;
+      entry.caseSensitive = entry.caseSensitive === false ? undefined : false;
+      if (entry.caseSensitive === undefined) delete entry.caseSensitive;
+      // Toggle may collide with an existing entry of the other case mode.
+      const duplicate = entries.some((existing, index) => index !== selectedIndex && entryKey(existing) === entryKey(entry));
+      if (duplicate) {
+        entries.splice(selectedIndex, 1);
+        if (selectedIndex >= entries.length) selectedIndex = entries.length - 1;
+        message = "Duplicate after case change · entry removed";
+      } else {
+        message = "Staged · saved on exit";
+      }
       refresh();
     }
 
@@ -98,7 +116,7 @@ export async function openAllowlistEditor(
 
     async function finish(): Promise<void> {
       const changed = entries.length !== original.length
-        || entries.some((entry, index) => entry !== original[index]);
+        || entries.some((entry, index) => entryKey(entry) !== entryKey(original[index]!));
       if (!changed) {
         done(false);
         return;
@@ -133,10 +151,27 @@ export async function openAllowlistEditor(
               const text = jsonInput.getExpandedText();
               try {
                 const parsed = JSON.parse(text) as unknown;
-                if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string" || entry.length === 0)) {
-                  throw new Error("Expected an array of non-empty strings");
+                const valid = (entry: unknown): entry is AllowlistEntry => {
+                  if (typeof entry === "string") return entry.length > 0;
+                  return entry !== null && typeof entry === "object" && !Array.isArray(entry)
+                    && typeof (entry as Record<string, unknown>).text === "string"
+                    && ((entry as Record<string, unknown>).text as string).length > 0
+                    && ((entry as Record<string, unknown>).caseSensitive === undefined
+                      || typeof (entry as Record<string, unknown>).caseSensitive === "boolean");
+                };
+                if (!Array.isArray(parsed) || parsed.some((entry) => !valid(entry))) {
+                  throw new Error('Expected an array of non-empty strings or { "text": "...", "caseSensitive": false } objects');
                 }
-                entries = [...new Set(parsed as string[])];
+                const normalized = (parsed as AllowlistEntry[]).map((entry) => typeof entry === "string" ? { text: entry } : entry);
+                const seen = new Set<string>();
+                const deduped: AllowlistEntry[] = [];
+                for (const entry of normalized) {
+                  const key = `${entry.caseSensitive === false ? "i" : "s"}:${entry.text}`;
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  deduped.push(entry);
+                }
+                entries = deduped;
                 selectedIndex = Math.min(selectedIndex, entries.length);
                 message = "Staged · saved on exit";
                 refresh();
@@ -156,7 +191,7 @@ export async function openAllowlistEditor(
     return {
       render: (width) => {
         const title = theme.fg("accent", theme.bold(
-          `ALLOWLIST · ${entries.length} value(s) never masked${caseInsensitive ? " · case-insensitive" : ""}`,
+          `ALLOWLIST · ${entries.length} value(s) never masked`,
         ));
         const lines: string[] = [title];
         if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));
@@ -166,7 +201,9 @@ export async function openAllowlistEditor(
         }
         for (let index = 0; index < entries.length; index++) {
           const cursor = index === selectedIndex ? "›" : " ";
-          const text = `${cursor} ${String(index + 1).padStart(3)}  ${entries[index]}`;
+          const entry = entries[index]!;
+          const caseTag = entry.caseSensitive === false ? "[aA]" : "[Aa]";
+          const text = `${cursor} ${String(index + 1).padStart(3)}  ${entry.text} ${theme.fg("dim", caseTag)}`;
           const clipped = truncateToWidth(text, Math.max(1, width));
           lines.push(index === selectedIndex ? theme.fg("accent", clipped) : clipped);
         }
@@ -177,7 +214,7 @@ export async function openAllowlistEditor(
           lines.push(theme.fg("dim", truncateToWidth("  ＋ Add value…", Math.max(1, width))));
         }
         lines.push("");
-        lines.push(...wrappedMaskingText(theme.fg("dim", "↑/↓ navigate · Delete delete · F2 JSON · Enter adds · Esc save & back"), width));
+        lines.push(...wrappedMaskingText(theme.fg("dim", "↑/↓ navigate · C toggle case · Delete delete · F2 JSON · Enter adds · Esc save & back"), width));
         return fillMaskingScreen(lines, width, tui.terminal.rows);
       },
       invalidate: () => input.invalidate(),
@@ -206,6 +243,10 @@ export async function openAllowlistEditor(
         }
         if (matchesKey(data, Key.delete)) {
           deleteSelected();
+          return;
+        }
+        if (typeof data === "string" && (data === "c" || data === "C")) {
+          toggleSelectedCase();
           return;
         }
         if (matchesKey(data, Key.f2)) {

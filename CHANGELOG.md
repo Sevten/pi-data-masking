@@ -4,9 +4,12 @@
 
 ### Added
 
-- Global allowlist: list values or whole lines under `/masking` → Settings → Allowlist (or `options.allowlist` in the global config) and they stay unmasked even when a rule would otherwise match them — handy for keeping a specific IP address visible while a rule masks IP addresses in general; matching respects the case-sensitivity option.
+- Global allowlist: list values or whole lines under `/masking` → Settings → Allowlist (or `options.allowlist` in the global config) and they stay unmasked even when a rule would otherwise match them — handy for keeping a specific IP address visible while a rule masks IP addresses in general.
+- Per-rule case-sensitivity switch: literal rules accept `"caseSensitive": false` for case-insensitive matching (regex rules keep controlling case through their own `flags`), and every allowlist entry can be written as `{ "text": "…", "caseSensitive": false }`. The Rule Builder gains a Case field and the allowlist editor a C toggle.
 
 ### Changed
+
+- **Breaking:** removed the global `options.caseSensitive` option. Case sensitivity is now decided per rule and per allowlist entry (both default to case-sensitive). Existing configs with `"caseSensitive": false` are migrated on load: the `false` value is applied to every literal rule and allowlist entry that lacks an explicit flag (regex rules are not migrated — without explicit flags they now match case-sensitively), and a warning points at the config file. `/masking` offers a one-click repair that rewrites the global config: it deletes the legacy key, writes the stored `false` into rules and allowlist entries, and adds `"flags": "i"` to regex rules without flags to keep the old behavior.
 
 - `/masking` now always edits the global config's settings (previously it edited whichever config file carried an `options` object): an `options` object still present in a project config is ignored, and `/masking` asks once whether to migrate its values into the global config.
 - Placeholder disclosure redesigned around a three-position master switch: on (disclose all literal rules), off (none), or per-rule (default; each rule's Disclose toggle decides). The rule-level setting is now a plain OFF/ON toggle (was inherit/always/never); existing boolean configs keep their meaning, and `systemPromptGuidance` still auto-enables when needed.

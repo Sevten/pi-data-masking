@@ -22,9 +22,15 @@ import { watchConfigPaths } from "./config-watcher.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+/** Allowlist entry in its normalized runtime form. A bare config string is
+ *  equivalent to `{ text }` (case-sensitive matching). */
+export interface AllowlistEntry {
+  text: string;
+  /** Omitted/true = case-sensitive matching; false = case-insensitive. */
+  caseSensitive?: boolean;
+}
+
 export interface MaskingOptions {
-  /** Whether literal matching is case-sensitive (default true) */
-  caseSensitive: boolean;
   /** Whether to show masking status in the bottom status bar (default true) */
   showStatusBar: boolean;
   /** Whether to append model guidance to the system prompt establishing the
@@ -42,9 +48,10 @@ export interface MaskingOptions {
    *  session so /masking-history survives restart (default true). */
   persistHistory: boolean;
   /** Exact literal values that are never masked, regardless of which rule
-   *  would otherwise match them (default []). Global and project lists
-   *  merge by union, project entries first. */
-  allowlist: string[];
+   *  would otherwise match them (default []). Each entry carries its own
+   *  case-sensitivity flag. Global and project lists merge by union,
+   *  project entries first. */
+  allowlist: AllowlistEntry[];
 }
 
 export interface MaskingConfig {
@@ -120,7 +127,6 @@ export interface InitialConfig {
   enabled: true;
   rules: Array<{ id: string; name: string; preset: string; enabled: true }>;
   options: {
-    caseSensitive: true;
     showStatusBar: boolean;
     systemPromptGuidance: false;
     disclosePlaceholders: false;
@@ -130,6 +136,10 @@ export interface InitialConfig {
 
 export interface LoadResult {
   config: MaskingConfig;
+  /** True when the global config still carries the legacy options.caseSensitive
+   *  key (the in-memory migration deleted it from the parsed snapshot, so the
+   *  flag must be captured at load time). */
+  legacyCasePending: boolean;
   /** Non-fatal problems found while reading/validating the config */
   warnings: string[];
   /** Last successfully parsed source data, reused when a watched file is temporarily invalid. */
@@ -214,7 +224,6 @@ export function buildInitialConfig(
       return { id: presetName, name: preset.label, preset: presetName, enabled: true };
     }),
     options: {
-      caseSensitive: true,
       showStatusBar: options.showStatusBar,
       systemPromptGuidance: false,
       disclosePlaceholders: false,
@@ -268,7 +277,6 @@ function defaultConfig(): MaskingConfig {
     rules: [],
     configuredRules: [],
     options: {
-      caseSensitive: true,
       showStatusBar: true,
       systemPromptGuidance: false,
       disclosePlaceholders: false,
@@ -353,27 +361,45 @@ function mergeConfigs(
 }
 
 /**
- * Allowlist validation (global config only). Exact duplicates are dropped;
- * non-string / empty entries are dropped with a warning.
+ * Allowlist validation (global config only). Entries are `string` (stored
+ * case-sensitive) or `{ text, caseSensitive }`; bare strings are normalized
+ * to objects. Exact duplicates (same text and case mode) are dropped;
+ * invalid or empty entries are dropped with a warning.
  */
 function sanitizeAllowlist(
   globalRaw: unknown,
   warnings: string[],
-): string[] {
+): AllowlistEntry[] {
   if (globalRaw === undefined) return [];
   if (!Array.isArray(globalRaw)) {
     warnings.push("options.allowlist is not an array; its entries were ignored");
     return [];
   }
-  const entries: string[] = [];
+  const entries: AllowlistEntry[] = [];
   const seen = new Set<string>();
-  for (const entry of globalRaw) {
-    if (typeof entry !== "string" || entry.length === 0) {
-      warnings.push("options.allowlist contains a non-string or empty entry; it was dropped");
+  for (const raw of globalRaw) {
+    let entry: AllowlistEntry | null = null;
+    if (typeof raw === "string" && raw.length > 0) {
+      entry = { text: raw };
+    } else if (
+      raw !== null && typeof raw === "object" && !Array.isArray(raw)
+      && typeof (raw as Record<string, unknown>).text === "string"
+      && ((raw as Record<string, unknown>).text as string).length > 0
+      && ((raw as Record<string, unknown>).caseSensitive === undefined
+        || typeof (raw as Record<string, unknown>).caseSensitive === "boolean")
+    ) {
+      const record = raw as Record<string, unknown>;
+      entry = record.caseSensitive === undefined
+        ? { text: record.text as string }
+        : { text: record.text as string, caseSensitive: record.caseSensitive as boolean };
+    }
+    if (entry === null) {
+      warnings.push("options.allowlist contains an invalid or empty entry; it was dropped");
       continue;
     }
-    if (seen.has(entry)) continue;
-    seen.add(entry);
+    const key = `${entry.caseSensitive === false ? "i" : "s"}:${entry.text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     entries.push(entry);
   }
   return entries;
@@ -452,7 +478,7 @@ export function validateConfig(
         warnings.push(`Rule [${id}] has invalid 'preset' (must be a non-empty string) and was skipped`);
         continue;
       }
-      const incompatible = ["type", "real", "realFromEnv", "pattern", "flags", "placeholder", "allowCommonPlaceholder", "disclosePlaceholder"]
+      const incompatible = ["type", "real", "realFromEnv", "pattern", "flags", "placeholder", "allowCommonPlaceholder", "disclosePlaceholder", "caseSensitive"]
         .filter((field) => rule[field] !== undefined);
       if (incompatible.length > 0) {
         warnings.push(`Rule [${id}] preset reference also sets ${incompatible.join(", ")} and was skipped`);
@@ -477,9 +503,10 @@ export function validateConfig(
     if (rule.type === "regex") {
       if (
         rule.real !== undefined || rule.realFromEnv !== undefined || rule.placeholder !== undefined ||
-        rule.allowCommonPlaceholder !== undefined || rule.disclosePlaceholder !== undefined
+        rule.allowCommonPlaceholder !== undefined || rule.disclosePlaceholder !== undefined ||
+        rule.caseSensitive !== undefined
       ) {
-        const literalOnly = ["real", "realFromEnv", "placeholder", "allowCommonPlaceholder", "disclosePlaceholder"]
+        const literalOnly = ["real", "realFromEnv", "placeholder", "allowCommonPlaceholder", "disclosePlaceholder", "caseSensitive"]
           .filter((field) => rule[field] !== undefined);
         warnings.push(`Rule [${id}] is regex but also sets literal-only field(s) — ${literalOnly.join(", ")} — and was skipped`);
         continue;
@@ -563,6 +590,10 @@ export function validateConfig(
         warnings.push(`Rule [${id}] has invalid 'allowCommonPlaceholder' (must be a boolean) and was skipped`);
         continue;
       }
+      if (rule.caseSensitive !== undefined && typeof rule.caseSensitive !== "boolean") {
+        warnings.push(`Rule [${id}] has invalid 'caseSensitive' (must be a boolean) and was skipped`);
+        continue;
+      }
       if (rule.disclosePlaceholder !== undefined && typeof rule.disclosePlaceholder !== "boolean") {
         warnings.push(`Rule [${id}] has invalid 'disclosePlaceholder' (must be a boolean) and was skipped`);
         continue;
@@ -588,6 +619,7 @@ export function validateConfig(
         description: typeof rule.description === "string" ? rule.description : undefined,
         lowEntropy: rule.lowEntropy === true,
         preserveStructure,
+        caseSensitive: rule.caseSensitive as boolean | undefined,
         real,
         placeholder: rule.placeholder as string | undefined,
         disclosePlaceholder: rule.disclosePlaceholder as boolean | undefined,
@@ -882,6 +914,46 @@ function buildLoadResult(
   const config = mergeConfigs(globalData, projectData);
   const configuredRules: ConfiguredMaskingRule[] = [];
 
+  // Legacy migration: the former global options.caseSensitive switch was
+  // replaced by per-rule / per-allowlist-entry flags. A stored `false` is
+  // applied once to every rule and allowlist entry that lacks an explicit
+  // value, then dropped from the options object (idempotent across reloads).
+  const globalOptionsRaw = globalData?.options as Record<string, unknown> | undefined;
+  const legacyCasePending = globalOptionsRaw !== undefined
+    && "caseSensitive" in globalOptionsRaw;
+  if (globalOptionsRaw && globalOptionsRaw.caseSensitive === false) {
+    const rules = Array.isArray(globalData?.rules) ? globalData!.rules : [];
+    for (const ruleRaw of rules as unknown[]) {
+      // Regex rules have no caseSensitive field: their flags control case
+      // sensitivity, so a stored global false cannot map onto them.
+      if (ruleRaw !== null && typeof ruleRaw === "object" && !Array.isArray(ruleRaw)
+        && (ruleRaw as Record<string, unknown>).type !== "regex"
+        && (ruleRaw as Record<string, unknown>).caseSensitive === undefined) {
+        (ruleRaw as Record<string, unknown>).caseSensitive = false;
+      }
+    }
+    const list = globalOptionsRaw.allowlist;
+    if (Array.isArray(list)) {
+      for (let index = 0; index < list.length; index++) {
+        const raw = list[index];
+        if (typeof raw === "string") {
+          list[index] = { text: raw, caseSensitive: false };
+        } else if (raw !== null && typeof raw === "object" && !Array.isArray(raw)
+          && (raw as Record<string, unknown>).caseSensitive === undefined) {
+          (raw as Record<string, unknown>).caseSensitive = false;
+        }
+      }
+    }
+    delete globalOptionsRaw.caseSensitive;
+    // mergeConfigs already copied the raw options into the runtime config;
+    // drop the stale key there too.
+    delete (config.options as unknown as Record<string, unknown>).caseSensitive;
+    warnings.push(
+      "Outdated caseSensitive option in the global config is still being applied on every load — " +
+        "open /masking to fix it automatically.",
+    );
+  }
+
   // Options are global-only: a project config carrying an options object is
   // ignored with a warning so stale per-project settings never surprise.
   if (projectData?.options !== undefined
@@ -981,6 +1053,7 @@ function buildLoadResult(
   fillPlaceholders(config.rules, sessionKey, warnings);
   return {
     config,
+    legacyCasePending,
     warnings,
     snapshot: { global: globalData, project: projectData },
   };
@@ -1146,11 +1219,52 @@ export async function migrateProjectOptionsToGlobalFiles(
     globalData = { rules: [] } as RawConfigFile;
   }
   const globalOptions = { ...((globalData.options ?? {}) as RawConfigOptions) };
+  // Legacy caseSensitive has no global option anymore: apply its value to the
+  // project's literal rules and allowlist entries instead of copying it.
+  const legacyCaseOff = projectOptions.caseSensitive === false;
+  delete globalOptions.caseSensitive;
+  if (legacyCaseOff) {
+    for (const ruleRaw of projectData.rules) {
+      if (ruleRaw !== null && typeof ruleRaw === "object" && !Array.isArray(ruleRaw)
+        && (ruleRaw as RawConfigRule).type !== "regex"
+        && (ruleRaw as RawConfigRule).caseSensitive === undefined) {
+        (ruleRaw as RawConfigRule).caseSensitive = false;
+      }
+    }
+  }
   for (const [key, value] of Object.entries(projectOptions)) {
+    if (key === "caseSensitive") continue;
     if (key === "allowlist") {
-      const existing = Array.isArray(globalOptions.allowlist) ? globalOptions.allowlist as string[] : [];
-      const incoming = Array.isArray(value) ? value as string[] : [];
-      globalOptions.allowlist = [...new Set([...existing, ...incoming])];
+      const mergeKey = (entry: unknown): string | null => {
+        if (typeof entry === "string" && entry.length > 0) return `s:${entry}`;
+        if (entry !== null && typeof entry === "object" && !Array.isArray(entry)
+          && typeof (entry as Record<string, unknown>).text === "string"
+          && ((entry as Record<string, unknown>).text as string).length > 0) {
+          return `${(entry as Record<string, unknown>).caseSensitive === false ? "i" : "s"}:${(entry as Record<string, unknown>).text as string}`;
+        }
+        return null;
+      };
+      const existing = Array.isArray(globalOptions.allowlist) ? globalOptions.allowlist as unknown[] : [];
+      const incoming = Array.isArray(value) ? value as unknown[] : [];
+      const merged = [...existing];
+      for (const entry of incoming) {
+        const entryKey = mergeKey(entry);
+        if (entryKey === null) continue;
+        if (merged.some((existingEntry) => mergeKey(existingEntry) === entryKey)) continue;
+        merged.push(entry);
+      }
+      // A legacy global false applies to entries without an explicit flag.
+      if (legacyCaseOff) {
+        for (const entryRaw of merged) {
+          if (typeof entryRaw === "string") {
+            merged[merged.indexOf(entryRaw)] = { text: entryRaw, caseSensitive: false };
+          } else if (entryRaw !== null && typeof entryRaw === "object" && !Array.isArray(entryRaw)
+            && (entryRaw as Record<string, unknown>).caseSensitive === undefined) {
+            (entryRaw as Record<string, unknown>).caseSensitive = false;
+          }
+        }
+      }
+      globalOptions.allowlist = merged;
     } else {
       globalOptions[key] = value;
     }
@@ -1162,6 +1276,85 @@ export async function migrateProjectOptionsToGlobalFiles(
     { path: projectPath, content: `${JSON.stringify(projectData, null, 2)}\n` },
   ]);
   return Object.keys(projectOptions);
+}
+
+/**
+ * True when the parsed global config source still carries the legacy
+ * options.caseSensitive key (the load-time in-memory migration keeps the
+ * file untouched, so the key persists until a repair runs).
+ */
+export function hasLegacyCaseSensitive(globalData: unknown): boolean {
+  const options = (globalData as { options?: unknown } | null | undefined)?.options;
+  return options !== null && typeof options === "object" && !Array.isArray(options)
+    && "caseSensitive" in (options as Record<string, unknown>);
+}
+
+/**
+ * Physically repair the legacy global options.caseSensitive key in one
+ * config file, matching the load-time in-memory migration semantics:
+ *  - the key is deleted;
+ *  - a stored `false` is written into every literal rule and allowlist
+ *    entry that lacks an explicit caseSensitive;
+ *  - a stored `false` also adds "flags": "i" to every regex rule without
+ *    explicit flags, preserving the old implicit case-insensitive behavior.
+ * Returns the applied change descriptions, or undefined when the file does
+ * not exist or has nothing to repair.
+ */
+export async function repairLegacyCaseSensitiveFile(globalPath: string): Promise<string[] | undefined> {
+  let data: RawConfigFile;
+  try {
+    data = await readRawConfigFile(globalPath);
+  } catch (err) {
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+  const options = data.options as RawConfigOptions | undefined;
+  if (!options || typeof options !== "object" || Array.isArray(options) || !("caseSensitive" in options)) {
+    return undefined;
+  }
+  const off = options.caseSensitive === false;
+  delete options.caseSensitive;
+  const changes = ["removed options.caseSensitive"];
+  if (off) {
+    let literalRules = 0;
+    let regexRules = 0;
+    let allowlistEntries = 0;
+    for (const ruleRaw of data.rules) {
+      if (ruleRaw === null || typeof ruleRaw !== "object" || Array.isArray(ruleRaw)) continue;
+      const rule = ruleRaw as RawConfigRule;
+      if (rule.type === "regex") {
+        if (rule.flags === undefined) {
+          rule.flags = "i";
+          regexRules++;
+        }
+      } else if (rule.caseSensitive === undefined) {
+        rule.caseSensitive = false;
+        literalRules++;
+      }
+    }
+    const list = options.allowlist;
+    if (Array.isArray(list)) {
+      for (let index = 0; index < list.length; index++) {
+        const raw = list[index];
+        if (typeof raw === "string") {
+          list[index] = { text: raw, caseSensitive: false };
+          allowlistEntries++;
+        } else if (raw !== null && typeof raw === "object" && !Array.isArray(raw)
+          && (raw as Record<string, unknown>).caseSensitive === undefined) {
+          (raw as Record<string, unknown>).caseSensitive = false;
+          allowlistEntries++;
+        }
+      }
+    }
+    if (literalRules > 0) changes.push(`set "caseSensitive": false on ${literalRules} literal rule(s)`);
+    if (regexRules > 0) changes.push(`added "flags": "i" to ${regexRules} regex rule(s) without flags`);
+    if (allowlistEntries > 0) changes.push(`set "caseSensitive": false on ${allowlistEntries} allowlist entry(ies)`);
+  }
+  await publishConfigWrites([{
+    path: globalPath,
+    content: `${JSON.stringify(data, null, 2)}\n`,
+  }]);
+  return changes;
 }
 
 /** Atomically persist options changes to one config file. */

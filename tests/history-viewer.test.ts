@@ -489,7 +489,6 @@ test("epoch history defaults to the latest factual version and switches without 
     activatedAt: epochId,
     behaviorFingerprint: `fingerprint-${epochId}`,
     enabled: true,
-    caseSensitive: true,
     systemPromptGuidance: false,
       disclosePlaceholders: false,
     reason: epochId === 1 ? "session_start" : "ui_edit",
@@ -572,7 +571,6 @@ test("epoch wrapper passes keystrokes to an active transcript search", () => {
     activatedAt: 1,
     behaviorFingerprint: "fp",
     enabled: true,
-    caseSensitive: true,
     systemPromptGuidance: false,
     disclosePlaceholders: false,
     reason: "session_start",
@@ -633,7 +631,6 @@ test("version rules show read-only rule metadata and net changes", () => {
     activatedAt: epochId,
     behaviorFingerprint: `epoch-${epochId}`,
     enabled: true,
-    caseSensitive: epochId > 1,
     systemPromptGuidance: false,
       disclosePlaceholders: false,
     reason: epochId === 1 ? "session_start" : "ui_edit",
@@ -696,7 +693,7 @@ test("version rules show read-only rule metadata and net changes", () => {
   assert.match(rules, /Private host\s+ADDED/);
   assert.match(rules, /Service token\s+DISABLED, MOVED 1→2, UPDATED/);
   assert.match(rules, /Removed since previous version:\n- Legacy token/);
-  assert.match(rules, /Other changes:\n- Case-sensitive matching enabled/);
+  assert.doesNotMatch(rules, /Case-sensitive matching/);
   assert.doesNotMatch(rules, /Add new rule|Enter edit|reveal value|TEST ACTIVE RULES/);
 
   const narrowLines = viewer.render(42);

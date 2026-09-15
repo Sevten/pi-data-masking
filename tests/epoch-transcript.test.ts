@@ -23,7 +23,6 @@ function epoch(epochId: number): RuleEpoch {
     activatedAt: epochId,
     behaviorFingerprint: `fingerprint-${epochId}`,
     enabled: true,
-    caseSensitive: true,
     systemPromptGuidance: false,
       disclosePlaceholders: false,
     reason: epochId === 1 ? "session_start" : "ui_edit",

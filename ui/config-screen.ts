@@ -62,6 +62,23 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       migrationNote = moved ? `Migrated to global config: ${moved.join(", ")}` : "";
     }
   }
+  // One-time repair offer: a global config still carrying the legacy
+  // options.caseSensitive key is repaired in place on confirmation (the
+  // load-time in-memory migration keeps running until the file is fixed).
+  if (bridge.legacyCasePending()) {
+    const choice = await selectMaskingOption(
+      ctx,
+      "Outdated case-sensitivity setting",
+      ["Fix config automatically", "Leave as is"],
+      "Your global config still uses the removed caseSensitive option, so masking keeps converting it on every load. " +
+        "The setting now lives on each rule and allowlist entry instead. " +
+        "Fix the global config automatically? Your current value is preserved, and regex rules without explicit flags keep matching case-insensitively.",
+    );
+    if (choice === "Fix config automatically") {
+      const changes = await bridge.repairLegacyCase(ctx);
+      migrationNote = changes ? `Repaired legacy caseSensitive: ${changes.join("; ")}` : "";
+    }
+  }
   const filters = ["all", "enabled", "disabled", "project", "global", "literal", "regex", "preset"] as const;
   let filterIndex = 0;
   let searchQuery = "";

@@ -37,7 +37,7 @@ export interface RuleEpochChange {
   ruleKey?: string;
   ruleId?: string;
   ruleName?: string;
-  option?: "caseSensitive" | "systemPromptGuidance" | "disclosePlaceholders";
+  option?: "systemPromptGuidance" | "disclosePlaceholders";
   fields?: string[];
   fromOrder?: number;
   toOrder?: number;
@@ -50,7 +50,6 @@ export interface RuleEpoch {
   activatedAt: number;
   behaviorFingerprint: string;
   enabled: boolean;
-  caseSensitive: boolean;
   systemPromptGuidance: boolean;
   disclosePlaceholders?: boolean | "per-rule";
   reason: RuleEpochReason;
@@ -89,6 +88,7 @@ function behaviorRule(rule: MaskingRule): Record<string, unknown> {
     real: rule.real,
     placeholder: rule.placeholder ?? null,
     disclosePlaceholder: rule.disclosePlaceholder ?? null,
+    caseSensitive: rule.caseSensitive ?? null,
     preserveStructure: rule.preserveStructure ?? null,
   };
 }
@@ -98,7 +98,6 @@ export function ruleBehaviorFingerprint(config: MaskingConfig, sessionKey: Buffe
   const behavior = config.enabled
     ? {
         enabled: true,
-        caseSensitive: config.options.caseSensitive,
         systemPromptGuidance: config.options.systemPromptGuidance,
         disclosePlaceholders: config.options.disclosePlaceholders,
         rules: config.rules.map(behaviorRule),
@@ -119,6 +118,7 @@ function descriptor(configured: ConfiguredMaskingRule, order: number, sessionKey
     sourceKind: configured.sourceKind,
     match: keyedDigest(sessionKey, isRegexRule(rule) ? rule.pattern : rule.real),
     flags: keyedDigest(sessionKey, isRegexRule(rule) ? rule.flags ?? null : null),
+    case: keyedDigest(sessionKey, isRegexRule(rule) ? null : rule.caseSensitive ?? null),
     placeholder: keyedDigest(sessionKey, isRegexRule(rule) ? null : rule.placeholder ?? null),
     preserveStructure: keyedDigest(sessionKey, rule.preserveStructure ?? null),
   };
@@ -152,9 +152,6 @@ export function summarizeRuleChanges(
   const changes: RuleEpochChange[] = [];
   if (previous.enabled !== next.enabled) {
     changes.push({ kind: next.enabled ? "masking_enabled" : "masking_disabled" });
-  }
-  if (previous.options.caseSensitive !== next.options.caseSensitive) {
-    changes.push({ kind: "option_changed", option: "caseSensitive" });
   }
   if (previous.options.systemPromptGuidance !== next.options.systemPromptGuidance) {
     changes.push({ kind: "option_changed", option: "systemPromptGuidance" });
@@ -225,9 +222,6 @@ export function summarizeEpochNetChanges(previous: RuleEpoch, next: RuleEpoch): 
   const changes: RuleEpochChange[] = [];
   if (previous.enabled !== next.enabled) {
     changes.push({ kind: next.enabled ? "masking_enabled" : "masking_disabled" });
-  }
-  if (previous.caseSensitive !== next.caseSensitive) {
-    changes.push({ kind: "option_changed", option: "caseSensitive" });
   }
   if (previous.systemPromptGuidance !== next.systemPromptGuidance) {
     changes.push({ kind: "option_changed", option: "systemPromptGuidance" });
@@ -328,7 +322,6 @@ export function createRuleEpoch(args: {
     activatedAt: args.activatedAt ?? Date.now(),
     behaviorFingerprint: ruleBehaviorFingerprint(config, sessionKey),
     enabled: config.enabled,
-    caseSensitive: config.options.caseSensitive,
     systemPromptGuidance: config.options.systemPromptGuidance,
     disclosePlaceholders: config.options.disclosePlaceholders,
     reason,
@@ -373,7 +366,7 @@ function parseChange(value: unknown): RuleEpochChange | undefined {
     ruleKey: typeof value.ruleKey === "string" ? value.ruleKey : undefined,
     ruleId: typeof value.ruleId === "string" ? value.ruleId : undefined,
     ruleName: typeof value.ruleName === "string" ? value.ruleName : undefined,
-    option: value.option === "caseSensitive" || value.option === "systemPromptGuidance" ? value.option : undefined,
+    option: value.option === "systemPromptGuidance" || value.option === "disclosePlaceholders" ? value.option as "systemPromptGuidance" | "disclosePlaceholders" : undefined,
     fields: value.fields as string[] | undefined,
     fromOrder: typeof value.fromOrder === "number" && Number.isInteger(value.fromOrder) ? value.fromOrder : undefined,
     toOrder: typeof value.toOrder === "number" && Number.isInteger(value.toOrder) ? value.toOrder : undefined,
@@ -388,7 +381,6 @@ export function parseRuleEpoch(value: unknown): RuleEpoch | undefined {
     typeof value.activatedAt !== "number" || !Number.isFinite(value.activatedAt) ||
     typeof value.behaviorFingerprint !== "string" ||
     typeof value.enabled !== "boolean" ||
-    typeof value.caseSensitive !== "boolean" ||
     typeof value.systemPromptGuidance !== "boolean" ||
     (value.disclosePlaceholders !== undefined && value.disclosePlaceholders !== "per-rule" && typeof value.disclosePlaceholders !== "boolean") ||
     (value.reason !== "session_start" && value.reason !== "ui_edit" && value.reason !== "file_reload" && value.reason !== "toggle") ||
@@ -404,7 +396,6 @@ export function parseRuleEpoch(value: unknown): RuleEpoch | undefined {
     activatedAt: value.activatedAt,
     behaviorFingerprint: value.behaviorFingerprint,
     enabled: value.enabled,
-    caseSensitive: value.caseSensitive,
     systemPromptGuidance: value.systemPromptGuidance,
     disclosePlaceholders: value.disclosePlaceholders ?? false,
     reason: value.reason,

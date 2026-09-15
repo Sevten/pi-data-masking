@@ -590,7 +590,7 @@ test("allowlist zone opens the editor; staged entries persist as options", async
       // finished saving (main screen shows the saved message) before closing.
       // Options are global-only: the entry lands in the global config.
       await waitFor(() => existsSync(globalConfigPath)
-        && JSON.parse(readFileSync(globalConfigPath, "utf8")).options?.allowlist?.[0] === "10.0.0.9");
+        && JSON.parse(readFileSync(globalConfigPath, "utf8")).options?.allowlist?.[0]?.text === "10.0.0.9");
       await waitFor(() => component.render(100).some((line) => line.includes("Saved · global allowlist updated")));
       component.handleInput(INPUT.escape);
     },
@@ -608,8 +608,8 @@ test("allowlist zone opens the editor; staged entries persist as options", async
   try {
     assert.equal(harness.commands.has("masking"), true);
     await harness.commands.get("masking")!.handler("", harness.ctx);
-    const saved = JSON.parse(readFileSync(globalConfigPath, "utf8")) as { options?: { allowlist?: string[] } };
-    assert.deepEqual(saved.options?.allowlist, ["10.0.0.9"]);
+    const saved = JSON.parse(readFileSync(globalConfigPath, "utf8")) as { options?: { allowlist?: Array<{ text: string }> } };
+    assert.deepEqual(saved.options?.allowlist, [{ text: "10.0.0.9" }]);
   } finally {
     await harness.shutdown();
     rmSync(dir, { recursive: true, force: true });
@@ -643,8 +643,10 @@ test("stale project options are offered for migration into the global config", a
   try {
     await harness.commands.get("masking")!.handler("", harness.ctx);
     const globalData = JSON.parse(readFileSync(globalConfigPath, "utf8"));
-    assert.equal(globalData.options.caseSensitive, false);
-    assert.deepEqual(globalData.options.allowlist, ["10.0.0.5"]);
+    // Legacy caseSensitive is no longer a global option: its false value lands
+    // on the allowlist entries instead.
+    assert.equal(globalData.options.caseSensitive, undefined);
+    assert.deepEqual(globalData.options.allowlist, [{ text: "10.0.0.5", caseSensitive: false }]);
     const projectData = JSON.parse(readFileSync(projectPath, "utf8"));
     assert.equal(projectData.options, undefined);
     assert.deepEqual(projectData.rules.map((r: { id: string }) => r.id), ["ip"]);

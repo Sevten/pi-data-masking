@@ -53,7 +53,6 @@ function config(overrides: Partial<MaskingConfig> & {
     rules: configuredRules.filter((c) => c.enabled && c.available).map((c) => c.rule),
     configuredRules,
     options: {
-      caseSensitive: true,
       showStatusBar: true,
       systemPromptGuidance: overrides.guidance ?? true,
       disclosePlaceholders: overrides.discloseGlobal ?? false,
@@ -219,7 +218,7 @@ test("regex rules with disclosePlaceholder are rejected; literal values survive 
 
 test("note with embedded placeholders survives Hook-6-style re-masking unchanged", () => {
   const rules = [{ id: "k", real: "real-secret-value-123456", placeholder: "FIXEDPRODTOKEN" }];
-  const masker = new Masker(rules as never, true, KEY, new Map(), new Set(), new Set());
+  const masker = new Masker(rules as never, KEY, new Map(), new Set(), new Set());
   const note = composeGuidanceNote([{ placeholder: "FIXEDPRODTOKEN", custom: true }]);
   const first = masker.maskValue(note).value;
   const second = masker.maskValue(first).value;
@@ -229,7 +228,7 @@ test("note with embedded placeholders survives Hook-6-style re-masking unchanged
 
 test("note text containing a real value is masked by the safety net", () => {
   const rules = [{ id: "k", real: "real-secret-value-123456", placeholder: "FIXEDPRODTOKEN" }];
-  const masker = new Masker(rules as never, true, KEY, new Map(), new Set(), new Set());
+  const masker = new Masker(rules as never, KEY, new Map(), new Set(), new Set());
   const contaminated = `preamble real-secret-value-123456 tail\n- FIXEDPRODTOKEN`;
   const masked = masker.maskValue(contaminated).value as string;
   assert.ok(!masked.includes("real-secret-value-123456"));

@@ -46,7 +46,8 @@
  *    ever restore P2→P1.
  *
  * Allowlist:
- *  - `options.allowlist` entries are literal text the user marks as safe.
+ *  - Allowlist entries (options.allowlist) are literal text the user marks
+ *    as safe, each with its own case-sensitivity flag.
  *    Boundary-aligned occurrences are located in the original text before
  *    rules run, and any rule match overlapping one is skipped — so an
  *    entry may exempt a bare value ("10.0.0.5") or a whole line
@@ -113,6 +114,9 @@ interface BaseMaskingRule {
 
 export interface LiteralMaskingRule extends BaseMaskingRule {
   type?: "literal";
+  /** Per-rule case-sensitivity switch. Omitted/true = case-sensitive
+   *  matching (backward-compatible default); false = case-insensitive. */
+  caseSensitive?: boolean;
   /** The real value to be replaced */
   real: string;
   /**
@@ -132,9 +136,9 @@ export interface RegexMaskingRule extends BaseMaskingRule {
   /** Regex source (no delimiters) */
   pattern: string;
   /**
-   * Optional flags. If provided, they fully control case sensitivity etc.
-   * (independent of the global caseSensitive option); if omitted, falls
-   * back to global options.caseSensitive (adds "i" when false).
+   * Optional flags. They fully control case sensitivity etc.; placeholder
+   * restoration for this rule's dynamically discovered values is
+   * case-insensitive exactly when the flags contain "i".
    * "g" (scan all matches) and "d" (capture group indices) are always
    * appended internally — no need to specify them manually.
    */
@@ -159,7 +163,15 @@ export interface DynamicMapEntry {
   placeholder: string;
   ruleId: string;
   description?: string;
+  /** Case-insensitive restoration, inherited from the discovering rule
+   *  (see BaseMaskingRule.caseSensitive). Missing on entries persisted by
+   *  older versions = false (case-sensitive). */
+  ci?: boolean;
 }
+
+/** Allowlist entry as accepted by the Masker: a bare string (case-sensitive)
+ *  or an object with its own case-sensitivity flag. */
+export type AllowlistInput = string | { text: string; caseSensitive?: boolean };
 
 /** key = real value. Should be reused across Masker rebuilds within a session. */
 export type DynamicPlaceholderMap = Map<string, DynamicMapEntry>;
@@ -228,6 +240,8 @@ interface CompiledLiteralRule {
   placeholder: string;
   pattern: RegExp; // mask direction: matches real
   unmaskPattern: RegExp; // unmask direction: matches placeholder
+  /** Case-insensitive matching, from the rule's caseSensitive flag. */
+  ci: boolean;
 }
 
 interface CompiledRegexRule {
@@ -236,6 +250,8 @@ interface CompiledRegexRule {
   description?: string;
   pattern: RegExp; // always has g + d flags
   preserveStructure?: PreserveStructure;
+  /** Case-insensitive matching (only when the rule has no explicit flags). */
+  ci: boolean;
 }
 
 type CompiledRule = CompiledLiteralRule | CompiledRegexRule;
@@ -251,6 +267,8 @@ interface ReplaceSpan {
   placeholder?: string;
   /** Carried from the matching rule for lazy placeholder generation. */
   preserveStructure?: PreserveStructure;
+  /** Carried from the matching rule so the dynamic entry inherits its case mode. */
+  ci?: boolean;
 }
 
 export const MAX_COLLISION_ATTEMPTS = 10;
@@ -287,25 +305,28 @@ export class Masker {
   private readonly protectedValues: Set<string>;
   /** Allowlist entries: literal text regions that are never masked (see
    *  collectAllowlistRegions; occurrences must be boundary-aligned).
-   *  Kept as written, plus a lowercased alias when the masker is
-   *  case-insensitive. */
+   *  Kept as written, plus a lowercased alias on case-insensitive entries. */
   private readonly allowlistEntries: Array<{ text: string; lower: string | null }>;
   private usedPlaceholders: Set<string> = new Set();
-  /** Case flag for unmask patterns, mirrors the mask direction ("" or "i"). */
-  private readonly caseFlag: string;
 
-  /** Cached alternation regex matching every known placeholder string; see getProtectPattern(). */
-  private protectPattern: RegExp | null = null;
+  /** Cached alternation regexes matching every known placeholder string,
+   *  split by case mode (cs = case-sensitive rules, ci = case-insensitive
+   *  ones); see getProtectPatterns(). */
+  private protectPatterns: { cs: RegExp | null; ci: RegExp | null } | null = null;
   private protectPatternDirty = true;
 
   /** Cached placeholder → real lookup for display-only restoration; see unmaskDisplay(). */
   private displayLookup: Map<string, string> | null = null;
-  /** Lowercase alias of displayLookup, built only for case-insensitive maskers. */
+  /** Lowercase alias covering only case-insensitively restored placeholders. */
   private displayLookupLower: Map<string, string> | null = null;
-  /** Cached known-placeholder first-character index for stream hold-back; see displayHoldbackLength(). */
-  private displayPlaceholders: Map<number, Array<{ p: string; len: number }>> | null = null;
-  private displayPlaceholdersMaxLen = 0;
+  /** Cached known-placeholder first-character indexes for stream hold-back,
+   *  split by case mode; see displayHoldbackLength(). */
+  private displayPlaceholderCache: {
+    cs: { groups: Map<number, Array<{ p: string; len: number }>>; maxLen: number } | null;
+    ci: { groups: Map<number, Array<{ p: string; len: number }>>; maxLen: number } | null;
+  } | null = null;
   private displayLookupDirty = true;
+  private displayCacheDirty = true;
 
   /** Cached longest-first dynamic entries with their compiled literal match
    *  patterns for the unmask direction; see getUnmaskDynamicPatterns(). */
@@ -316,12 +337,11 @@ export class Masker {
   public readonly warnings: string[] = [];
 
   /**
-   * @param rules        Merged rule list (literal + regex)
-   * @param caseSensitive Global case-sensitivity option; regex rules with
-   *                      their own flags fully override it
+   * @param rules        Merged rule list (literal + regex); each rule's
+   *                     caseSensitive flag controls its own matching
    * @param sessionKey   Session key used to derive placeholders for
-   *                      regex-discovered values; null is fine for
-   *                      literal-only setups
+   *                     regex-discovered values; null is fine for
+   *                     literal-only setups
    * @param dynamicMap   Shared map (regex-discovered real → placeholder)
    *                      reused across Masker rebuilds; lifecycle owned by
    *                      the caller (index.ts), cleared only on session_start
@@ -329,33 +349,34 @@ export class Masker {
    *                      never masked (see file header)
    * @param protectedValues  Shared set of values first seen outside model
    *                      output; masked in every message role
+   * @param allowlist    Literal text never masked; bare strings are
+   *                     case-sensitive, objects carry their own flag
    */
   constructor(
     rules: MaskingRule[],
-    caseSensitive: boolean,
     sessionKey: Buffer | null = null,
     dynamicMap: DynamicPlaceholderMap = new Map(),
     llmInventedValues: Set<string> = new Set(),
     protectedValues: Set<string> = new Set(),
-    allowlist: Iterable<string> = []
+    allowlist: Iterable<AllowlistInput> = []
   ) {
     this.sessionKey = sessionKey;
     this.dynamicMap = dynamicMap;
     this.llmInventedValues = llmInventedValues;
     this.protectedValues = protectedValues;
-    this.caseFlag = caseSensitive ? "" : "i";
 
     this.allowlistEntries = [...allowlist]
-      .filter((entry) => entry.length > 0)
+      .map((entry) => typeof entry === "string" ? { text: entry, caseSensitive: true } : entry)
+      .filter((entry) => entry.text.length > 0)
       .map((entry) => ({
-        text: entry,
-        lower: this.caseFlag === "i" ? entry.toLowerCase() : null,
+        text: entry.text,
+        lower: entry.caseSensitive === false ? entry.text.toLowerCase() : null,
       }));
 
     for (const rule of rules) {
       if (rule.enabled === false) continue;
       if (isRegexRule(rule)) {
-        const compiled = this.compileRegexRule(rule, caseSensitive);
+        const compiled = this.compileRegexRule(rule);
         if (compiled) this.compiledRules.push(compiled);
         continue;
       }
@@ -364,8 +385,10 @@ export class Masker {
       // already fills it in) are silently skipped.
       if (!rule.real || !rule.placeholder) continue;
 
-      const pattern = new RegExp(toLiteralPattern(rule.real), `g${this.caseFlag}`);
-      const unmaskPattern = new RegExp(toLiteralPattern(rule.placeholder), "g" + this.caseFlag);
+      const ci = rule.caseSensitive === false;
+      const flag = ci ? "i" : "";
+      const pattern = new RegExp(toLiteralPattern(rule.real), `g${flag}`);
+      const unmaskPattern = new RegExp(toLiteralPattern(rule.placeholder), `g${flag}`);
 
       this.compiledRules.push({
         kind: "literal",
@@ -375,6 +398,7 @@ export class Masker {
         placeholder: rule.placeholder,
         pattern,
         unmaskPattern,
+        ci,
       });
 
       this.literalUnmaskRules.push({
@@ -429,9 +453,9 @@ export class Masker {
     // An allowlist entry equal to a rule's placeholder exempts the
     // placeholder text itself (the covered-region logic already keeps
     // placeholders intact), which is almost certainly a config mistake.
-    const placeholderOwnersLower = this.caseFlag === "i"
-      ? new Map([...placeholderOwners].map(([p, o]) => [p.toLowerCase(), o]))
-      : null;
+    // Case-insensitive entries compare lowercased, so their check uses a
+    // lowercased alias of the owner map.
+    const placeholderOwnersLower = new Map([...placeholderOwners].map(([p, o]) => [p.toLowerCase(), o]));
     for (const { text: entry, lower } of this.allowlistEntries) {
       const owner = placeholderOwners.get(entry)
         ?? (lower !== null ? placeholderOwnersLower?.get(lower) : undefined);
@@ -444,11 +468,13 @@ export class Masker {
   }
 
   private compileRegexRule(
-    rule: RegexMaskingRule,
-    caseSensitive: boolean
+    rule: RegexMaskingRule
   ): CompiledRegexRule | null {
+    // Case-insensitive placeholder restoration inherits the rule's own
+    // "i" flag (the sole case-sensitivity control for regex rules).
+    const ci = (rule.flags ?? "").includes("i");
     try {
-      const baseFlags = rule.flags ?? (caseSensitive ? "" : "i");
+      const baseFlags = rule.flags ?? "";
       const flagSet = new Set(baseFlags.split(""));
       flagSet.add("g"); // scan all matches
       flagSet.add("d"); // capture group indices, needed for partial replacement
@@ -459,6 +485,7 @@ export class Masker {
         description: rule.description,
         pattern,
         preserveStructure: rule.preserveStructure,
+        ci,
       };
     } catch (err) {
       this.warnings.push(
@@ -473,7 +500,8 @@ export class Masker {
     real: string,
     ruleId: string,
     description: string | undefined,
-    preserveStructure: PreserveStructure | undefined
+    preserveStructure: PreserveStructure | undefined,
+    ci: boolean
   ): string {
     const existing = this.dynamicMap.get(real);
     if (existing) {
@@ -508,10 +536,11 @@ export class Masker {
     }
 
     this.usedPlaceholders.add(candidate);
-    this.dynamicMap.set(real, { real, placeholder: candidate, ruleId, description });
+    this.dynamicMap.set(real, { real, placeholder: candidate, ruleId, description, ci });
     this.protectedValues.add(real);
     this.protectPatternDirty = true;
     this.displayLookupDirty = true;
+    this.displayCacheDirty = true;
     this.unmaskDynamicPatternsDirty = true;
     return candidate;
   }
@@ -530,34 +559,30 @@ export class Masker {
    * The LLM then sees P2, and unmask only ever restores P2→P1 — never the
    * real secret.
    *
-   * The pattern matches placeholders with the same case behavior the unmask
-   * direction uses (global `caseFlag`), so the protected regions agree with
-   * what `unmask()` can actually restore.
+   * The patterns match placeholders with the same case behavior the unmask
+   * direction uses (per-rule `caseSensitive`), so the protected regions
+   * agree with what `unmask()` can actually restore.
    */
-  private getProtectPattern(): RegExp | null {
-    if (!this.protectPatternDirty) return this.protectPattern;
+  private getProtectPatterns(): { cs: RegExp | null; ci: RegExp | null } {
+    if (!this.protectPatternDirty) return this.protectPatterns ?? { cs: null, ci: null };
 
-    const set = new Set<string>();
+    const cs = new Set<string>();
+    const ci = new Set<string>();
     for (const rule of this.compiledRules) {
-      if (rule.kind === "literal") set.add(rule.placeholder);
+      if (rule.kind === "literal") (rule.ci ? ci : cs).add(rule.placeholder);
     }
-    for (const entry of this.dynamicMap.values()) set.add(entry.placeholder);
+    for (const entry of this.dynamicMap.values()) (entry.ci ? ci : cs).add(entry.placeholder);
 
-    if (set.size === 0) {
-      this.protectPattern = null;
-      this.protectPatternDirty = false;
-      return null;
-    }
-
-    // Longest-first so a longer placeholder wins when one is a substring of
-    // another, mirroring the unmask direction's ordering.
-    const placeholders = Array.from(set).sort((a, b) => b.length - a.length);
-    this.protectPattern = new RegExp(
-      placeholders.map(toLiteralPattern).join("|"),
-      "g" + this.caseFlag
-    );
+    const build = (set: Set<string>, flags: string): RegExp | null => {
+      if (set.size === 0) return null;
+      // Longest-first so a longer placeholder wins when one is a substring of
+      // another, mirroring the unmask direction's ordering.
+      const placeholders = Array.from(set).sort((a, b) => b.length - a.length);
+      return new RegExp(placeholders.map(toLiteralPattern).join("|"), `g${flags}`);
+    };
+    this.protectPatterns = { cs: build(cs, ""), ci: build(ci, "i") };
     this.protectPatternDirty = false;
-    return this.protectPattern;
+    return this.protectPatterns;
   }
 
   /**
@@ -566,34 +591,37 @@ export class Masker {
    * (contiguous masked regions count as one interval).
    */
   private mergeCoveredRegions(text: string): Array<[number, number]> {
-    const protect = this.getProtectPattern();
-    if (protect === null) return [];
+    const { cs, ci } = this.getProtectPatterns();
+    if (cs === null && ci === null) return [];
 
     const spans: Array<[number, number]> = [];
-    protect.lastIndex = 0;
-    let pm: RegExpExecArray | null;
-    while ((pm = protect.exec(text))) {
-      if (pm[0].length === 0) {
-        protect.lastIndex++;
-        continue;
+    for (const protect of [cs, ci]) {
+      if (protect === null) continue;
+      protect.lastIndex = 0;
+      let pm: RegExpExecArray | null;
+      while ((pm = protect.exec(text))) {
+        if (pm[0].length === 0) {
+          protect.lastIndex++;
+          continue;
+        }
+        spans.push([pm.index, pm.index + pm[0].length]);
       }
-      spans.push([pm.index, pm.index + pm[0].length]);
     }
     if (spans.length === 0) return [];
 
     const sorted = spans.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     const merged: Array<[number, number]> = [];
-    let [cs, ce] = sorted[0];
+    let [csStart, csEnd] = sorted[0];
     for (let i = 1; i < sorted.length; i++) {
       const [s, e] = sorted[i];
-      if (s <= ce) {
-        if (e > ce) ce = e;
+      if (s <= csEnd) {
+        if (e > csEnd) csEnd = e;
       } else {
-        merged.push([cs, ce]);
-        [cs, ce] = [s, e];
+        merged.push([csStart, csEnd]);
+        [csStart, csEnd] = [s, e];
       }
     }
-    merged.push([cs, ce]);
+    merged.push([csStart, csEnd]);
     return merged;
   }
 
@@ -648,20 +676,20 @@ export class Masker {
    * run of token characters (see isTokenChar): "Bearer test" does not
    * match inside "Bearer test123", and "10.0.0.5" does not match inside
    * "10.0.0.55" — a prefix of a longer value is a different value, which
-   * stays masked. Case-insensitive maskers scan a lowercased copy of the
+   * stays masked. Case-insensitive entries scan a lowercased copy of the
    * text; boundary checks always run on the original characters.
    */
   private collectAllowlistRegions(text: string): Array<[number, number]> {
     const regions: Array<[number, number]> = [];
     if (this.allowlistEntries.length === 0) return regions;
-    const caseInsensitive = this.caseFlag === "i";
-    const hay = caseInsensitive ? text.toLowerCase() : text;
+    const hay = text.toLowerCase();
     for (const { text: entry, lower } of this.allowlistEntries) {
-      const needle = caseInsensitive ? lower as string : entry;
+      const needle = lower !== null ? lower : entry;
+      const scanHay = lower !== null ? hay : text;
       for (
-        let pos = hay.indexOf(needle);
+        let pos = scanHay.indexOf(needle);
         pos !== -1;
-        pos = hay.indexOf(needle, pos + entry.length)
+        pos = scanHay.indexOf(needle, pos + entry.length)
       ) {
         const end = pos + entry.length;
         const before = pos > 0 ? text[pos - 1] : "";
@@ -786,6 +814,7 @@ export class Masker {
               ruleId: rule.ruleId,
               description: rule.description,
               preserveStructure: rule.preserveStructure,
+              ci: rule.ci,
               // placeholder left unset; resolved lazily during output
             });
           }
@@ -815,7 +844,8 @@ export class Masker {
           span.real,
           span.ruleId,
           span.description,
-          span.preserveStructure
+          span.preserveStructure,
+          span.ci ?? false
         );
       result += placeholder;
       cursor = span.end;
@@ -840,7 +870,7 @@ export class Masker {
    * collectUnmaskSpans(). unmask() runs on every message_end and tool_call,
    * so compiling one RegExp per entry — and re-sorting the map — per call
    * would dominate runtime once the dynamic map grows into the thousands.
-   * Cached like protectPattern/displayLookup; invalidated only when a new
+   * Cached like protectPatterns/displayLookup; invalidated only when a new
    * dynamic placeholder is generated.
    */
   private getUnmaskDynamicPatterns(): Array<{ entry: DynamicMapEntry; pattern: RegExp }> {
@@ -850,7 +880,7 @@ export class Masker {
     );
     this.unmaskDynamicPatterns = sorted.map((entry) => ({
       entry,
-      pattern: new RegExp(toLiteralPattern(entry.placeholder), "g" + this.caseFlag),
+      pattern: new RegExp(toLiteralPattern(entry.placeholder), entry.ci ? "gi" : "g"),
     }));
     this.unmaskDynamicPatternsDirty = false;
     return this.unmaskDynamicPatterns;
@@ -960,14 +990,24 @@ export class Masker {
     if (exact.size === 0) {
       this.displayLookup = null;
       this.displayLookupLower = null;
-      this.displayPlaceholders = null;
+      this.displayPlaceholderCache = null;
       this.displayLookupDirty = false;
+      this.displayCacheDirty = false;
       return null;
     }
     let lower: Map<string, string> | null = null;
-    if (this.caseFlag === "i") {
+    const ciOwners = new Set<string>();
+    for (const rule of this.compiledRules) {
+      if (rule.kind === "literal" && rule.ci) ciOwners.add(rule.placeholder);
+    }
+    for (const entry of this.dynamicMap.values()) {
+      if (entry.ci) ciOwners.add(entry.placeholder);
+    }
+    if (ciOwners.size > 0) {
       lower = new Map<string, string>();
-      for (const [placeholder, real] of exact) {
+      for (const placeholder of ciOwners) {
+        const real = exact.get(placeholder);
+        if (real === undefined) continue;
         const key = placeholder.toLowerCase();
         if (!lower.has(key)) lower.set(key, real);
       }
@@ -991,90 +1031,115 @@ export class Masker {
    */
   unmaskDisplay(text: string): string {
     if (typeof text !== "string" || text.length === 0) return text;
-    const protect = this.getProtectPattern();
-    if (protect === null) return text;
-
-    // Fast path: most rendered content contains no placeholder at all, so a
-    // single anchored scan avoids building replacement output entirely.
-    protect.lastIndex = 0;
-    if (!protect.test(text)) {
-      protect.lastIndex = 0;
-      return text;
-    }
-    protect.lastIndex = 0;
+    const { cs, ci } = this.getProtectPatterns();
+    if (cs === null && ci === null) return text;
 
     const lookup = this.getDisplayLookup();
     if (lookup === null) return text;
     const { exact, lower } = lookup;
-    return text.replace(protect, (matched) => {
-      const direct = exact.get(matched);
-      if (direct !== undefined) return direct;
-      if (lower !== null) {
-        const ci = lower.get(matched.toLowerCase());
-        if (ci !== undefined) return ci;
+
+    const replaceWith = (current: string, protect: RegExp, ciPass: boolean): string => {
+      protect.lastIndex = 0;
+      if (!protect.test(current)) {
+        protect.lastIndex = 0;
+        return current;
       }
-      return matched;
-    });
+      protect.lastIndex = 0;
+      return current.replace(protect, (matched) => {
+        if (ciPass) {
+          // Case-insensitive pass: exact case first, then lowercased alias.
+          const direct = exact.get(matched);
+          if (direct !== undefined) return direct;
+          const lowered = lower?.get(matched.toLowerCase());
+          return lowered ?? matched;
+        }
+        return exact.get(matched) ?? matched;
+      });
+    };
+
+    // Case-insensitive placeholders run first so a case-sensitive placeholder
+    // that contains one is matched literally in the second pass, not partially
+    // restored by the first.
+    let result = text;
+    if (ci !== null) result = replaceWith(result, ci, true);
+    if (cs !== null) result = replaceWith(result, cs, false);
+    return result;
   }
 
   /**
    * Length of the longest suffix of `text` that is a strict prefix of some
    * known placeholder. Callers pass post-unmaskDisplay() text, so complete
    * placeholders never appear here and only potentially-incomplete ones are
-   * held back while streaming. Case-insensitive maskers compare lowercased.
+   * held back while streaming. Case-insensitive placeholders compare against
+   * a lowercased copy of the text; case-sensitive ones against the original.
    */
   displayHoldbackLength(text: string): number {
     if (typeof text !== "string" || text.length === 0) return 0;
     const cached = this.getDisplayPlaceholderCache();
     if (cached === null) return 0;
-    const hay = cached.caseInsensitive ? text.toLowerCase() : text;
+    const n = text.length;
+    const check = (
+      cache: { groups: Map<number, Array<{ p: string; len: number }>>; maxLen: number } | null,
+      hay: string
+    ): number => {
+      if (cache === null) return 0;
+      const limit = Math.min(cache.maxLen - 1, n);
+      for (let l = limit; l > 0; l--) {
+        const group = cache.groups.get(hay.charCodeAt(n - l));
+        if (group === undefined) continue;
+        for (const { p, len } of group) {
+          if (len > l && hay.endsWith(p.slice(0, l))) return l;
+        }
+      }
+      return 0;
+    };
     // Lengths descend from the longest possible strict prefix, so the first
     // hit is the maximum. The first-character index prunes the common case
     // (tail characters that start no placeholder at all) to one Map lookup
     // per candidate length — this runs on every stream delta.
-    const n = hay.length;
-    const limit = Math.min(cached.maxLen - 1, n);
-    for (let l = limit; l > 0; l--) {
-      const group = cached.groups.get(hay.charCodeAt(n - l));
-      if (group === undefined) continue;
-      for (const { p, len } of group) {
-        if (len > l && hay.endsWith(p.slice(0, l))) return l;
-      }
-    }
-    return 0;
+    return Math.max(
+      check(cached.ci, text.toLowerCase()),
+      check(cached.cs, text),
+    );
   }
 
-  private getDisplayPlaceholderCache(): { groups: Map<number, Array<{ p: string; len: number }>>; maxLen: number; caseInsensitive: boolean } | null {
-    if (!this.displayLookupDirty) return this.displayPlaceholders === null ? null : { groups: this.displayPlaceholders, maxLen: this.displayPlaceholdersMaxLen, caseInsensitive: this.caseFlag === "i" };
-    const seen = new Set<string>();
-    const list: Array<{ p: string; len: number }> = [];
-    for (const rule of this.compiledRules) {
-      if (rule.kind !== "literal") continue;
-      if (seen.has(rule.placeholder)) continue;
-      seen.add(rule.placeholder);
-      list.push({ p: this.caseFlag === "i" ? rule.placeholder.toLowerCase() : rule.placeholder, len: rule.placeholder.length });
-    }
-    for (const entry of this.dynamicMap.values()) {
-      if (seen.has(entry.placeholder)) continue;
-      seen.add(entry.placeholder);
-      list.push({ p: this.caseFlag === "i" ? entry.placeholder.toLowerCase() : entry.placeholder, len: entry.placeholder.length });
-    }
-    if (list.length === 0) {
-      this.displayPlaceholders = null;
-      return null;
-    }
-    const groups = new Map<number, Array<{ p: string; len: number }>>();
-    let maxLen = 0;
-    for (const item of list) {
-      if (item.len > maxLen) maxLen = item.len;
-      const first = item.p.charCodeAt(0);
-      const group = groups.get(first);
-      if (group) group.push(item);
-      else groups.set(first, [item]);
-    }
-    this.displayPlaceholders = groups;
-    this.displayPlaceholdersMaxLen = maxLen;
-    return { groups, maxLen, caseInsensitive: this.caseFlag === "i" };
+  private getDisplayPlaceholderCache(): {
+    cs: { groups: Map<number, Array<{ p: string; len: number }>>; maxLen: number } | null;
+    ci: { groups: Map<number, Array<{ p: string; len: number }>>; maxLen: number } | null;
+  } | null {
+    if (!this.displayCacheDirty) return this.displayPlaceholderCache;
+    const build = (lowered: boolean): { groups: Map<number, Array<{ p: string; len: number }>>; maxLen: number } | null => {
+      const seen = new Set<string>();
+      const list: Array<{ p: string; len: number }> = [];
+      const push = (placeholder: string): void => {
+        if (seen.has(placeholder)) return;
+        seen.add(placeholder);
+        const p = lowered ? placeholder.toLowerCase() : placeholder;
+        list.push({ p, len: placeholder.length });
+      };
+      for (const rule of this.compiledRules) {
+        if (rule.kind !== "literal" || rule.ci !== lowered) continue;
+        push(rule.placeholder);
+      }
+      for (const entry of this.dynamicMap.values()) {
+        if ((entry.ci ?? false) !== lowered) continue;
+        push(entry.placeholder);
+      }
+      if (list.length === 0) return null;
+      const groups = new Map<number, Array<{ p: string; len: number }>>();
+      let maxLen = 0;
+      for (const item of list) {
+        if (item.len > maxLen) maxLen = item.len;
+        const first = item.p.charCodeAt(0);
+        const group = groups.get(first);
+        if (group) group.push(item);
+        else groups.set(first, [item]);
+      }
+      return { groups, maxLen };
+    };
+    this.displayPlaceholderCache = { cs: build(false), ci: build(true) };
+    this.displayCacheDirty = false;
+    return this.displayPlaceholderCache;
   }
 
   // ── Arbitrary-depth objects (recurse over all string values, keys untouched) ──
