@@ -949,7 +949,7 @@ function buildLoadResult(
     // drop the stale key there too.
     delete (config.options as unknown as Record<string, unknown>).caseSensitive;
     warnings.push(
-      "Outdated caseSensitive option in the global config is still being applied on every load — " +
+      "outdated caseSensitive option in the global config is still being applied on every load — " +
         "open /masking to fix it automatically.",
     );
   }

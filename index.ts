@@ -371,7 +371,7 @@ export default async function (pi: ExtensionAPI) {
       } catch (err) {
         if (!persistenceWarned) {
           persistenceWarned = true;
-          ctx.ui.notify(`Failed to persist masking rule history: ${(err as Error).message}`, "warning");
+          ctx.ui.notify(`pi-data-masking: failed to persist masking rule history: ${(err as Error).message}`, "warning");
         }
         return;
       }
@@ -403,7 +403,7 @@ export default async function (pi: ExtensionAPI) {
     } catch (err) {
       if (!persistenceWarned) {
         persistenceWarned = true;
-        ctx.ui.notify(`Failed to persist factual masking history: ${(err as Error).message}`, "warning");
+        ctx.ui.notify(`pi-data-masking: failed to persist factual masking history: ${(err as Error).message}`, "warning");
       }
     }
   }
@@ -649,7 +649,7 @@ export default async function (pi: ExtensionAPI) {
   }
 
   function notifyWarnings(ctx: ExtensionContext, warnings: string[]) {
-    for (const w of warnings) ctx.ui.notify(w, "info");
+    for (const w of warnings) ctx.ui.notify(w.startsWith("pi-data-masking:") ? w : `pi-data-masking: ${w}`, "info");
   }
 
   function updateStatus(ctx: ExtensionContext) {
@@ -729,7 +729,7 @@ export default async function (pi: ExtensionAPI) {
     } catch (err) {
       if (!persistenceWarned) {
         persistenceWarned = true;
-        ctx.ui.notify(`Failed to persist masking history: ${(err as Error).message}`, "warning");
+        ctx.ui.notify(`pi-data-masking: failed to persist masking history: ${(err as Error).message}`, "warning");
       }
     }
   }
@@ -743,7 +743,7 @@ export default async function (pi: ExtensionAPI) {
     } catch (err) {
       if (!persistenceWarned) {
         persistenceWarned = true;
-        ctx.ui.notify(`Failed to persist masking session state: ${(err as Error).message}`, "warning");
+        ctx.ui.notify(`pi-data-masking: failed to persist masking session state: ${(err as Error).message}`, "warning");
       }
     }
   }
@@ -1147,7 +1147,7 @@ export default async function (pi: ExtensionAPI) {
     if (r.count > 0 && !systemPromptWarned) {
       systemPromptWarned = true;
       ctx.ui.notify(
-        `System prompt contained ${r.count} sensitive value(s) and was masked before sending; if this is unexpected, review your masking rules`,
+        `pi-data-masking: system prompt contained ${r.count} sensitive value(s) and was masked before sending; if this is unexpected, review your masking rules`,
         "warning"
       );
     }
