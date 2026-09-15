@@ -15,6 +15,7 @@ import {
   type MaskingConfig,
   type MaskingOptions,
   type RuleEnabledChange,
+  CACHE_IMPACT_HINT,
 } from "../config-loader.ts";
 import {
   MASKING_SCREEN_OPTIONS,
@@ -470,7 +471,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         // Cache-impact estimates stand out in the warning color; other
         // transient status messages stay in the header's accent color.
         const headerStatus = mutationMessage
-          ? mutationMessage.includes("prefix-cache reuse may drop")
+          ? mutationMessage.includes(CACHE_IMPACT_HINT)
             ? theme.fg("warning", theme.bold(` · ${mutationMessage}`))
             : ` · ${mutationMessage}`
           : "";

@@ -60,6 +60,7 @@ import { openMaskingConfig } from "./ui/config-screen.ts";
 import { configuredRuleDisplayName, selectMaskingOption, type ConfigSaveResult, type MaskingUIBridge } from "./ui/masking-common.ts";
 import { previewWithRules, toggleGlobalMasking } from "./ui/rule-editor.ts";
 import {
+  CACHE_IMPACT_HINT,
   GLOBAL_CONFIG_PATH,
   getProjectConfigPath,
   loadConfig,
@@ -575,7 +576,7 @@ export default async function (pi: ExtensionAPI) {
     const activation = agentRunActive
       ? "\n\nThe active agent run keeps its current rules; this estimate applies when the pending change activates."
       : "";
-    return `Local preflight expects this change to alter ${target}. Provider prefix cache reuse may decrease from the earliest changed component.${activation}`;
+    return `Local preflight expects this change to alter ${target}. The altered prefix may cause cache misses from the earliest changed component onward.${activation}`;
   }
 
   /** Compact variant of configImpactMessage for inline display on the
@@ -586,7 +587,7 @@ export default async function (pi: ExtensionAPI) {
     if (prediction.changedMessageCount > 0) {
       parts.push(`alters ${prediction.changedMessageCount} message${prediction.changedMessageCount === 1 ? "" : "s"} (earliest #${prediction.firstChangedIndex + 1})`);
     }
-    return `${parts.join(" + ")} · prefix-cache reuse may drop`;
+    return `${parts.join(" + ")} · ${CACHE_IMPACT_HINT}`;
   }
 
   async function confirmConfigSave(

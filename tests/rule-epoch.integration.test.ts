@@ -157,7 +157,7 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     };
     await harness.emit("before_provider_request", { payload: firstProviderPayload });
     assert.equal(firstProviderPayload.system, "system masked-service-token");
-    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
+    assert.equal(harness.notifications.filter((message) => message.includes("may cause cache misses")).length, 0);
     const e1PrefixBatch = epochBatches(harness.entries).find((batch) => batch.epochId === 1 && batch.prefix);
     assert.ok(e1PrefixBatch?.prefix?.system);
     assert.equal(JSON.stringify(e1PrefixBatch).includes(systemOriginal), false);
@@ -167,7 +167,7 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     // UI save paths surface impact estimates as a save-time notification;
     // this direct toggle path notifies nothing.
     assert.ok(harness.notifications.every((message) => !message.includes("Local preflight")));
-    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
+    assert.equal(harness.notifications.filter((message) => message.includes("may cause cache misses")).length, 0);
 
     // The persisted toggle changed, but every context/tool operation in this
     // still-running agent uses E1 and its placeholder map.
@@ -189,10 +189,10 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     await harness.emit("before_agent_start", { systemPrompt: systemOriginal, prompt: "next" });
     assert.deepEqual(epochs(harness.entries).map((epoch) => epoch.epochId), [1, 2]);
     assert.ok(epochs(harness.entries)[1]!.changes.some((change) => change.kind === "masking_disabled"));
-    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
+    assert.equal(harness.notifications.filter((message) => message.includes("may cause cache misses")).length, 0);
     const disabledResult = await harness.emit("context", { messages: [structuredClone(original)] });
     assert.equal(disabledResult, undefined);
-    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
+    assert.equal(harness.notifications.filter((message) => message.includes("may cause cache misses")).length, 0);
     assert.equal(epochFactBatches(harness.entries, 2).length, 1);
     const disabledInjected = { role: "user", timestamp: 98, content: "unmasked while disabled" };
     await harness.emit("before_provider_request", { payload: { messages: [disabledInjected], system: systemOriginal } });
@@ -200,7 +200,7 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
     assert.equal(e2FactBatches.length, 2);
     assert.equal(e2FactBatches[1]!.messages[0]!.messageKey, "user:98");
     assert.ok(epochBatches(harness.entries).some((batch) => batch.epochId === 2 && batch.prefix));
-    assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
+    assert.equal(harness.notifications.filter((message) => message.includes("may cause cache misses")).length, 0);
     assert.equal(harness.notifications.some((message) => message.includes("has actually changed")), false);
 
     // Two edits during E2 coalesce to the original disabled behavior, so the

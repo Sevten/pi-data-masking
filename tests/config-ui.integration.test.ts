@@ -366,7 +366,7 @@ test("history-changing saves notify inside configuration UI and apply immediatel
       await waitFor(() => configRules(projectPath)[0]?.enabled === false);
       await waitFor(() => component.render(100)[0]?.includes("Disabled ·") === true);
       assert.ok(
-        component.render(100).some((line) => line.includes("prefix-cache reuse may drop")),
+        component.render(100).some((line) => line.includes("may cause cache misses")),
         "the cache-impact estimate should appear inline on the /masking header",
       );
       component.handleInput(INPUT.down);
@@ -410,7 +410,7 @@ test("guidance toggle surfaces its system-prefix impact inline", async () => {
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.space);
       await waitFor(() => component.render(100).some((line) =>
-        line.includes("alters the system prompt") && line.includes("prefix-cache reuse may drop")));
+        line.includes("alters the system prompt") && line.includes("may cause cache misses")));
       component.handleInput(INPUT.escape);
     },
   ]);
@@ -444,7 +444,7 @@ test("guidance toggle reminds after a restored session without a factual system 
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.space);
       await waitFor(() => component.render(100).some((line) =>
-        line.includes("alters the system prompt") && line.includes("prefix-cache reuse may drop")));
+        line.includes("alters the system prompt") && line.includes("may cause cache misses")));
       component.handleInput(INPUT.escape);
     },
   ]);

@@ -182,6 +182,11 @@ export const PERSISTENT_TOGGLE_PATH = join(
   "toggle-state.json"
 );
 
+/** Suffix appended to cache-impact notices (both the detailed notification
+ *  and the compact /masking header variant). UI highlighting keys off this
+ *  exact string, so the two message builders stay in sync through it. */
+export const CACHE_IMPACT_HINT = "may cause cache misses";
+
 export const CONFIG_SCHEMA_URL =
   "https://raw.githubusercontent.com/sevten/pi-data-masking/main/masking.config.schema.json";
 
