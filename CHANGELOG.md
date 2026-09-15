@@ -4,27 +4,24 @@
 
 ### Added
 
-- Global allowlist: list values or whole lines under `/masking` → Settings → Allowlist (or `options.allowlist` in the global config) and they stay unmasked even when a rule would otherwise match them — handy for keeping a specific IP address visible while a rule masks IP addresses in general.
-- Per-rule case-sensitivity switch: literal rules accept `"caseSensitive": false` for case-insensitive matching (regex rules keep controlling case through their own `flags`), and every allowlist entry can be written as `{ "text": "…", "caseSensitive": false }`. The Rule Builder gains a Case field and the allowlist editor a C toggle.
+- Global allowlist: values or whole lines listed in `/masking` → Settings → Allowlist (or `options.allowlist` in the global config) stay unmasked even when a rule would match — e.g. keep one IP visible while other IPs are masked.
+- Case-insensitive matching is now configurable per rule and per allowlist entry, settable from the Rule Builder (Case field) and the allowlist editor (C toggle).
 
 ### Changed
 
-- **Breaking:** removed the global `options.caseSensitive` option. Case sensitivity is now decided per rule and per allowlist entry (both default to case-sensitive). Existing configs with `"caseSensitive": false` are migrated on load: the `false` value is applied to every literal rule and allowlist entry that lacks an explicit flag (regex rules are not migrated — without explicit flags they now match case-sensitively), and a warning points at the config file. `/masking` offers a one-click repair that rewrites the global config: it deletes the legacy key, writes the stored `false` into rules and allowlist entries, and adds `"flags": "i"` to regex rules without flags to keep the old behavior.
-- Cache-impact saves no longer block on a confirmation dialog: when a masking change is predicted to alter already-sent context (existing conversation messages or the provider system prompt — including the Model guidance and Disclose settings, which shape that prompt), the save applies immediately and the estimate is highlighted in the warning color right on the `/masking` header ("Disabled · alters 1 message (earliest #1) · may cause cache misses"). Blocking confirmation is reserved for the safety-relevant actions (delete, import, batch enable/disable, disabling global masking) where matching values could be exposed irreversibly. Impact details remain auditable in `/masking-history`.
-- `/masking` now always edits the global config's settings (previously it edited whichever config file carried an `options` object): an `options` object still present in a project config is ignored, and `/masking` asks once whether to migrate its values into the global config.
-- Placeholder disclosure redesigned around a three-position master switch: on (disclose all literal rules), off (none), or per-rule (default; each rule's Disclose toggle decides). The rule-level setting is now a plain OFF/ON toggle (was inherit/always/never); existing boolean configs keep their meaning, and `systemPromptGuidance` still auto-enables when needed.
-- The masking UI now reflects the next-to-run config immediately: pending changes show on the masking status line and inside `/masking` with an "activates next run" hint.
-- Notifications and the status line no longer use emoji icons; provider-boundary interceptions and the status line are prefixed with "pi-data-masking:" instead of lock icons.
-- The regex-discovered-values threshold notice is rewritten in plain language ("a pattern is likely too broad — narrow it in /masking"), and the LLM-invented-values threshold notice was removed; it carried no actionable signal.
-- `/masking` visual polish: consistent ‹ › toggle cells for settings rows and rules, ←/→ support, and a clearer "Masking (global)" label.
+- **Breaking:** removed the global `options.caseSensitive` option; case sensitivity is now decided per rule and per allowlist entry (default: case-sensitive). Existing configs are migrated automatically on load, and `/masking` offers a one-click repair to rewrite the config to the new format.
+- `/masking` now always edits the global config's settings; a leftover `options` object in a project config is ignored, with a one-time prompt to migrate it into the global config.
+- Placeholder disclosure is now a three-position switch: on, off, or per-rule (default). The rule-level setting became a plain on/off toggle; existing configs keep their meaning.
+- Pending config changes are visible immediately in the status line and `/masking`, with an "activates next run" hint.
+- Notifications and the status line use a plain "pi-data-masking:" prefix instead of emoji icons.
+- Saves with a predicted prefix-cache impact now apply immediately, with the estimate shown as a warning on the `/masking` header instead of a blocking dialog. Blocking confirmations are reserved for safety-relevant actions (delete, import, batch enable/disable, disabling global masking).
+- `/masking` visual polish: consistent toggle cells for settings rows and rules, with ←/→ support.
 
 ### Fixed
 
-- Tool call arguments are now restored to real values in the main conversation: tool cards, the finalized message, and web clients now show real values instead of placeholders remaining forever. Arguments are still not restored mid-stream, where partial-JSON repair would be unsafe.
-- Model guidance and Disclose toggles now surface their prefix-cache impact in every situation where rule toggles do — including right after resuming a session and on OpenAI-style providers that keep the system prompt inside `messages` — instead of silently showing no estimate.
-- The inline confirmation dialogs (rule state changes, batch changes, and disabling global masking) now confirm the highlighted choice with Enter instead of always taking the affirmative action — with the selection on "No · keep masking", Enter no longer disabled masking or saved the change.
-- Disabled rules no longer produce quality warnings at load time; advisory checks re-fire when the rule is re-enabled. Structural problems (invalid or duplicate rules) are still reported.
-- `/masking` test panel no longer jumps when a test input hits rules; results fit on a single line and the empty-state hint moved into the panel title.
+- Tool call arguments are restored to real values in the main conversation after execution (still left as placeholders while streaming).
+- Model guidance and Disclose toggles now show their prefix-cache impact everywhere rule toggles do, including after resuming a session and on OpenAI-style providers.
+- Disabled rules no longer produce quality warnings at load time; checks re-fire when the rule is re-enabled.
 
 ## [0.7.0] - 2026-09-12
 
