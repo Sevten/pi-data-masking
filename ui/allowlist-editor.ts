@@ -293,9 +293,9 @@ export async function openAllowlistEditor(
           // Static matching semantics: identical for every entry, so it
           // lives under the title instead of repeating per selection.
           ...wrappedMaskingText(
-            theme.fg("dim", 'Boundary-aligned literal: an occurrence inside a longer token ("…123") stays masked.'),
+            theme.fg("dim", 'Boundary-aligned literal: allowing "10.0.0.5" does not exempt "10.0.0.55" — the longer value stays masked.'),
             width,
-          ).slice(0, 1),
+          ),
         ];
         if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));
         lines.push("");
