@@ -20,7 +20,9 @@ const INPUT = {
   space: " ",
   enter: "\r",
   escape: "\x1b",
+  up: "\x1b[A",
   down: "\x1b[B",
+  left: "\x1b[D",
   ctrlDown: "\x1b[1;5B",
   ctrlC: "\x03",
   f2: "\x1bOQ",
@@ -29,6 +31,8 @@ const INPUT = {
   home: "\x1b[H",
   end: "\x1b[F",
   tab: "\t",
+  backspace: "\x7f",
+  delete: "\x1b[3~",
 } as const;
 
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -654,7 +658,13 @@ test("allowlist zone opens the editor; staged entries persist as options", async
       for (const char of "10.0.0.9") component.handleInput(char);
       component.handleInput(INPUT.enter);
       await waitFor(() => component.render(100).some((line) => line.includes("10.0.0.9")));
+      // Esc finishes: staged changes ask for save / discard first.
       component.handleInput(INPUT.escape);
+    },
+    // Scenario 3: exit confirmation — Enter picks the highlighted "Save & close".
+    async (component) => {
+      await waitFor(() => component.render(100).some((line) => line.includes("Finish allowlist editing")));
+      component.handleInput(INPUT.enter);
     },
   ]);
   try {
@@ -662,6 +672,155 @@ test("allowlist zone opens the editor; staged entries persist as options", async
     await harness.commands.get("masking")!.handler("", harness.ctx);
     const saved = JSON.parse(readFileSync(globalConfigPath, "utf8")) as { options?: { allowlist?: Array<{ text: string }> } };
     assert.deepEqual(saved.options?.allowlist, [{ text: "10.0.0.9" }]);
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("allowlist editor edits, adds, and deletes in place; discard leaves the config untouched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  rmSync(globalConfigPath, { force: true });
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "pi-data-masking", "masking.config.json"), JSON.stringify({ rules: [
+    { id: "first", name: "First rule", real: "first-secret-value" },
+  ] }));
+
+  const harness = await createHarness(dir, [
+    // Scenario 1: /masking home → settings → allowlist editor.
+    async (component) => {
+      component.handleInput("\u001B[Z"); // rules → settings
+      for (let index = 0; index < 4; index++) component.handleInput(INPUT.down);
+      component.handleInput(INPUT.enter);
+      // The editor overlay owns the next scenarios; wait for it to hand
+      // control back before closing the home screen.
+      await waitFor(() => !component.render(100).join("\n").includes("Opening allowlist"));
+      component.handleInput(INPUT.escape);
+    },
+    // Scenario 2: the allowlist editor.
+    async (component) => {
+      await waitFor(() => component.render(100).some((line) => line.includes("never masked")));
+      for (const char of "10.0.0.9") component.handleInput(char);
+      component.handleInput(INPUT.enter);
+      component.handleInput(INPUT.down); // → add row
+      for (const char of "10.0.0.10") component.handleInput(char);
+      component.handleInput(INPUT.enter);
+      await waitFor(() => component.render(100).some((line) => line.includes("10.0.0.10")));
+      // Enter on a list row edits it in place, pre-filled with the value.
+      component.handleInput(INPUT.enter);
+      await waitFor(() => component.render(100).some((line) => line.includes("Editing entry")));
+      for (let index = 0; index < "10.0.0.10".length; index++) component.handleInput(INPUT.backspace);
+      for (const char of "10.0.0.11") component.handleInput(char);
+      component.handleInput(INPUT.enter);
+      await waitFor(() => component.render(100).some((line) => line.includes("10.0.0.11")));
+      // A jumps to the add row from anywhere in the list; D deletes.
+      component.handleInput("a");
+      for (const char of "tmp") component.handleInput(char);
+      component.handleInput(INPUT.enter);
+      await waitFor(() => component.render(100).some((line) => line.includes("tmp")));
+      component.handleInput("d");
+      await waitFor(() => !component.render(100).some((line) => line.includes("tmp")));
+      // Esc → exit confirmation (a separate overlay with its own scenario).
+      component.handleInput(INPUT.escape);
+    },
+    // Scenario 3: exit confirmation — pick "Discard changes".
+    async (component) => {
+      await waitFor(() => component.render(100).some((line) => line.includes("Finish allowlist editing")));
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.enter);
+    },
+  ]);
+  try {
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    assert.equal(existsSync(globalConfigPath), false, "discard must not write the global config");
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("allowlist case-mode toggle that would duplicate is rejected, not deleted", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  rmSync(globalConfigPath, { force: true });
+  mkdirSync(join(globalConfigPath, ".."), { recursive: true });
+  // Same text in both case modes: the loader keeps both (different keys),
+  // which is the only way the editor can face a toggle collision.
+  writeFileSync(globalConfigPath, JSON.stringify({
+    rules: [{ id: "ip", preset: "private-ipv4" }],
+    options: { allowlist: ["abc", { text: "abc", caseSensitive: false }] },
+  }));
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "pi-data-masking", "masking.config.json"), JSON.stringify({
+    rules: [{ id: "x", real: "x-secret-value" }],
+  }));
+
+  const harness = await createHarness(dir, [
+    async (component) => {
+      component.handleInput("\u001B[Z"); // rules → settings
+      for (let index = 0; index < 4; index++) component.handleInput(INPUT.down);
+      component.handleInput(INPUT.enter);
+      await waitFor(() => !component.render(100).join("\n").includes("Opening allowlist"));
+      component.handleInput(INPUT.escape);
+    },
+    async (component) => {
+      await waitFor(() => component.render(100).some((line) => line.includes("never masked")));
+      assert.ok(component.render(100).some((line) => line.includes("abc · case-sensitive")));
+      assert.ok(component.render(100).some((line) => line.includes("abc · ignore-case")));
+      // Toggling the case-sensitive row into ignore-case collides with the
+      // existing ignore-case entry: rejected, entry kept.
+      component.handleInput("c");
+      await waitFor(() => component.render(100).some((line) => line.includes("toggle rejected")));
+      assert.ok(component.render(100).some((line) => line.includes("abc · case-sensitive")));
+      assert.ok(component.render(100).some((line) => line.includes("abc · ignore-case")));
+      // Nothing was staged, so Esc closes without the exit confirmation.
+      component.handleInput(INPUT.escape);
+    },
+  ]);
+  try {
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    const saved = JSON.parse(readFileSync(globalConfigPath, "utf8")) as { options?: { allowlist?: unknown[] } };
+    assert.deepEqual(saved.options?.allowlist, ["abc", { text: "abc", caseSensitive: false }]);
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("left/right on the allowlist settings row does not open the editor", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  rmSync(globalConfigPath, { force: true });
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "pi-data-masking", "masking.config.json"), JSON.stringify({ rules: [
+    { id: "first", name: "First rule", real: "first-secret-value" },
+  ] }));
+
+  const harness = await createHarness(dir, [
+    // Scenario 1: /masking home → settings → allowlist row.
+    async (component) => {
+      component.handleInput("\u001B[Z"); // rules → settings
+      for (let index = 0; index < 4; index++) component.handleInput(INPUT.down);
+      // ← on the launcher row does nothing (only Enter/Space opens it).
+      component.handleInput(INPUT.left);
+      await delay(50);
+      assert.equal(
+        component.render(100).join("\n").includes("Opening allowlist"), false,
+        "left arrow must not open the allowlist editor",
+      );
+      // Enter opens the editor; Esc closes it (nothing staged → no confirm).
+      component.handleInput(INPUT.enter);
+      // The editor overlay owns scenario 2; wait for it to hand control
+      // back before closing the home screen.
+      await waitFor(() => !component.render(100).join("\n").includes("Opening allowlist"));
+      component.handleInput(INPUT.escape);
+    },
+    async (component) => {
+      await waitFor(() => component.render(100).some((line) => line.includes("never masked")));
+      component.handleInput(INPUT.escape);
+    },
+  ]);
+  try {
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    assert.equal(existsSync(globalConfigPath), false);
   } finally {
     await harness.shutdown();
     rmSync(dir, { recursive: true, force: true });

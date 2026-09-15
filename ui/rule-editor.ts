@@ -1277,11 +1277,9 @@ export async function saveConfigOptionsUI(
   try {
     const preview = await previewConfigOptionChanges(resolvedTarget.path, options);
     const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
-    const outcome = await bridge.confirmConfigSave(
-      ctx,
-      candidate.config,
-      { title: "Save masking options?", warning: `Options are written to the global config (${resolvedTarget.path}).` },
-    );
+    // Non-forced option saves never ask: interactive confirmation (save /
+    // discard) happens in the calling editor when one exists.
+    const outcome = await bridge.confirmConfigSave(ctx, candidate.config);
     if (!outcome.saved) return { saved: false };
     await saveConfigOptionChanges(resolvedTarget.path, options);
     bridge.notifyWarnings(ctx, candidate.warnings);

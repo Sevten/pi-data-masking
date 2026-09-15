@@ -748,8 +748,9 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
             const direction: 1 | -1 = matchesKey(data, Key.left) ? -1 : 1;
             if (settingsIndex === 0) toggleMaskingInPlace();
-            else if (settingsIndex === 4) openAllowlistInPlace();
-            else void toggleGuidanceInPlace(direction);
+            else if (settingsIndex < 4) void toggleGuidanceInPlace(direction);
+            // Allowlist row (4): launcher — ←/→ do nothing; Enter/Space
+            // opens the editor, matching the row's non-toggle cell.
             return;
           }
           if (matchesKey(data, Key.space) || keybindings.matches(data, "tui.select.confirm")) {
