@@ -149,6 +149,12 @@ export interface ConfigSaveConfirmation {
   warning?: string;
   force?: boolean;
 }
+export interface ConfigSaveResult {
+  saved: boolean;
+  /** Concise cache-impact estimate for inline display on the /masking
+   *  screen; present when the preflight predicts a prefix change. */
+  impact?: string;
+}
 export function configuredRuleStableKey(configured: ConfiguredMaskingRule): string {
   return `${configured.path}\0${configured.rule.id}`;
 }
@@ -256,7 +262,7 @@ export interface MaskingUIBridge {
     cfg: MaskingConfig,
     options?: ConfigSaveConfirmation,
     ask?: (title: string, message: string) => Promise<boolean>,
-  ): Promise<boolean>;
+  ): Promise<ConfigSaveResult>;
   reloadConfigNow(ctx: ExtensionContext): Promise<void>;
   notifyWarnings(ctx: ExtensionContext, warnings: string[]): void;
   /** Field names of an options object present in the project config

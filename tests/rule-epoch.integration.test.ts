@@ -98,7 +98,8 @@ async function createHarness(cwd: string, branch: unknown[] = []) {
         await waitFor(() => notifications.length > before
           || component.render(100).some((line) => line.includes("Disable masking?")));
         if (notifications.length === before) {
-          component.handleInput(confirmDisable ? "\r" : "\x1b");
+          // "y" confirms disable; Enter would pick the safe default "No".
+          component.handleInput(confirmDisable ? "y" : "\x1b");
           await waitFor(() => notifications.length > before);
         }
         component.handleInput("\x1b");
@@ -163,8 +164,8 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
 
     await harness.toggleMasking(true);
     assert.ok(harness.notifications.some((message) => message.includes("active run keeps its current rules")));
-    // The local-preflight notify was removed; impact details only appear in
-    // the save-confirmation dialog.
+    // UI save paths surface impact estimates as a save-time notification;
+    // this direct toggle path notifies nothing.
     assert.ok(harness.notifications.every((message) => !message.includes("Local preflight")));
     assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
 

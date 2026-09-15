@@ -178,8 +178,8 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
      *  inside this screen (no separate overlay window). */
     let confirmDisableMasking = false;
     let confirmDisableYes = false;
-    /** Inline cache-impact confirmation for rule enable/disable (and batch
-     *  state changes): rendered in place of the rule details block. */
+    /** Inline safety confirmation for batch rule state changes (force):
+     *  rendered in place of the rule details block. */
     let inlineConfirmState: { title: string; message: string; yes: boolean; resolve: (save: boolean) => void } | null = null;
     const inlineConfirm = (title: string, message: string): Promise<boolean> =>
       new Promise<boolean>((resolve) => {
@@ -275,19 +275,21 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       mutationInProgress = true;
       mutationMessage = "Saving…";
       refresh();
-      const saved = await saveConfigOptionsUI(bridge, ctx, next);
+      const result = await saveConfigOptionsUI(bridge, ctx, next);
       mutationInProgress = false;
-      if (saved && next.systemPromptGuidance) bridge.clearGuidanceNotice();
-      mutationMessage = saved
-        ? settingsIndex === 3
-          ? "Saved · status line updated"
-          : "Saved · affects future requests"
-        : "Save cancelled · no changes applied";
+      if (result.saved && next.systemPromptGuidance) bridge.clearGuidanceNotice();
+      mutationMessage = !result.saved
+        ? "Save cancelled · no changes applied"
+        : result.impact
+          ? `Saved · ${result.impact}`
+          : settingsIndex === 3
+            ? "Saved · status line updated"
+            : "Saved · affects future requests";
       refresh();
     }
 
     /** Settings row 5 (Allowlist): Enter/Space opens the staged editor; the
-     *  save itself goes through the options pipeline with impact confirmation. */
+     *  save itself goes through the options pipeline (impact changes notify). */
     function openAllowlistInPlace(): void {
       mutationInProgress = true;
       mutationMessage = "Opening allowlist…";
@@ -309,14 +311,16 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       mutationInProgress = true;
       mutationMessage = "Saving…";
       tui.requestRender();
-      const saved = await toggleConfigRule(bridge, ctx, selected, false, inlineConfirm);
-      if (saved) {
+      const result = await toggleConfigRule(bridge, ctx, selected, false, inlineConfirm);
+      if (result.saved) {
         // Effective config: a queued change must show its target state now.
         screenRules = bridge.effectiveConfig().configuredRules;
         retainSelectedRule(stableKey);
-        mutationMessage = enabling
-          ? "Enabled · affects future requests"
-          : "Disabled · future matches may be exposed";
+        mutationMessage = result.impact
+          ? `${enabling ? "Enabled" : "Disabled"} · ${result.impact}`
+          : enabling
+            ? "Enabled · affects future requests"
+            : "Disabled · future matches may be exposed";
       } else {
         mutationMessage = "Save failed · no changes applied";
       }
@@ -356,17 +360,18 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         : "Opening batch confirmation…";
       tui.requestRender();
       try {
-        if (action.kind === "batch") await applyBatchRuleState(bridge, ctx, action.changes, inlineConfirm);
-        else if (action.kind === "edit") await editConfigRule(bridge, ctx, action.rule, action.initialMode);
+        let resultMessage = "";
+        if (action.kind === "batch") resultMessage = (await applyBatchRuleState(bridge, ctx, action.changes, inlineConfirm)).impact ?? "";
+        else if (action.kind === "edit") resultMessage = await editConfigRule(bridge, ctx, action.rule, action.initialMode) ?? "";
         else if (action.kind === "delete") await deleteConfigRule(bridge, ctx, action.rule);
-        else if (action.kind === "add") await addConfigRule(bridge, ctx, undefined, { initialMode: action.initialMode });
+        else if (action.kind === "add") resultMessage = await addConfigRule(bridge, ctx, undefined, { initialMode: action.initialMode }) ?? "";
         else if (action.kind === "help") await showRuleConfigurationHelp(ctx);
         else if (action.kind === "import") await importConfigRules(bridge, ctx);
         else await exportConfigRules(bridge, ctx);
+        mutationMessage = resultMessage;
       } finally {
         screenRules = bridge.effectiveConfig().configuredRules;
         mutationInProgress = false;
-        mutationMessage = "";
         refresh();
       }
     }
@@ -462,7 +467,14 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           ]
           : [];
         const headerSummary = `${active} enabled / ${screenRules.length} configured · filter: ${filters[filterIndex]}${searchQuery ? ` · search: ${searchQuery}` : ""}`;
-        const headerTitle = theme.fg("accent", theme.bold(`Masking configuration${mutationMessage ? ` · ${mutationMessage}` : ""}`));
+        // Cache-impact estimates stand out in the warning color; other
+        // transient status messages stay in the header's accent color.
+        const headerStatus = mutationMessage
+          ? mutationMessage.includes("prefix-cache reuse may drop")
+            ? theme.fg("warning", theme.bold(` · ${mutationMessage}`))
+            : ` · ${mutationMessage}`
+          : "";
+        const headerTitle = theme.fg("accent", theme.bold("Masking configuration")) + headerStatus;
         const lines: string[] = [
           truncateToWidth(`${headerTitle}  ${theme.fg("muted", headerSummary)}`, Math.max(1, width)),
           "",
@@ -621,7 +633,15 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             tui.requestRender();
             return;
           }
-          if (keybindings.matches(data, "tui.select.confirm") || matchesKey(data, "y") || data === "Y") {
+          // Enter confirms the highlighted choice; y/Y and n/N are shortcuts.
+          if (keybindings.matches(data, "tui.select.confirm")) {
+            const yes = state.yes;
+            inlineConfirmState = null;
+            tui.requestRender();
+            state.resolve(yes);
+            return;
+          }
+          if (matchesKey(data, "y") || data === "Y") {
             inlineConfirmState = null;
             tui.requestRender();
             state.resolve(true);
@@ -646,7 +666,18 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             refresh();
             return;
           }
-          if (keybindings.matches(data, "tui.select.confirm") || matchesKey(data, "y") || data === "Y") {
+          // Enter confirms the highlighted choice; y/Y and n/N are shortcuts.
+          if (keybindings.matches(data, "tui.select.confirm")) {
+            const disable = confirmDisableYes;
+            confirmDisableMasking = false;
+            if (disable) void performGlobalToggle();
+            else {
+              mutationMessage = "Global masking unchanged";
+              refresh();
+            }
+            return;
+          }
+          if (matchesKey(data, "y") || data === "Y") {
             confirmDisableMasking = false;
             void performGlobalToggle();
             return;

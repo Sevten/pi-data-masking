@@ -49,6 +49,7 @@ import {
   configuredRuleDisplayName,
   configuredRuleStableKey,
   type ConfigSaveConfirmation,
+  type ConfigSaveResult,
   type MaskingUIBridge,
 } from "./masking-common.ts";
 
@@ -82,7 +83,8 @@ export async function saveStructuralChanges(
   try {
     const preview = await previewConfigRuleMutations(mutations);
     const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
-    if (!await bridge.confirmConfigSave(ctx, candidate.config, confirmation)) return false;
+    const outcome = await bridge.confirmConfigSave(ctx, candidate.config, confirmation);
+    if (!outcome.saved) return false;
     const saved = await saveConfigRuleMutations(mutations);
     bridge.notifyWarnings(ctx, saved.warnings);
     await bridge.reloadConfigNow(ctx);
@@ -99,13 +101,14 @@ export async function saveRuleStateChanges(
   changes: RuleEnabledChange[],
   confirmation: ConfigSaveConfirmation = {},
   ask?: (title: string, message: string) => Promise<boolean>,
-): Promise<boolean> {
+): Promise<ConfigSaveResult> {
   const preview = await previewRuleEnabledChanges(changes);
   const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
-  if (!await bridge.confirmConfigSave(ctx, candidate.config, confirmation, ask)) return false;
+  const outcome = await bridge.confirmConfigSave(ctx, candidate.config, confirmation, ask);
+  if (!outcome.saved) return { saved: false };
   await saveRuleEnabledChanges(changes);
   await bridge.reloadConfigNow(ctx);
-  return true;
+  return { saved: true, impact: outcome.impact };
 }
 export interface LocalMaskingPreview {
   text: string;
@@ -204,7 +207,7 @@ export async function addConfigRule(
   ctx: ExtensionContext,
   editing?: { configured: ConfiguredMaskingRule; original: RawConfigRule; initial: RawConfigRule },
   options: { initialMode?: "form" | "json" } = {},
-): Promise<void> {
+): Promise<string | undefined> {
   const projectPath = getProjectConfigPath(ctx.cwd);
   const sources: Array<{ scope: ConfigScope; path: string; label: string }> = [
     { scope: "project", path: projectPath, label: `project · ${projectPath}` },
@@ -285,14 +288,13 @@ export async function addConfigRule(
     if (!selectedPreset) return;
   }
 
-  type BuiltRule = { source: typeof sources[number]; rule: RawConfigRule; createdSource: boolean };
+  type BuiltRule = { source: typeof sources[number]; rule: RawConfigRule; createdSource: boolean; impact?: string };
   let sourceCreatedDuringBuilder = false;
 
     async function persistBuilderDraft(
     source: typeof sources[number],
     rule: RawConfigRule,
-    ask?: (title: string, message: string) => Promise<boolean>,
-  ): Promise<boolean> {
+  ): Promise<ConfigSaveResult> {
     if (!existsSync(source.path)) {
       const initial = buildInitialConfig([]);
       try {
@@ -316,11 +318,12 @@ export async function addConfigRule(
       : [{ kind: "append" as const, path: source.path, rule }];
     const preview = await previewConfigRuleMutations(mutations);
     const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
-    if (!await bridge.confirmConfigSave(ctx, candidate.config, {}, ask)) return false;
+    const outcome = await bridge.confirmConfigSave(ctx, candidate.config);
+    if (!outcome.saved) return { saved: false };
     const saved = await saveConfigRuleMutations(mutations);
     bridge.notifyWarnings(ctx, saved.warnings);
     await bridge.reloadConfigNow(ctx);
-    return true;
+    return { saved: true, impact: outcome.impact };
   }
 
   const built = await ctx.ui.custom<BuiltRule | undefined>((tui, theme, keybindings, done) => {
@@ -339,14 +342,6 @@ export async function addConfigRule(
     let warningSignature = "";
     let saving = false;
     let discardConfirmation = false;
-    /** Inline cache-impact confirmation: rendered inside this builder
-     *  screen instead of stacking a second overlay window. */
-    let inlineConfirmState: { title: string; message: string; yes: boolean; resolve: (save: boolean) => void } | null = null;
-    const inlineConfirm = (title: string, message: string): Promise<boolean> =>
-      new Promise<boolean>((resolve) => {
-        inlineConfirmState = { title, message, yes: false, resolve };
-        tui.requestRender();
-      });
     let builderType: BuilderType = selectedType;
     let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
     // Disclosure preference for literal rules: off is the default; the
@@ -838,14 +833,14 @@ export async function addConfigRule(
       saveMessage = "Saving…";
       tui.requestRender();
       try {
-        const persisted = await persistBuilderDraft(currentSource(), draft.rule, inlineConfirm);
-        if (!persisted) {
+        const persisted = await persistBuilderDraft(currentSource(), draft.rule);
+        if (!persisted.saved) {
           saving = false;
           saveMessage = "Save cancelled · draft retained";
           tui.requestRender();
           return;
         }
-        done({ source: currentSource(), rule: draft.rule, createdSource: sourceCreatedDuringBuilder });
+        done({ source: currentSource(), rule: draft.rule, createdSource: sourceCreatedDuringBuilder, impact: persisted.impact });
       } catch (err) {
         saving = false;
         saveMessage = `Cannot save: ${(err as Error).message} · draft retained`;
@@ -935,45 +930,13 @@ export async function addConfigRule(
         // Keyboard hints and any pending confirmation sit at the very
         // bottom of the terminal window, not directly under the content.
         const hintLines = wrappedMaskingText(theme.fg("dim", "↑↓ fields · Tab form/test · ←→ or Space change selection · F2 form/JSON · Enter save · Esc cancel"), width);
-        const confirmLines = inlineConfirmState
-          ? [
-            ...wrappedMaskingText(theme.fg("warning", theme.bold(inlineConfirmState.title)), width),
-            ...wrappedMaskingText(inlineConfirmState.message, width),
-            // Both choices are highlighted; the ▶ marker carries the selection.
-            theme.fg("accent", `${inlineConfirmState.yes ? "▶" : " "} Save anyway    ${inlineConfirmState.yes ? " " : "▶"} Back to editing`),
-            ...wrappedMaskingText(theme.fg("dim", "←→ select · Enter confirm · Esc back to editing"), width),
-          ]
-          : [];
-        const bottomPad = Math.max(1, tui.terminal.rows - lines.length - hintLines.length - confirmLines.length);
+        const bottomPad = Math.max(1, tui.terminal.rows - lines.length - hintLines.length);
         lines.push(...Array(bottomPad).fill(""));
         lines.push(...hintLines);
-        lines.push(...confirmLines);
         return fillMaskingScreen(lines, width, tui.terminal.rows);
       },
       invalidate: () => Object.values(editors).forEach((editor) => editor.invalidate()),
       handleInput: (data) => {
-        if (inlineConfirmState) {
-          const state = inlineConfirmState;
-          if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
-            state.yes = !state.yes;
-            tui.requestRender();
-            return;
-          }
-          if (keybindings.matches(data, "tui.select.confirm") || matchesKey(data, "y") || data === "Y") {
-            inlineConfirmState = null;
-            tui.requestRender();
-            state.resolve(true);
-            return;
-          }
-          if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")
-            || matchesKey(data, "n") || data === "N") {
-            inlineConfirmState = null;
-            tui.requestRender();
-            state.resolve(false);
-            return;
-          }
-          return;
-        }
         if (saving) return;
         if (discardConfirmation) {
           if (matchesKey(data, "y") || keybindings.matches(data, "tui.select.confirm")) {
@@ -1065,7 +1028,7 @@ export async function addConfigRule(
     };
   }, MASKING_SCREEN_OPTIONS);
 
-  if (!built) return;
+  if (!built) return undefined;
   const id = String(built.rule.id);
   const action = editing && built.source.path !== editing.configured.path ? "Moved and updated" : editing ? "Updated" : "Added";
   ctx.ui.notify(`${action} rule [${id}] in ${built.source.scope} config`, "info");
@@ -1093,6 +1056,7 @@ export async function addConfigRule(
       }
     }
   }
+  return built.impact;
 }
 
 export async function editConfigRule(
@@ -1100,7 +1064,7 @@ export async function editConfigRule(
   ctx: ExtensionContext,
   configured: ConfiguredMaskingRule,
   initialMode: "form" | "json" = "form",
-): Promise<void> {
+): Promise<string | undefined> {
   try {
     const data = await readRawConfigFile(configured.path);
     const original = data.rules[configured.sourceIndex];
@@ -1108,9 +1072,10 @@ export async function editConfigRule(
       throw new Error("source position changed; reopen /masking");
     }
     const initial = configured.sourceKind === "preset" ? { ...configured.rule } : { ...original };
-    await addConfigRule(bridge, ctx, { configured, original, initial }, { initialMode });
+    return await addConfigRule(bridge, ctx, { configured, original, initial }, { initialMode });
   } catch (err) {
     ctx.ui.notify(`Failed to edit rule: ${(err as Error).message}`, "error");
+    return undefined;
   }
 }
 
@@ -1204,16 +1169,16 @@ export async function toggleConfigRule(
   configured: ConfiguredMaskingRule,
   notifySuccess = true,
   ask?: (title: string, message: string) => Promise<boolean>,
-): Promise<boolean> {
+): Promise<ConfigSaveResult> {
   const enabled = !configured.enabled;
   try {
-    const saved = await saveRuleStateChanges(bridge, ctx, [{
+    const outcome = await saveRuleStateChanges(bridge, ctx, [{
       path: configured.path,
       sourceIndex: configured.sourceIndex,
       id: configured.rule.id,
       enabled,
     }], {}, ask);
-    if (!saved) return false;
+    if (!outcome.saved) return { saved: false };
     const state = enabled && !configured.available
       ? `enabled in config but waiting for environment variable ${configured.realFromEnv}`
       : enabled ? "enabled immediately" : "disabled immediately";
@@ -1223,25 +1188,28 @@ export async function toggleConfigRule(
         enabled ? "info" : "warning",
       );
     }
-    return true;
+    return { saved: true, impact: outcome.impact };
   } catch (err) {
     ctx.ui.notify(`Failed to toggle rule: ${(err as Error).message}`, "error");
-    return false;
+    return { saved: false };
   }
 }
 
-export async function applyBatchRuleState(bridge: MaskingUIBridge, ctx: ExtensionContext, changes: RuleEnabledChange[], ask?: (title: string, message: string) => Promise<boolean>): Promise<void> {
-  if (changes.length === 0) return;
+export async function applyBatchRuleState(bridge: MaskingUIBridge, ctx: ExtensionContext, changes: RuleEnabledChange[], ask?: (title: string, message: string) => Promise<boolean>): Promise<ConfigSaveResult> {
+  if (changes.length === 0) return { saved: false };
   const disabling = changes.filter((change) => !change.enabled).length;
   try {
-    if (!await saveRuleStateChanges(bridge, ctx, changes, {
+    const outcome = await saveRuleStateChanges(bridge, ctx, changes, {
       title: "Apply batch rule changes?",
       force: true,
       warning: `${changes.length - disabling} rule(s) will be enabled and ${disabling} disabled.\nDisabled rules may expose matching values in future requests. Earlier context cannot be retracted.`,
-    }, ask)) return;
+    }, ask);
+    if (!outcome.saved) return { saved: false };
     ctx.ui.notify(`Applied ${changes.length} rule state change(s) immediately`, "info");
+    return { saved: true, impact: outcome.impact };
   } catch (err) {
     ctx.ui.notify(`Failed to update rules: ${(err as Error).message}`, "error");
+    return { saved: false };
   }
 }
 
@@ -1304,22 +1272,23 @@ export async function saveConfigOptionsUI(
   ctx: ExtensionContext,
   options: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders" | "showStatusBar" | "allowlist">>,
   target?: { scope: ConfigScope; path: string },
-): Promise<boolean> {
+): Promise<ConfigSaveResult> {
   const resolvedTarget = target ?? optionsEditTarget(ctx);
   try {
     const preview = await previewConfigOptionChanges(resolvedTarget.path, options);
     const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
-    if (!await bridge.confirmConfigSave(
+    const outcome = await bridge.confirmConfigSave(
       ctx,
       candidate.config,
       { title: "Save masking options?", warning: `Options are written to the global config (${resolvedTarget.path}).` },
-    )) return false;
+    );
+    if (!outcome.saved) return { saved: false };
     await saveConfigOptionChanges(resolvedTarget.path, options);
     bridge.notifyWarnings(ctx, candidate.warnings);
     await bridge.reloadConfigNow(ctx);
-    return true;
+    return { saved: true, impact: outcome.impact };
   } catch (err) {
     ctx.ui.notify(`Failed to update masking options: ${(err as Error).message}`, "error");
-    return false;
+    return { saved: false };
   }
 }

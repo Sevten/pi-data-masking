@@ -209,7 +209,7 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.ok(component.render(100).some((line) => line.startsWith("›") && line.includes("First rule")));
     component.handleInput("r");
     assert.ok(component.render(100).includes('Exact value: first-secret-value'));
-    // Make the session's model-bound transcript actually contain masked
+    // Make the session's model-bound context actually contain masked
     // content, so disabling masking is a prefix-cache-impacting change and
     // the inline confirmation appears.
     assert.ok(emitContext[0], "context emitter missing");
@@ -221,7 +221,13 @@ test("configuration home toggles and reorders in place while retaining selection
     await waitFor(() => component.render(100).some((line) => line.includes("Disable masking?")));
     assert.ok(component.render(100).join("\n").match(/persists across projects/));
     assert.ok(component.render(100).join("\n").match(/future sessions/));
+    // Enter confirms the highlighted choice; the safe default is "No".
     component.handleInput(INPUT.enter);
+    await waitFor(() => component.render(100).some((line) => line.includes("Global masking unchanged")));
+    assert.ok(component.render(100).some((line) => /Masking \s+‹\s*ON\s*›/.test(line)), "Enter on the default No must keep masking on");
+    component.handleInput("M");
+    await waitFor(() => component.render(100).some((line) => line.includes("Disable masking?")));
+    component.handleInput("y");
     await waitFor(() => component.render(100).some((line) => /Masking \s+‹\s*OFF\s*›/.test(line)));
     component.handleInput("m");
     await waitFor(() => component.render(100).some((line) => /Masking \s+‹\s*ON\s*›/.test(line)));
@@ -251,15 +257,11 @@ test("configuration home toggles and reorders in place while retaining selection
     component.handleInput(INPUT.down);
     assert.ok(component.render(100).some((line) => line.includes("Allowlist") && line.includes("▶")));
     component.handleInput(INPUT.tab);
+    // Cache-impacting rule toggle: applies immediately and reminds instead
+    // of confirming.
     component.handleInput(INPUT.space);
-    await waitFor(() => configRules(projectPath)[0]?.enabled === false
-      || component.render(100).some((line) => line.includes("Local preflight")));
-    if (configRules(projectPath)[0]?.enabled !== false) {
-      // Masked history exists, so disabling the rule is a cache-impacting
-      // save: confirm it in the preflight dialog.
-      component.handleInput(INPUT.enter);
-      await waitFor(() => configRules(projectPath)[0]?.enabled === false);
-    }
+    await waitFor(() => configRules(projectPath)[0]?.enabled === false);
+    assert.ok(harness.notifications.every((message) => !message.includes("Local preflight")), "impact is inline only, no chat notification");
     await waitFor(() => component.render(100).some((line) => line.includes("‹  OFF ›") && line.includes("First rule")));
     assert.ok(component.render(100).some((line) => line.includes("‹  OFF ›") && line.includes("First rule")));
 
@@ -269,10 +271,6 @@ test("configuration home toggles and reorders in place while retaining selection
     const selectedRow = component.render(100).find((line) => line.includes("First rule"));
     assert.ok(selectedRow?.startsWith("›"), "moved rule should remain selected");
     component.handleInput(INPUT.escape);
-  }, async (component) => {
-    // Cache-impacting rule toggle confirmation (preflight dialog).
-    assert.match(component.render(100).join("\n"), /Local preflight/);
-    component.handleInput(INPUT.enter);
   }]);
   emitContext.push((event) => harness.emit("context", event));
 
@@ -347,7 +345,7 @@ test("F2 opens existing and new rules directly in JSON mode", async () => {
   }
 });
 
-test("history-changing saves confirm inside configuration UI before writing", async () => {
+test("history-changing saves notify inside configuration UI and apply immediately", async () => {
   const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
   const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
   mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
@@ -356,38 +354,19 @@ test("history-changing saves confirm inside configuration UI before writing", as
     { id: "host", name: "Host", real: "secret-service-host", placeholder: "masked-service-host" },
   ] }));
 
-  let firstCancelled = false;
-  let confirmationCount = 0;
-  const assertImpactConfirmation = (component: Component, sourceIndex: number) => {
-    confirmationCount++;
-    const lines = component.render(100);
-    assert.ok(lines.some((line) => line.includes("Save masking changes?")));
-    assert.ok(lines.some((line) => line.includes("1 existing conversation message")));
-    assert.ok(lines.some((line) => line.includes("earliest #1")));
-    assert.equal(configRules(projectPath)[sourceIndex]?.enabled, undefined, "candidate must not be written before confirmation");
-  };
-  const waitImpactConfirmation = async (component: Component, sourceIndex: number) => {
-    await waitFor(() => component.render(100).some((line) => line.includes("Save masking changes?")));
-    assertImpactConfirmation(component, sourceIndex);
-  };
   const harness = await createHarness(dir, [
     async (component) => {
+      // Cache-impacting toggles now apply immediately and remind via
+      // notification instead of blocking on a confirmation dialog.
       component.handleInput(INPUT.space);
-      await waitImpactConfirmation(component, 0);
-      component.handleInput(INPUT.escape);
-      firstCancelled = true;
-      // Wait for the cancelled save's promise chain to settle before the next input.
-      await waitFor(() => component.render(100)[0]?.includes("Save failed · no changes applied") === true);
-      assert.equal(configRules(projectPath)[0]?.enabled, undefined, "Back to editing must leave the file unchanged");
-      component.handleInput(INPUT.space);
-      await waitImpactConfirmation(component, 0);
-      component.handleInput(INPUT.enter);
       await waitFor(() => configRules(projectPath)[0]?.enabled === false);
       await waitFor(() => component.render(100)[0]?.includes("Disabled ·") === true);
+      assert.ok(
+        component.render(100).some((line) => line.includes("prefix-cache reuse may drop")),
+        "the cache-impact estimate should appear inline on the /masking header",
+      );
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.space);
-      await waitImpactConfirmation(component, 1);
-      component.handleInput(INPUT.enter);
       await waitFor(() => configRules(projectPath)[1]?.enabled === false);
       await waitFor(() => component.render(100)[0]?.includes("Disabled ·") === true);
       component.handleInput(INPUT.escape);
@@ -401,8 +380,81 @@ test("history-changing saves confirm inside configuration UI before writing", as
     await harness.commands.get("masking")!.handler("", harness.ctx);
     assert.equal(configRules(projectPath)[0]?.enabled, false);
     assert.equal(configRules(projectPath)[1]?.enabled, false);
-    assert.equal(confirmationCount, 3, "each impactful repeated edit should confirm against the last factual input");
-    assert.equal(harness.notifications.some((message) => message.includes("Local preflight")), false);
+    assert.ok(
+      harness.notifications.every((message) => !message.includes("Local preflight")),
+      "impact is inline only, no chat notification",
+    );
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("guidance toggle surfaces its system-prefix impact inline", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(projectPath, JSON.stringify({ rules: [
+    { id: "token", name: "Token", real: "secret-service-token", placeholder: "masked-service-token" },
+  ] }));
+
+  const harness = await createHarness(dir, [
+    async (component) => {
+      component.handleInput(INPUT.tab);
+      component.handleInput(INPUT.tab);
+      assert.ok(component.render(100).some((line) => line.includes("SETTINGS (global) · focused")));
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.space);
+      await waitFor(() => component.render(100).some((line) =>
+        line.includes("alters the system prompt") && line.includes("prefix-cache reuse may drop")));
+      component.handleInput(INPUT.escape);
+    },
+  ]);
+
+  try {
+    // Observe one run so the preflight has a factual system prefix to
+    // compare against (before_agent_start capture, provider-independent).
+    await harness.emit("before_agent_start", { systemPrompt: "system prompt secret-service-token", prompt: "go" });
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    assert.equal(configRules(projectPath)[0]?.enabled, undefined, "guidance toggle must not touch rules");
+    assert.ok(harness.notifications.every((message) => !message.includes("Local preflight")));
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("guidance toggle reminds after a restored session without a factual system prefix", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(projectPath, JSON.stringify({ rules: [
+    { id: "token", name: "Token", real: "secret-service-token", placeholder: "masked-service-token" },
+  ] }));
+
+  const harness = await createHarness(dir, [
+    async (component) => {
+      component.handleInput(INPUT.tab);
+      component.handleInput(INPUT.tab);
+      assert.ok(component.render(100).some((line) => line.includes("SETTINGS (global) · focused")));
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.space);
+      await waitFor(() => component.render(100).some((line) =>
+        line.includes("alters the system prompt") && line.includes("prefix-cache reuse may drop")));
+      component.handleInput(INPUT.escape);
+    },
+  ]);
+
+  try {
+    // Resumed session: only the context boundary has been observed in this
+    // process, so the preflight has message facts but no factual system
+    // prefix. The deterministic note diff must still surface the impact.
+    await harness.emit("context", {
+      messages: [{ role: "user", content: "use secret-service-token" }],
+    });
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    assert.equal(configRules(projectPath)[0]?.enabled, undefined, "guidance toggle must not touch rules");
+    assert.ok(harness.notifications.every((message) => !message.includes("Local preflight")));
   } finally {
     await harness.shutdown();
     rmSync(dir, { recursive: true, force: true });

@@ -57,7 +57,7 @@ import { Masker } from "./masker.ts";
 import type { DynamicPlaceholderMap, MaskOptions } from "./masker.ts";
 import { armStreamRestore, createStreamRestore, registerStreamRestoreProviders } from "./stream-restore.ts";
 import { openMaskingConfig } from "./ui/config-screen.ts";
-import { configuredRuleDisplayName, selectMaskingOption, type MaskingUIBridge } from "./ui/masking-common.ts";
+import { configuredRuleDisplayName, selectMaskingOption, type ConfigSaveResult, type MaskingUIBridge } from "./ui/masking-common.ts";
 import { previewWithRules, toggleGlobalMasking } from "./ui/rule-editor.ts";
 import {
   GLOBAL_CONFIG_PATH,
@@ -526,7 +526,14 @@ export default async function (pi: ExtensionAPI) {
       c.options.allowlist ?? [],
     );
 
-    let systemChanged = false;
+    // Guidance/disclosure options only affect the deterministically appended
+    // note, so a note diff alone proves the next request's system prefix
+    // changes — no factual baseline needed. This also covers restored
+    // sessions, where the factual system prefix was never observed in this
+    // process and cannot be recovered from the transcript.
+    const guidanceNoteFor = (c: MaskingConfig) =>
+      c.enabled && c.rules.length > 0 ? guidanceNoteForConfig(c) ?? "" : "";
+    let systemChanged = guidanceNoteFor(baseCfg) !== guidanceNoteFor(cfg);
     if (latestSystemPrefix) {
       const emittedWith = (c: MaskingConfig) => {
         let emitted = latestSystemPrefix!.source;
@@ -537,7 +544,7 @@ export default async function (pi: ExtensionAPI) {
         }
         return emitted;
       };
-      systemChanged = emittedWith(cfg) !== emittedWith(baseCfg);
+      systemChanged = emittedWith(cfg) !== emittedWith(baseCfg) || systemChanged;
     }
 
     const baselineMasker = previewMaskerFor(baseCfg);
@@ -571,24 +578,43 @@ export default async function (pi: ExtensionAPI) {
     return `Local preflight expects this change to alter ${target}. Provider prefix cache reuse may decrease from the earliest changed component.${activation}`;
   }
 
+  /** Compact variant of configImpactMessage for inline display on the
+   *  /masking screen header. */
+  function configImpactShortMessage(prediction: ConfigImpactPreview): string {
+    const parts: string[] = [];
+    if (prediction.systemChanged) parts.push("alters the system prompt");
+    if (prediction.changedMessageCount > 0) {
+      parts.push(`alters ${prediction.changedMessageCount} message${prediction.changedMessageCount === 1 ? "" : "s"} (earliest #${prediction.firstChangedIndex + 1})`);
+    }
+    return `${parts.join(" + ")} · prefix-cache reuse may drop`;
+  }
+
   async function confirmConfigSave(
     ctx: ExtensionContext,
     cfg: MaskingConfig,
     options: { title?: string; warning?: string; force?: boolean } = {},
     ask?: (title: string, message: string) => Promise<boolean>,
-  ): Promise<boolean> {
+  ): Promise<ConfigSaveResult> {
     const behaviorChanged = activeRuleEpoch?.behaviorFingerprint !== ruleBehaviorFingerprint(cfg, sessionKey);
     const prediction = behaviorChanged ? previewConfigImpact(cfg) : undefined;
-    if (!prediction && !options.force) return true;
-    const sections = [options.warning, prediction ? configImpactMessage(prediction) : undefined]
-      .filter((section): section is string => Boolean(section));
-    const title = options.title ?? "Save masking changes?";
-    const message = sections.join("\n\n");
-    const choice = ask
-      ? await ask(title, message) ? "Save anyway" : "Back to editing"
-      : await selectMaskingOption(ctx, title, ["Save anyway", "Back to editing"], message);
-    if (choice !== "Save anyway") return false;
-    return true;
+    if (options.force) {
+      // Safety confirmations (delete/import/batch/disable warnings about
+      // exposing values irreversibly) stay blocking.
+      const sections = [options.warning, prediction ? configImpactMessage(prediction) : undefined]
+        .filter((section): section is string => Boolean(section));
+      const title = options.title ?? "Save masking changes?";
+      const message = sections.join("\n\n");
+      const choice = ask
+        ? await ask(title, message) ? "Save anyway" : "Back to editing"
+        : await selectMaskingOption(ctx, title, ["Save anyway", "Back to editing"], message);
+      return { saved: choice === "Save anyway" };
+    }
+    // Cache impact alone is a bounded cost, not an irreversible hazard, so a
+    // predicted prefix change reminds instead of blocking: the compact
+    // estimate returns to the caller for inline display on the /masking
+    // screen; epoch records keep it auditable.
+    if (prediction) return { saved: true, impact: configImpactShortMessage(prediction) };
+    return { saved: true };
   }
 
   async function candidateConfigFromSources(
@@ -1142,6 +1168,19 @@ export default async function (pi: ExtensionAPI) {
     agentRunActive = true;
     pendingSystemSourceHash = prefixValueFingerprint(event.systemPrompt);
     pendingSystemSourceText = event.systemPrompt;
+    // Capture the model-facing system prefix for the save-time preflight.
+    // before_provider_request re-observes it (and refines this value) when the
+    // provider payload carries a string system field, but OpenAI-style
+    // payloads keep the prompt inside messages, so this hook is the only
+    // provider-independent capture point. Must mirror the emittedWith logic
+    // in previewConfigImpact.
+    let emitted = event.systemPrompt;
+    if (config.enabled && config.rules.length > 0) {
+      emitted = maskSystemPromptCached(event.systemPrompt).text;
+      const guidanceNote = guidanceNoteForConfig(config);
+      if (guidanceNote) emitted += "\n\n" + guidanceNote;
+    }
+    latestSystemPrefix = { source: event.systemPrompt, emitted };
     if (!config.enabled || config.rules.length === 0) return;
     // Memoized: the prompt is static per session and is masked again at the
     // provider boundary; fill registers provenance exactly once.

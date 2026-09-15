@@ -121,8 +121,8 @@ export async function openAllowlistEditor(
         done(false);
         return;
       }
-      const saved = await saveConfigOptionsUI(bridge, ctx, { allowlist: entries }, target);
-      done(saved);
+      const result = await saveConfigOptionsUI(bridge, ctx, { allowlist: entries }, target);
+      done(result.saved);
     }
 
     /** Stage the whole list from JSON (F2), mirroring the rule editor's JSON mode. */
