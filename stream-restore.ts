@@ -48,7 +48,10 @@ export interface StreamRestoreBlockState {
 }
 
 /** The subset of Masker the stream transformer needs (also satisfiable by test doubles). */
-export type StreamRestoreMasker = Pick<Masker, "unmaskDisplay" | "displayHoldbackLength">;
+export type StreamRestoreMasker = Pick<
+  Masker,
+  "unmaskDisplay" | "displayHoldbackLength" | "unmaskValue"
+>;
 
 /**
  * Build the provider-stream transformer: rewrite AssistantMessageEvents so
@@ -61,8 +64,16 @@ export type StreamRestoreMasker = Pick<Masker, "unmaskDisplay" | "displayHoldbac
  * Deltas carry only the confirmed prefix of the restored text: a trailing
  * fragment that could be the start of a placeholder is held back until the
  * next event resolves it, so a placeholder split across deltas is never
- * painted as a partial string. Tool arguments are deliberately not rewritten
- * here (partial JSON repair is unsafe); they keep using the tool_call hook.
+ * painted as a partial string.
+ *
+ * Tool arguments are restored at `toolcall_end` (never during `toolcall_delta`,
+ * where partial JSON repair is unsafe): the arguments JSON is complete there, so
+ * a deep unmask is safe. The arguments object is mutated in place so every
+ * holder of the same reference — pi's TUI tool card (created from the partial
+ * message and never re-fed args after message_end), the done/error message,
+ * and web clients that finalize from message.end — sees real values.
+ * Pre-execution unmasking additionally happens in the tool_call hook (index.ts),
+ * which stays as the safety net for paths without stream restoration.
  *
  * The masker is read through a getter so mid-session config swaps take effect
  * immediately and tests can inject their own instance.
@@ -78,10 +89,26 @@ export function createStreamRestore(getMasker: () => StreamRestoreMasker): {
     else if (block.type === "thinking") block.thinking = restored;
   };
 
+  /** Deep-unmask a toolCall arguments object, mutating it in place so every
+   *  holder of the same reference (TUI tool card, partial message, done
+   *  message) observes the restored values. */
+  const restoreArgumentsInPlace = (args: unknown): void => {
+    if (args === null || typeof args !== "object") return;
+    const restored = getMasker().unmaskValue(args).value;
+    if (restored === null || typeof restored !== "object") {
+      return; // non-object restore result: leave the original untouched
+    }
+    const target = args as Record<string, unknown>;
+    const source = restored as Record<string, unknown>;
+    for (const key of Object.keys(target)) delete target[key];
+    Object.assign(target, source);
+  };
+
   const restoreMessageStrings = (message: AssistantMessage | undefined): void => {
     for (const block of message?.content ?? []) {
       if (block.type === "text") block.text = getMasker().unmaskDisplay(block.text);
       else if (block.type === "thinking") block.thinking = getMasker().unmaskDisplay(block.thinking);
+      else if (block.type === "toolCall") restoreArgumentsInPlace(block.arguments);
     }
   };
 
@@ -108,6 +135,18 @@ export function createStreamRestore(getMasker: () => StreamRestoreMasker): {
         // A shrunken confirmed region (hold-back miss) emits nothing here;
         // the *_end/done events repair the full text instead.
         return { ...event, delta };
+      }
+      case "toolcall_end": {
+        // Arguments JSON is complete here: deep-unmask in place. Restore both
+        // the event's toolCall and the partial's content block — most pi-ai
+        // APIs emit the block object itself as event.toolCall, but be robust
+        // to implementations that hand over a separate object.
+        restoreArgumentsInPlace(event.toolCall.arguments);
+        const block = event.partial?.content?.[event.contentIndex];
+        if (block && block.type === "toolCall" && block !== event.toolCall) {
+          restoreArgumentsInPlace(block.arguments);
+        }
+        return event;
       }
       case "text_end":
       case "thinking_end": {

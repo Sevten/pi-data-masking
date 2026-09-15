@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Tool call arguments are now restored to real values in the main conversation: the provider-stream transformer unmasks `toolCall.arguments` at `toolcall_end` (in place, so pi's TUI tool card, the finalized message, and web clients all see real values). Previously tool cards kept showing placeholders forever — pi never re-feeds restored args to the card after `message_end`, and the arguments were deliberately skipped during streaming because partial-JSON repair is unsafe (that restriction still holds for `toolcall_delta`).
 - Model guidance and Disclose toggles now surface their prefix-cache impact even in resumed sessions before the first request of the process: the impact estimate no longer depends solely on the observed system prefix and also compares the deterministic guidance note, which always proves whether the next request's system prompt changes. Previously these toggles showed no reminder right after resuming a session (or switching branches), while rule toggles did.
 - Model guidance and Disclose toggles now surface their prefix-cache impact like rule changes do: the system-prefix baseline is captured from `before_agent_start` (provider-independent). Previously the baseline was only captured from `before_provider_request` when the payload carried a string `system` field, so on OpenAI-style providers whose payload keeps the system prompt inside `messages`, toggling these settings never showed the estimate.
 

@@ -144,7 +144,7 @@ test("error: message strings are restored, aborted streams pass through", async 
   if (error.content[0].type === "text") assert.equal(error.content[0].text, "partial s3cret-value");
 });
 
-test("toolcall events pass through untouched", async () => {
+test("toolcall deltas pass through untouched", async () => {
   const m = makeMasker(LITERAL);
   const partial = makePartial([]);
   const toolCall = { type: "toolCall" as const, id: "t1", name: "edit", arguments: { content: "PH-XYZ" } };
@@ -155,6 +155,44 @@ test("toolcall events pass through untouched", async () => {
   ]);
   assert.deepEqual(events.map((e) => e.type), ["toolcall_start", "toolcall_delta", "toolcall_end"]);
   assert.equal(events[1].type === "toolcall_delta" && events[1].delta, '{"content":"PH-XYZ"}');
+});
+
+test("toolcall_end restores arguments in place (event toolCall and partial block)", async () => {
+  const m = makeMasker(LITERAL);
+  const toolCall = { type: "toolCall" as const, id: "t1", name: "edit", arguments: { content: "PH-XYZ", nested: { v: "PH-XYZ" }, keep: 1 } };
+  const partial = makePartial([toolCall]);
+  const events = await runEvents(m, [
+    { type: "toolcall_end", contentIndex: 0, toolCall, partial },
+  ]);
+  assert.equal(events.length, 1);
+  // Mutated in place: the same object now holds real values.
+  assert.deepEqual(toolCall.arguments, { content: "s3cret-value", nested: { v: "s3cret-value" }, keep: 1 });
+  const block = partial.content[0];
+  assert.equal(block.type === "toolCall" && block.arguments, toolCall.arguments);
+});
+
+test("toolcall_end restores partial block when event toolCall is a separate object", async () => {
+  const m = makeMasker(LITERAL);
+  const eventToolCall = { type: "toolCall" as const, id: "t1", name: "edit", arguments: { content: "PH-XYZ" } };
+  const blockToolCall = { type: "toolCall" as const, id: "t1", name: "edit", arguments: { content: "PH-XYZ" } };
+  const partial = makePartial([blockToolCall]);
+  await runEvents(m, [
+    { type: "toolcall_end", contentIndex: 0, toolCall: eventToolCall, partial },
+  ]);
+  assert.deepEqual(eventToolCall.arguments, { content: "s3cret-value" });
+  assert.deepEqual(blockToolCall.arguments, { content: "s3cret-value" });
+});
+
+test("done message restores toolCall arguments", async () => {
+  const m = makeMasker(LITERAL);
+  const message = makePartial([
+    { type: "toolCall" as const, id: "t1", name: "edit", arguments: { content: "PH-XYZ" } },
+  ]);
+  message.stopReason = "toolUse";
+  const events = await runEvents(m, [{ type: "done", reason: "toolUse", message }]);
+  assert.equal(events.length, 1);
+  const block = message.content[0];
+  assert.equal(block.type === "toolCall" && block.arguments.content, "s3cret-value");
 });
 
 test("transform failure forwards the original event instead of breaking the stream", async () => {
