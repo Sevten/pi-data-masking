@@ -154,8 +154,8 @@ function statusLabel(cfg: MaskingConfig): string {
   const configured = cfg.configuredRules.length;
   const active = cfg.rules.length;
   return cfg.enabled
-    ? `🔒 Masking: ${active} active / ${configured} configured`
-    : `🔓 Masking: off · ${active} rule(s) ready`;
+    ? `pi-data-masking: ${active} active / ${configured} configured`
+    : `pi-data-masking: off · ${active} rule(s) ready`;
 }
 
 /**
@@ -371,7 +371,7 @@ export default async function (pi: ExtensionAPI) {
       } catch (err) {
         if (!persistenceWarned) {
           persistenceWarned = true;
-          ctx.ui.notify(`⚠️ Failed to persist masking rule history: ${(err as Error).message}`, "warning");
+          ctx.ui.notify(`Failed to persist masking rule history: ${(err as Error).message}`, "warning");
         }
         return;
       }
@@ -403,7 +403,7 @@ export default async function (pi: ExtensionAPI) {
     } catch (err) {
       if (!persistenceWarned) {
         persistenceWarned = true;
-        ctx.ui.notify(`⚠️ Failed to persist factual masking history: ${(err as Error).message}`, "warning");
+        ctx.ui.notify(`Failed to persist factual masking history: ${(err as Error).message}`, "warning");
       }
     }
   }
@@ -649,7 +649,7 @@ export default async function (pi: ExtensionAPI) {
   }
 
   function notifyWarnings(ctx: ExtensionContext, warnings: string[]) {
-    for (const w of warnings) ctx.ui.notify(`⚠️ ${w}`, "info");
+    for (const w of warnings) ctx.ui.notify(w, "info");
   }
 
   function updateStatus(ctx: ExtensionContext) {
@@ -729,7 +729,7 @@ export default async function (pi: ExtensionAPI) {
     } catch (err) {
       if (!persistenceWarned) {
         persistenceWarned = true;
-        ctx.ui.notify(`⚠️ Failed to persist masking history: ${(err as Error).message}`, "warning");
+        ctx.ui.notify(`Failed to persist masking history: ${(err as Error).message}`, "warning");
       }
     }
   }
@@ -743,7 +743,7 @@ export default async function (pi: ExtensionAPI) {
     } catch (err) {
       if (!persistenceWarned) {
         persistenceWarned = true;
-        ctx.ui.notify(`⚠️ Failed to persist masking session state: ${(err as Error).message}`, "warning");
+        ctx.ui.notify(`Failed to persist masking session state: ${(err as Error).message}`, "warning");
       }
     }
   }
@@ -1037,7 +1037,7 @@ export default async function (pi: ExtensionAPI) {
     if (!dynamicMapWarned && dynamicPlaceholderMap.size >= DYNAMIC_MAP_WARN_THRESHOLD) {
       dynamicMapWarned = true;
       ctx.ui.notify(
-        `⚠️ pi-data-masking: regex rules matched ${dynamicPlaceholderMap.size} values this session — a pattern is likely too broad. Narrow it in /masking.`,
+        `pi-data-masking: regex rules matched ${dynamicPlaceholderMap.size} values this session — a pattern is likely too broad. Narrow it in /masking.`,
         "warning"
       );
     }
@@ -1147,7 +1147,7 @@ export default async function (pi: ExtensionAPI) {
     if (r.count > 0 && !systemPromptWarned) {
       systemPromptWarned = true;
       ctx.ui.notify(
-        `⚠️ System prompt contained ${r.count} sensitive value(s) and was masked before sending; if this is unexpected, review your masking rules`,
+        `System prompt contained ${r.count} sensitive value(s) and was masked before sending; if this is unexpected, review your masking rules`,
         "warning"
       );
     }
@@ -1256,7 +1256,7 @@ export default async function (pi: ExtensionAPI) {
     if (maskingActive && intercepted > 0 && !fallbackNotifiedThisTurn) {
       fallbackNotifiedThisTurn = true;
       ctx.ui.notify(
-        `🛡️ ${intercepted} sensitive value(s) intercepted at the provider request boundary (bypassed the context hook — check other extensions or injected content)`,
+        `pi-data-masking: ${intercepted} sensitive value(s) intercepted at the provider request boundary (bypassed the context hook — check other extensions or injected content)`,
         "warning"
       );
     }
@@ -1329,7 +1329,7 @@ export default async function (pi: ExtensionAPI) {
         const state = cfg.enabled ? "on" : "OFF (masking is globally disabled; this is a dry run)";
         const lines = [
           `Masking ${state} · ${preview.count} value(s) masked · ${preview.attribution}`,
-          ...preview.warnings.map((w) => `⚠️ ${w}`),
+          ...preview.warnings,
           preview.text,
         ];
         ctx.ui.notify(lines.join("\n"), "info");
