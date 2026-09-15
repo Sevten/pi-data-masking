@@ -15,6 +15,7 @@
 - Placeholder disclosure redesigned around a three-position master switch: on (disclose all literal rules), off (none), or per-rule (default; each rule's Disclose toggle decides). The rule-level setting is now a plain OFF/ON toggle (was inherit/always/never); existing boolean configs keep their meaning, and `systemPromptGuidance` still auto-enables when needed.
 - Masking config saves and hot reloads no longer post explanations into the chat conversation.
 - The masking UI now reflects the next-to-run config immediately: pending changes show on the masking status line and inside `/masking` with an "activates next run" hint.
+- Notification cleanup: the redundant "Local preflight" warning after accepting a masking change is gone (the save-confirmation dialog still shows the impact estimate), and the regex-discovered-values threshold notice is rewritten in plain language ("a pattern is likely too broad — narrow it in /masking"). The LLM-invented-values threshold notice was removed; it carried no actionable signal.
 - `/masking` visual polish: consistent ‹ › toggle cells for settings rows and rules, ←/→ support, and a clearer "Masking (global)" label.
 
 ### Fixed

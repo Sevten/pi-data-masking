@@ -259,7 +259,6 @@ export default async function (pi: ExtensionAPI) {
   let fallbackNotifiedThisTurn = false;
   let systemPromptWarned = false;
   let dynamicMapWarned = false;
-  let inventedMapWarned = false;
   let persistenceWarned = false;
 
   /** True once the session's model-bound transcript actually contains masked
@@ -880,7 +879,6 @@ export default async function (pi: ExtensionAPI) {
     fallbackNotifiedThisTurn = false;
     systemPromptWarned = false;
     dynamicMapWarned = false;
-    inventedMapWarned = false;
     persistenceWarned = false;
   }
 
@@ -1039,14 +1037,7 @@ export default async function (pi: ExtensionAPI) {
     if (!dynamicMapWarned && dynamicPlaceholderMap.size >= DYNAMIC_MAP_WARN_THRESHOLD) {
       dynamicMapWarned = true;
       ctx.ui.notify(
-        `⚠️ ${dynamicPlaceholderMap.size} distinct regex-discovered values this session; the mapping only grows — consider narrowing regex rules`,
-        "warning"
-      );
-    }
-    if (!inventedMapWarned && llmInventedValues.size >= DYNAMIC_MAP_WARN_THRESHOLD) {
-      inventedMapWarned = true;
-      ctx.ui.notify(
-        `⚠️ ${llmInventedValues.size} distinct LLM-generated values recorded this session (first-seen-immutable); the set only grows — consider narrower regex rules`,
+        `⚠️ pi-data-masking: regex rules matched ${dynamicPlaceholderMap.size} values this session — a pattern is likely too broad. Narrow it in /masking.`,
         "warning"
       );
     }
