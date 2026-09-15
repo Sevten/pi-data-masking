@@ -150,12 +150,17 @@ const SNAPSHOT_CONTENT_HASH_MAX_ENTRIES = 10_000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-function statusLabel(cfg: MaskingConfig): string {
+function statusLabel(
+  cfg: MaskingConfig,
+  theme: { fg: (color: "dim" | "warning" | "accent", text: string) => string },
+): string {
   const configured = cfg.configuredRules.length;
   const active = cfg.rules.length;
+  // Dim while masking is on (passive, all-good state); the disabled state
+  // uses the warning color so unmasked traffic is hard to miss.
   return cfg.enabled
-    ? `pi-data-masking: ${active} active / ${configured} configured`
-    : `pi-data-masking: off · ${active} rule(s) ready`;
+    ? theme.fg("dim", `pi-data-masking: ${active} active / ${configured} configured`)
+    : theme.fg("warning", `pi-data-masking: off · ${active} rule(s) ready`);
 }
 
 /**
@@ -657,8 +662,10 @@ export default async function (pi: ExtensionAPI) {
       ctx.ui.setStatus("masking", undefined);
       return;
     }
-    const pending = pendingConfigActivation ? " · changes pending" : "";
-    ctx.ui.setStatus("masking", statusLabel(config) + pending);
+    // Test harnesses may not provide a theme; fall back to plain text.
+    const fg = ctx.ui.theme?.fg.bind(ctx.ui.theme) ?? ((_: "dim" | "warning" | "accent", text: string) => text);
+    const pending = pendingConfigActivation ? " " + fg("accent", "· changes pending") : "";
+    ctx.ui.setStatus("masking", statusLabel(config, { fg }) + pending);
   }
 
   async function reloadConfigNow(ctx: ExtensionContext): Promise<void> {
