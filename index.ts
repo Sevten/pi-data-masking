@@ -244,7 +244,6 @@ export default async function (pi: ExtensionAPI) {
    *  build new containers), so no per-request re-clone is needed. */
   let latestModelInput: Array<{ original: Record<string, unknown>; maskedHash: string }> = [];
   let latestSystemPrefix: { source: string; emitted: string } | undefined;
-  let impactPreviewKeys = new Set<string>();
   let agentRunActive = false;
   let pendingConfigActivation: { config: MaskingConfig; reason: RuleEpochReason } | null = null;
 
@@ -555,40 +554,6 @@ export default async function (pi: ExtensionAPI) {
     return { systemChanged, changedMessageCount, firstChangedIndex };
   }
 
-  function configImpactPreviewKey(cfg: MaskingConfig): string {
-    const currentFingerprint = activeRuleEpoch?.behaviorFingerprint ?? "none";
-    const candidateFingerprint = ruleBehaviorFingerprint(cfg, sessionKey);
-    const factualSignature = hashMessage({
-      system: latestSystemPrefix?.emitted,
-      messages: latestModelInput.map((entry) => entry.maskedHash),
-    });
-    return `${currentFingerprint}:${candidateFingerprint}:${factualSignature}`;
-  }
-
-  function notifyConfigImpactPreview(
-    ctx: ExtensionContext,
-    cfg: MaskingConfig,
-    prediction: ConfigImpactPreview,
-  ): void {
-    const previewKey = configImpactPreviewKey(cfg);
-    if (impactPreviewKeys.has(previewKey)) return;
-    impactPreviewKeys.add(previewKey);
-
-    const history = prediction.changedMessageCount > 0
-      ? `${prediction.changedMessageCount} existing conversation message${prediction.changedMessageCount === 1 ? "" : "s"} (earliest #${prediction.firstChangedIndex + 1})`
-      : "";
-    const target = prediction.systemChanged
-      ? `the provider system prompt${history ? ` and ${history}` : ""}`
-      : history;
-    const activation = agentRunActive
-      ? " The active agent run keeps its current rules; this estimate applies when the pending change activates."
-      : "";
-    ctx.ui.notify(
-      `⚠️ Local preflight: this masking change is expected to change ${target}; provider prefix cache reuse may decrease from the earliest changed component.${activation} No provider request has been sent for this check; review or revert the rule before the next request if cache reuse is more important.`,
-      "warning",
-    );
-  }
-
   function configImpactMessage(prediction: ConfigImpactPreview): string {
     const history = prediction.changedMessageCount > 0
       ? `${prediction.changedMessageCount} existing conversation message${prediction.changedMessageCount === 1 ? "" : "s"} (earliest #${prediction.firstChangedIndex + 1})`
@@ -619,7 +584,6 @@ export default async function (pi: ExtensionAPI) {
       ? await ask(title, message) ? "Save anyway" : "Back to editing"
       : await selectMaskingOption(ctx, title, ["Save anyway", "Back to editing"], message);
     if (choice !== "Save anyway") return false;
-    if (prediction) impactPreviewKeys.add(configImpactPreviewKey(cfg));
     return true;
   }
 
@@ -650,11 +614,6 @@ export default async function (pi: ExtensionAPI) {
   ): "activated" | "queued" {
     const compileWarnings = buildMasker(cfg).warnings;
     notifyWarnings(ctx, [...warnings, ...compileWarnings]);
-    const candidateFingerprint = ruleBehaviorFingerprint(cfg, sessionKey);
-    if (activeRuleEpoch?.behaviorFingerprint !== candidateFingerprint) {
-      const prediction = previewConfigImpact(cfg);
-      if (prediction) notifyConfigImpactPreview(ctx, cfg, prediction);
-    }
     if (agentRunActive) {
       pendingConfigActivation = { config: cfg, reason };
       updateStatus(ctx);
@@ -914,7 +873,6 @@ export default async function (pi: ExtensionAPI) {
     pendingSystemSourceText = undefined;
     latestModelInput = [];
     latestSystemPrefix = undefined;
-    impactPreviewKeys = new Set();
     agentRunActive = false;
     pendingConfigActivation = null;
     sessionMaskedOutbound = false;
@@ -1060,7 +1018,6 @@ export default async function (pi: ExtensionAPI) {
       }
       transcript = mergeTranscript(transcript, originals, originals, capturedAt, disabledPairs);
       latestModelInput = latestInputsFromTranscript(transcript, originals, (index) => hashMessage(originals[index]));
-      impactPreviewKeys.clear();
       observeEpochFacts(ctx, epochObservations(originals, originals, disabledPairs), capturedAt);
       persistSnapshots(ctx, originals, originals, disabledPairs);
       return;
@@ -1107,7 +1064,6 @@ export default async function (pi: ExtensionAPI) {
       originals,
       (index) => contentHashes[index]?.masked ?? hashMessage(maskedMessages[index] ?? originals[index]),
     );
-    impactPreviewKeys.clear();
     observeEpochFacts(ctx, epochObservations(originals, maskedMessages, contentHashes), capturedAt);
     persistSnapshots(ctx, originals, maskedMessages, contentHashes);
     return { messages: maskedMessages as unknown as typeof event.messages };

@@ -163,11 +163,9 @@ test("a running agent keeps one epoch across tool loops and coalesces pending to
 
     await harness.toggleMasking(true);
     assert.ok(harness.notifications.some((message) => message.includes("active run keeps its current rules")));
-    assert.ok(harness.notifications.some((message) =>
-      message.includes("Local preflight") &&
-      message.includes("1 existing conversation message") &&
-      message.includes("No provider request has been sent")
-    ));
+    // The local-preflight notify was removed; impact details only appear in
+    // the save-confirmation dialog.
+    assert.ok(harness.notifications.every((message) => !message.includes("Local preflight")));
     assert.equal(harness.notifications.filter((message) => message.includes("prefix-cache reuse")).length, 0);
 
     // The persisted toggle changed, but every context/tool operation in this
