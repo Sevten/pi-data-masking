@@ -13,7 +13,7 @@ user/tool data → mask → LLM → restore tool arguments → tool uses real da
 - **Integrated rule management** — `/masking` centralizes project and global rules, presets, ordering, testing, import, and redacted export in one UI.
 - **Efficient long conversations** — with stable rules, cached masking results avoid repeated regex scans of unchanged history as the conversation grows.
 - **Model guidance for placeholders** — an opt-in system-prompt note teaches the model to compare placeholders as exact full strings, pass them verbatim into tools, and route transformations through tools instead of slicing or hashing them.
-- **Placeholder disclosure** — optionally list the session's actual placeholder strings in the model guidance, so the model can tell which values are substitutes instead of guessing.
+- **Placeholder disclosure** — optionally list the session's actual placeholder strings in the model guidance, so the model can tell which values are substitutes instead of guessing. Disclosure is a three-position switch (on, off, or per-rule) with a plain on/off toggle per literal rule.
 - **Auditable model view** — `/masking-history` lets you verify the exact local and model-facing representations, together with the rule versions that produced them.
 
 ## Use cases
@@ -54,17 +54,13 @@ The replacement is operationally believable, not semantically equivalent to the 
 
 The same real value maps to the same placeholder throughout a conversation. Persisted conversations restore their session key and exact model-facing history; new conversations use a new key.
 
-Before saving a change that would alter the model-facing prompt prefix, `/masking` warns which messages are affected and asks whether to continue. External file reloads receive an immediate warning instead.
-
 ### Transparent tool execution
 
 The model plans tool calls using placeholders. Immediately before a tool runs, matching placeholders in its arguments are restored to their real values. Tool results remain real in the local conversation and are masked again before the next model request.
 
-The model must pass a placeholder verbatim. A placeholder that the model slices, concatenates, hashes, or otherwise transforms cannot be restored.
-
 ### Inspectable model view
 
-`/masking-history` shows only representations that actually reached the model, grouped into consecutive rule versions rather than hypothetical replays. It supports local original, exact model-facing, and comparison views. Each version includes a read-only rule list and net changes; unused intermediate edits are omitted, while persisted and compacted history remains associated with the version that processed it.
+`/masking-history` shows only representations that actually reached the model, grouped into consecutive rule versions. It supports local original, exact model-facing, and comparison views; each version lists the rules that produced it, and unused intermediate edits are omitted.
 
 ## Rules and configuration
 
@@ -75,7 +71,7 @@ Rules live in JSON files that the UI creates and updates automatically:
 | Project | `<project>/.pi/pi-data-masking/masking.config.json` |
 | Global | `~/.pi/agent/pi-data-masking/masking.config.json` |
 
-Files use strict JSON and reload automatically. When the first project rule is saved, Pi can add the path to `.gitignore`. Project rules run before global rules, and project options override global options; the persistent global switch in `/masking` overrides both files.
+Files use strict JSON and reload automatically. When the first project rule is saved, Pi can add the path to `.gitignore`. Project rules run before global rules. Settings (`options`) are global-level: they are read from the global config only, and a leftover `options` object in a project config is ignored, with a one-time prompt in `/masking` to migrate it into the global config. The persistent global switch in `/masking` overrides both files.
 
 For manual configuration:
 
@@ -110,7 +106,9 @@ Four rule sources are available:
 | Custom regex | `type: "regex"` with a JavaScript `RegExp` `pattern` |
 | Built-in preset | `preset` — common tokens, credentials, private keys, connection strings, and IP addresses |
 
-Literal rules may use a fixed `placeholder` or automatic generation; regex matches always receive generated placeholders, since one pattern can discover many distinct values, and capture groups restrict masking to the captured parts. Earlier rules take priority over overlapping later rules. Other options include `caseSensitive`, `showStatusBar`, `systemPromptGuidance`, and `disclosePlaceholders`; see [`masking.config.schema.json`](masking.config.schema.json) for the complete field reference and defaults.
+Literal rules may use a fixed `placeholder` or automatic generation; regex matches always receive generated placeholders, and capture groups restrict masking to the captured parts. Earlier rules take priority over overlapping later rules.
+
+Literal rules match case-sensitively by default; the Rule Builder's `Case` field makes a rule case-insensitive (regex rules use their own flags). An allowlist (`options.allowlist`, edited in `/masking`) exempts listed values or whole lines from masking even when a rule would match. Other options include `showStatusBar`, `systemPromptGuidance`, and `disclosePlaceholders`; see [`masking.config.schema.json`](masking.config.schema.json) for the complete field reference and defaults.
 
 ## Performance
 
@@ -129,13 +127,10 @@ Regex diagnostics are advisory. Keep patterns narrow and test representative pos
 
 ### `/masking`
 
-`/masking test <text>` masks the text with the effective rules and shows the result, match counts, and per-rule attributions (local only, like the UI test area).
-
 | Key | Action |
 |---|---|
 | `M` | Toggle global masking |
 | `Space` | Toggle the selected rule |
-| `↑/↓` / `PgUp/PgDn` / `Home/End` | Browse rules by row or page, or jump to the first rule/Add row |
 | `Enter` / `A` | Edit the selection or add a rule with structured fields |
 | `F2` | Edit the selected rule as JSON, or start a new JSON rule draft |
 | `Ctrl+↑/↓` | Reorder the selected rule |
@@ -145,9 +140,6 @@ Regex diagnostics are advisory. Keep patterns narrow and test representative pos
 | `F` / `/` | Filter or search rules |
 | `B` / `I` / `X` | Batch edit, import, or redacted export |
 | `H` | Open help |
-| `Esc` | Close |
-
-Test input remains local and does not enter model context, session history, configuration, or live placeholder mappings.
 
 ### `/masking-history`
 
@@ -160,8 +152,6 @@ Test input remains local and does not enter model context, session history, conf
 | `M` | Switch between local original and model-facing views |
 | `C` | Toggle comparison view |
 | `Ctrl+O` / `Ctrl+T` | Toggle tool and thinking content |
-| `↑/↓` / `PgUp/PgDn` | Scroll |
-| `Esc` | Go back or close |
 
 ## Security model and limitations
 
@@ -217,7 +207,9 @@ Both are opt-in switches in the `/masking` settings zone. Enable them if you not
 
 `systemPromptGuidance` injects a note into the system prompt that pins down how the model must treat placeholders: compare them as exact full strings, pass them verbatim into tools, route transformations through tools, and report inexplicable contradictions instead of investigating them. It is advice, not enforcement.
 
-`disclosePlaceholders` builds on it by listing the session's actual placeholder strings in the guidance (grouped by structure fidelity), so the model knows exactly which values are substitutes. Regex-discovered placeholders are never listed. Enabling disclosure enables guidance automatically.
+With disclosure enabled, the guidance lists the session's actual placeholder strings (grouped by structure fidelity), so the model knows exactly which values are substitutes. Regex-discovered placeholders are never listed. Enabling disclosure enables guidance automatically.
+
+`disclosePlaceholders` is a three-position master switch in the `/masking` settings zone: on discloses all eligible literal rules, off discloses none, and per-rule (the default) defers to each rule's own on/off toggle. Enable it if you notice the model analyzing or distrusting placeholders.
 
 ## Development
 
