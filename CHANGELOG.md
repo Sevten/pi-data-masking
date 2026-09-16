@@ -5,11 +5,10 @@
 ### Added
 
 - Global allowlist: values or whole lines listed in `/masking` → Settings → Allowlist (or `options.allowlist` in the global config) stay unmasked even when a rule would match — e.g. keep one IP visible while other IPs are masked.
-- Case-insensitive matching is now configurable per rule and per allowlist entry, settable from the Rule Builder (Case field) and the allowlist editor (C toggle).
 
 ### Changed
 
-- **Breaking:** removed the global `options.caseSensitive` option; case sensitivity is now decided per rule and per allowlist entry (default: case-sensitive). Existing configs are migrated automatically on load, and `/masking` offers a one-click repair to rewrite the config to the new format.
+- **Breaking:** removed the global `options.caseSensitive` option; case sensitivity is now decided per rule and per allowlist entry (default: case-sensitive), settable from the Rule Builder (Case field) and the allowlist editor. Existing configs are migrated automatically on load, and `/masking` offers a one-click repair to rewrite the config to the new format.
 - `/masking` now always edits the global config's settings; a leftover `options` object in a project config is ignored, with a one-time prompt to migrate it into the global config.
 - Placeholder disclosure is now a three-position switch: on, off, or per-rule (default). The rule-level setting became a plain on/off toggle; existing configs keep their meaning.
 - Pending config changes are visible immediately in the status line and `/masking`, with an "activates next run" hint.
