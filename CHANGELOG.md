@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Starting a session when the masking config file or its directory does not exist yet no longer crashes Pi with an ENOSPC uncaughtException from excessive file watchers.
+
 ## [0.8.0] - 2026-09-16
 
 ### Added
