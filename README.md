@@ -1,6 +1,6 @@
 # pi-data-masking
 
-pi-data-masking is a Pi agent extension that replaces configured values—secrets, credentials, internal hostnames, customer data—with stable, realistic-looking placeholders before a request reaches the LLM provider. The real values remain in Pi's local conversation and are restored only when a tool needs them.
+pi-data-masking is a Pi agent extension that replaces configured values—secrets, credentials, customer data—with stable, realistic-looking placeholders before a request reaches the LLM provider.
 
 ```text
 user/tool data → mask → LLM → restore tool arguments → tool uses real data
