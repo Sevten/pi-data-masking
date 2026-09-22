@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Preserve authentication and model metadata when wrapping native providers on Pi 0.86 and later.
+
 ## [0.8.1] - 2026-09-22
 
 ### Fixed

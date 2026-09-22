@@ -32,6 +32,7 @@ import {
   type AssistantMessage,
   type AssistantMessageEvent,
   type AssistantMessageEventStream,
+  type Provider,
 } from "@earendil-works/pi-ai";
 import { getApiProvider, registerBuiltInApiProviders } from "@earendil-works/pi-ai/compat";
 import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
@@ -228,6 +229,19 @@ const STREAM_RESTORE_SLOT = "__piDataMaskingStreamRestore";
 
 interface StreamRestoreLike {
   wrap(stream: AssistantMessageEventStream): AssistantMessageEventStream;
+}
+
+export function registerNativeStreamRestoreProvider(
+  pi: ExtensionAPI,
+  provider: Provider,
+  stream: Provider["stream"],
+  restore: StreamRestoreLike,
+): void {
+  pi.registerProvider({
+    ...provider,
+    stream: (model, context, options) => restore.wrap(stream(model, context, options)),
+    streamSimple: (model, context, options) => restore.wrap(stream(model, context, options)),
+  });
 }
 
 export function armStreamRestore(getRestore: () => StreamRestoreLike): void {
