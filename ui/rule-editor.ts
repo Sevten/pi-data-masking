@@ -515,9 +515,9 @@ export async function addConfigRule(
       }),
       placeholder: makeEditor(typeof editing?.initial.placeholder === "string" && editing.initial.placeholder !== "auto" ? editing.initial.placeholder : ""),
       json: makeEditor("", false),
-      preserve: makeEditor(typeof (editing?.initial.preserveStructure as PreserveStructure | undefined)?.keepPrefix === "number"
-        ? String((editing!.initial.preserveStructure as PreserveStructure).keepPrefix)
-        : ""),
+      preserve: makeEditor(String(typeof (editing?.initial.preserveStructure as PreserveStructure | undefined)?.keepPrefix === "number"
+        ? (editing!.initial.preserveStructure as PreserveStructure).keepPrefix
+        : typeof selectedPreset?.preserveStructure?.keepPrefix === "number" ? selectedPreset.preserveStructure.keepPrefix : "")),
       test: makeEditor("", false, () => {
         if (!updatingAutoTest) testAutoManaged = false;
       }),
