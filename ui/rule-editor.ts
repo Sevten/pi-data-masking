@@ -251,7 +251,8 @@ export async function addConfigRule(
   if (!selectedType) return;
   let selectedPreset: (typeof MASKING_PRESETS)[number] | undefined;
   if (selectedType === "Built-in preset template") {
-    selectedPreset = await ctx.ui.custom<(typeof MASKING_PRESETS)[number] | undefined>((tui, theme, keybindings, done) => {
+    type PresetPick = { preset: (typeof MASKING_PRESETS)[number] } | { batch: Array<(typeof MASKING_PRESETS)[number]> };
+    const pick = await ctx.ui.custom<PresetPick | undefined>((tui, theme, keybindings, done) => {
       let query = "";
       const filtered = () => {
         const q = query.trim().toLowerCase();
@@ -263,6 +264,7 @@ export async function addConfigRule(
         return [...list].sort((a, b) => a.label.localeCompare(b.label));
       };
       let selectedIndex = 0;
+      const marked = new Set<string>();
       // Rows consumed by the title, filter input, blank lines, description/example, and hint lines.
       const chromeRows = 10;
       const viewportSize = () => Math.max(3, tui.terminal.rows - chromeRows);
@@ -281,12 +283,15 @@ export async function addConfigRule(
           ensureVisible(list.length);
           const selected = list[selectedIndex];
           const size = viewportSize();
-          const lines = [theme.fg("accent", theme.bold(`Choose a built-in preset (${list.length}/${MASKING_PRESETS.length})`))];
+          const markedCount = marked.size;
+          const lines = [theme.fg("accent", theme.bold(`Choose a built-in preset (${list.length}/${MASKING_PRESETS.length})${markedCount > 0 ? ` · ${markedCount} marked` : ""}`))];
           lines.push(theme.fg(query ? "accent" : "dim", `Filter: ${query}▊`));
           lines.push("");
           for (let index = scrollTop; index < Math.min(scrollTop + size, list.length); index++) {
             const preset = list[index]!;
-            const row = `${index === selectedIndex ? "▶" : " "} ${preset.label}`;
+            const cursor = index === selectedIndex ? "▶" : " ";
+            const mark = marked.has(preset.name) ? "●" : " ";
+            const row = `${cursor}${mark} ${preset.label}`;
             lines.push(index === selectedIndex ? theme.fg("accent", row) : theme.fg("muted", row));
           }
           if (list.length === 0) lines.push(theme.fg("dim", "  no matching presets"));
@@ -298,7 +303,7 @@ export async function addConfigRule(
             lines.push(...wrappedMaskingText(theme.fg("dim", `Example: ${selected.example}`), width));
           }
           lines.push("");
-          lines.push(...wrappedMaskingText(theme.fg("dim", "Type to filter · ↑↓ select · PgUp/PgDn page · Enter continue · Esc cancel"), width));
+          lines.push(...wrappedMaskingText(theme.fg("dim", "Space mark · Type to filter · ↑↓ select · PgUp/PgDn page · Enter continue · Esc cancel"), width));
           return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => {},
@@ -320,6 +325,13 @@ export async function addConfigRule(
             const list = filtered();
             if (list.length > 0) selectedIndex = Math.min(list.length - 1, selectedIndex + size);
             tui.requestRender();
+          } else if (data === " ") {
+            const preset = filtered()[selectedIndex];
+            if (preset) {
+              if (marked.has(preset.name)) marked.delete(preset.name);
+              else marked.add(preset.name);
+            }
+            tui.requestRender();
           } else if (data === "\x7f" || data === "\b") {
             query = query.slice(0, -1);
             selectedIndex = 0;
@@ -329,14 +341,55 @@ export async function addConfigRule(
             selectedIndex = 0;
             tui.requestRender();
           } else if (keybindings.matches(data, "tui.select.confirm")) {
-            done(filtered()[selectedIndex]);
+            const list = filtered();
+            const batch = list.filter((preset) => marked.has(preset.name));
+            if (batch.length > 1) done({ batch });
+            else if (list[selectedIndex]) done({ preset: list[selectedIndex]! });
           } else if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
             done(undefined);
           }
         },
       };
     }, MASKING_SCREEN_OPTIONS);
-    if (!selectedPreset) return;
+    if (!pick) return;
+    if ("batch" in pick) {
+      const source = sources.find((source) => source.scope === "global")!;
+      if (!existsSync(source.path)) {
+        const initial = buildInitialConfig([]);
+        try {
+          await createJsonFileExclusive(source.path, {
+            $schema: initial.$schema,
+            version: initial.version,
+            rules: [],
+          });
+        } catch (err) {
+          if (!existsSync(source.path)) {
+            ctx.ui.notify(`Failed to create config file: ${(err as Error).message}`, "error");
+            return;
+          }
+        }
+      }
+      const rules: RawConfigRule[] = pick.batch.map((preset) => ({
+        type: "regex",
+        enabled: true,
+        name: preset.label,
+        description: `${preset.description} · Example: ${preset.example}`,
+        pattern: preset.pattern,
+        ...(preset.flags ? { flags: preset.flags } : {}),
+        ...(preset.preserveStructure ? { preserveStructure: { ...preset.preserveStructure } } : {}),
+      }));
+      const mutations = rules.map((rule) => ({ kind: "append" as const, path: source.path, rule }));
+      const preview = await previewConfigRuleMutations(mutations);
+      const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
+      const outcome = await bridge.confirmConfigSave(ctx, candidate.config);
+      if (!outcome.saved) return;
+      const saved = await saveConfigRuleMutations(mutations);
+      bridge.notifyWarnings(ctx, saved.warnings);
+      await bridge.reloadConfigNow(ctx);
+      ctx.ui.notify(`Added ${rules.length} preset rules to ${source.scope} config`, "info");
+      return;
+    }
+    selectedPreset = pick.preset;
   }
 
   type BuiltRule = { source: typeof sources[number]; rule: RawConfigRule; createdSource: boolean; impact?: string };

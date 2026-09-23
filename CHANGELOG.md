@@ -10,6 +10,7 @@
 
 - Improved built-in preset coverage: GitHub tokens now include OAuth, GitHub App, and refresh prefixes (gho_/ghu_/ghs_/ghr_), Slack tokens cover refresh tokens, GitLab tokens match the new versioned format, Stripe covers webhook signing secrets, and Telegram tokens no longer require a fixed prefix.
 - Rule Builder: Disclose row appends a highlighted "not in effect — global ON/OFF" note when a global override is active.
+- Rule Builder preset picker: Space marks presets for multi-select; Enter with multiple marked presets adds them all to the global config with their default settings in one step (single selection still opens the editor for customization).
 
 ### Fixed
 
