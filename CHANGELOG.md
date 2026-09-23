@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## [Unreleased]
+
+### Changed
+
+- Rule Builder: Disclose row appends a highlighted "not in effect — global ON/OFF" note when a global override is active.
 
 ### Fixed
 

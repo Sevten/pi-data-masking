@@ -673,13 +673,13 @@ export async function addConfigRule(
       value: string,
       width: number,
       description: string,
-      options: { cursorEditor?: Editor; selector?: boolean; selectorPrefix?: string; dim?: boolean } = {},
+      options: { cursorEditor?: Editor; selector?: boolean; selectorPrefix?: string; selectorSuffix?: string; dim?: boolean } = {},
     ): void {
       const focused = field !== undefined && focusedField() === field;
       const marker = focused ? "▶" : " ";
       const labelWidth = 14;
       const rawValue = options.selector
-        ? (options.selectorPrefix !== undefined ? `${options.selectorPrefix} ‹ ${value} ›` : `‹ ${value} ›`)
+        ? (options.selectorPrefix !== undefined ? `${options.selectorPrefix} ‹ ${value} ›` : `‹ ${value} ›`) + (options.selectorSuffix !== undefined ? ` ${options.selectorSuffix}` : "")
         : value || "—";
       const valueWidth = Math.max(1, width - (2 + labelWidth + 2));
       const displayedValue = focused && options.cursorEditor
@@ -705,8 +705,8 @@ export async function addConfigRule(
       lines.push(...wrappedMaskingText(description, width));
     }
 
-    function renderSelector(lines: string[], field: BuilderField, label: string, value: string, width: number, description: string, selectorPrefix?: string): void {
-      renderFieldRow(lines, field, label, value, width, description, { selector: true, selectorPrefix });
+    function renderSelector(lines: string[], field: BuilderField, label: string, value: string, width: number, description: string, selectorSuffix?: string): void {
+      renderFieldRow(lines, field, label, value, width, description, { selector: true, selectorSuffix });
     }
 
     function renderSingleLineField(lines: string[], field: BuilderField, label: string, editor: Editor, width: number, description: string): void {
@@ -855,11 +855,14 @@ export async function addConfigRule(
         // Disclose selector layout depends only on the global mode (constant
         // while editing), so toggling the stored value never reshuffles the
         // row — only the word inside the brackets changes.
-        const storedLabel = discloseOn ? "ON" : "OFF";
-        const disclosePrefix = discloseGlobalMode === true ? "ON (global)" : discloseGlobalMode === false ? "OFF (global)" : undefined;
-        const discloseValue = disclosePrefix ? theme.fg("dim", `${storedLabel} (stored)`) : storedLabel;
-        const discloseDescription = disclosePrefix
-          ? `global ${discloseGlobalMode ? "ON" : "OFF"} — rule setting not in effect`
+        const storedLabel = `${discloseOn ? "ON" : "OFF"} (stored)`;
+        const overridden = discloseGlobalMode === true || discloseGlobalMode === false;
+        const discloseValue = overridden ? storedLabel : storedLabel.replace(/ \(stored\)$/, "");
+        const discloseSuffixText = overridden
+          ? theme.fg("warning", `not in effect — global ${discloseGlobalMode ? "ON" : "OFF"}`)
+          : undefined;
+        const discloseDescription = overridden
+          ? "stored value is overridden by the global setting — ←/→ or Space changes what is stored here, not what happens"
           : "no global override — this rule setting applies";
         const editorFocused = focusedField() !== "test";
         const editorDivider = theme.fg(editorFocused ? "accent" : "dim", "─".repeat(Math.max(1, width)));
@@ -889,14 +892,14 @@ export async function addConfigRule(
             renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
-            renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, disclosePrefix);
+            renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, discloseSuffixText);
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
               "←/→ or Space toggles case-sensitive matching for this rule");
           } else {
             renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
-            renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, disclosePrefix);
+            renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, discloseSuffixText);
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
               "←/→ or Space toggles case-sensitive matching for this rule");
           }
