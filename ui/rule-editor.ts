@@ -369,15 +369,21 @@ export async function addConfigRule(
           }
         }
       }
-      const rules: RawConfigRule[] = pick.batch.map((preset) => ({
-        type: "regex",
-        enabled: true,
-        name: preset.label,
-        description: `${preset.description} · Example: ${preset.example}`,
-        pattern: preset.pattern,
-        ...(preset.flags ? { flags: preset.flags } : {}),
-        ...(preset.preserveStructure ? { preserveStructure: { ...preset.preserveStructure } } : {}),
-      }));
+      const usedIds = existingIds.get(source.path) ?? [];
+      const rules: RawConfigRule[] = pick.batch.map((preset) => {
+        const id = generateUniqueRuleId(preset.label, usedIds);
+        usedIds.push(id);
+        return {
+          id,
+          type: "regex",
+          enabled: true,
+          name: preset.label,
+          description: `${preset.description} · Example: ${preset.example}`,
+          pattern: preset.pattern,
+          ...(preset.flags ? { flags: preset.flags } : {}),
+          ...(preset.preserveStructure ? { preserveStructure: { ...preset.preserveStructure } } : {}),
+        };
+      });
       const mutations = rules.map((rule) => ({ kind: "append" as const, path: source.path, rule }));
       const preview = await previewConfigRuleMutations(mutations);
       const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
