@@ -252,33 +252,84 @@ export async function addConfigRule(
   let selectedPreset: (typeof MASKING_PRESETS)[number] | undefined;
   if (selectedType === "Built-in preset template") {
     selectedPreset = await ctx.ui.custom<(typeof MASKING_PRESETS)[number] | undefined>((tui, theme, keybindings, done) => {
+      let query = "";
+      const filtered = () => {
+        const q = query.trim().toLowerCase();
+        const list = q
+          ? MASKING_PRESETS.filter((preset) =>
+              `${preset.label} ${preset.name} ${preset.description}`.toLowerCase().includes(q)
+            )
+          : MASKING_PRESETS;
+        return [...list].sort((a, b) => a.label.localeCompare(b.label));
+      };
       let selectedIndex = 0;
+      // Rows consumed by the title, filter input, blank lines, description/example, and hint lines.
+      const chromeRows = 10;
+      const viewportSize = () => Math.max(3, tui.terminal.rows - chromeRows);
+      const clampScroll = (value: number, length: number) => Math.min(Math.max(0, value), Math.max(0, length - viewportSize()));
+      let scrollTop = 0;
+      const ensureVisible = (length: number) => {
+        const size = viewportSize();
+        if (selectedIndex < scrollTop) scrollTop = selectedIndex;
+        if (selectedIndex >= scrollTop + size) scrollTop = selectedIndex - size + 1;
+        scrollTop = clampScroll(scrollTop, length);
+      };
       return {
         render: (width) => {
-          const selected = MASKING_PRESETS[selectedIndex]!;
-          const lines = [theme.fg("accent", theme.bold("Choose a built-in preset")), ""];
-          for (let index = 0; index < MASKING_PRESETS.length; index++) {
-            const preset = MASKING_PRESETS[index]!;
+          const list = filtered();
+          selectedIndex = Math.min(selectedIndex, Math.max(0, list.length - 1));
+          ensureVisible(list.length);
+          const selected = list[selectedIndex];
+          const size = viewportSize();
+          const lines = [theme.fg("accent", theme.bold(`Choose a built-in preset (${list.length}/${MASKING_PRESETS.length})`))];
+          lines.push(theme.fg(query ? "accent" : "dim", `Filter: ${query}▊`));
+          lines.push("");
+          for (let index = scrollTop; index < Math.min(scrollTop + size, list.length); index++) {
+            const preset = list[index]!;
             const row = `${index === selectedIndex ? "▶" : " "} ${preset.label}`;
             lines.push(index === selectedIndex ? theme.fg("accent", row) : theme.fg("muted", row));
           }
+          if (list.length === 0) lines.push(theme.fg("dim", "  no matching presets"));
+          if (scrollTop > 0) lines.push(theme.fg("dim", "  ↑ more"));
+          if (scrollTop + size < list.length) lines.push(theme.fg("dim", "  ↓ more"));
           lines.push("");
-          lines.push(...wrappedMaskingText(theme.fg("dim", `Description: ${selected.description}`), width));
-          lines.push(...wrappedMaskingText(theme.fg("dim", `Example: ${selected.example}`), width));
+          if (selected) {
+            lines.push(...wrappedMaskingText(theme.fg("dim", `Description: ${selected.description}`), width));
+            lines.push(...wrappedMaskingText(theme.fg("dim", `Example: ${selected.example}`), width));
+          }
           lines.push("");
-          lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓ select · Enter continue · Esc cancel"), width));
+          lines.push(...wrappedMaskingText(theme.fg("dim", "Type to filter · ↑↓ select · PgUp/PgDn page · Enter continue · Esc cancel"), width));
           return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => {},
         handleInput: (data) => {
+          const size = viewportSize();
           if (keybindings.matches(data, "tui.select.up")) {
-            selectedIndex = (selectedIndex - 1 + MASKING_PRESETS.length) % MASKING_PRESETS.length;
+            const list = filtered();
+            if (list.length > 0) selectedIndex = (selectedIndex - 1 + list.length) % list.length;
             tui.requestRender();
           } else if (keybindings.matches(data, "tui.select.down")) {
-            selectedIndex = (selectedIndex + 1) % MASKING_PRESETS.length;
+            const list = filtered();
+            if (list.length > 0) selectedIndex = (selectedIndex + 1) % list.length;
+            tui.requestRender();
+          } else if (keybindings.matches(data, "tui.select.pageUp")) {
+            const list = filtered();
+            if (list.length > 0) selectedIndex = Math.max(0, selectedIndex - size);
+            tui.requestRender();
+          } else if (keybindings.matches(data, "tui.select.pageDown")) {
+            const list = filtered();
+            if (list.length > 0) selectedIndex = Math.min(list.length - 1, selectedIndex + size);
+            tui.requestRender();
+          } else if (data === "\x7f" || data === "\b") {
+            query = query.slice(0, -1);
+            selectedIndex = 0;
+            tui.requestRender();
+          } else if (data.length === 1 && data >= " " && data !== "\x7f") {
+            query += data;
+            selectedIndex = 0;
             tui.requestRender();
           } else if (keybindings.matches(data, "tui.select.confirm")) {
-            done(MASKING_PRESETS[selectedIndex]);
+            done(filtered()[selectedIndex]);
           } else if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
             done(undefined);
           }

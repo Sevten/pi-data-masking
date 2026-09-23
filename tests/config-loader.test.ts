@@ -282,7 +282,7 @@ test("initializer builds a minimal preset config and can update .gitignore", asy
     });
     assert.equal(initial.$schema, CONFIG_SCHEMA_URL);
     assert.deepEqual(initial.rules.map((rule) => rule.preset), ["github-pat", "private-ipv4"]);
-    assert.deepEqual(initial.rules.map((rule) => rule.name), ["GitHub personal access token", "Private IPv4 address"]);
+    assert.deepEqual(initial.rules.map((rule) => rule.name), ["GitHub access token", "Private IPv4 address"]);
     assert.equal(initial.options.showStatusBar, false);
 
     assert.equal(await ensureProjectConfigGitignored(dir), true);
