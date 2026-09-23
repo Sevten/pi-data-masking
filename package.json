@@ -36,7 +36,8 @@
   "scripts": {
     "check": "tsc",
     "pack:dry": "npm pack --dry-run",
-    "test": "node --test \"tests/*.test.ts\""
+    "test": "node --test \"tests/*.test.ts\"",
+    "release": "bash scripts/release.sh"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
