@@ -4,16 +4,18 @@
 
 ### Added
 
-- Fifty-eight new built-in presets covering major AI model providers (OpenAI, Anthropic, Google, Groq, OpenRouter, xAI, Cerebras, NVIDIA, Qwen, Perplexity, Moonshot, etc.), AI search/scraping services (Tavily, Firecrawl, Jina AI, Brave Search, TinyFish, etc.), and popular developer platforms for cloud infrastructure, payments/e-commerce, version control, communication, and monitoring (Cloudflare, Atlassian, Shopify, Stripe, Notion, Sentry, Tailscale, 1Password, etc.).
+- Fifty-eight new built-in presets covering major AI model providers, AI search and scraping services, and popular developer platforms (cloud infrastructure, payments, version control, communication, monitoring, and more).
+- Rule Builder preset picker: type to filter presets by name, browse a scrollable alphabetically sorted list, and mark several with Space to add them all at once with their default settings.
 
 ### Changed
 
-- Improved built-in preset coverage: GitHub tokens now include OAuth, GitHub App, and refresh prefixes (gho_/ghu_/ghs_/ghr_), Slack tokens cover refresh tokens, GitLab tokens match the new versioned format, Stripe covers webhook signing secrets, and Telegram tokens no longer require a fixed prefix.
-- Rule Builder: Disclose row appends a highlighted "not in effect — global ON/OFF" note when a global override is active.
+- Placeholder values generated from preset rules keep the service prefix visible (for example `sk_live_`, `tskey-api-`), so masked keys stay recognizable.
+- Rule Builder structured form: new "Keep prefix" option controls how much of the value a generated placeholder keeps — Off, First segment, or First N chars.
+- Improved built-in preset coverage: GitHub tokens now include OAuth, GitHub App, and refresh prefixes, Slack tokens cover refresh tokens, GitLab tokens match the new versioned format, Stripe covers webhook signing secrets, and Telegram tokens no longer require a fixed prefix.
+- Rule Builder: the Disclose row shows when a global override is in effect.
 
 ### Fixed
 
-- Rule Builder preset picker now scrolls when the preset list is taller than the screen; a filter input at the top narrows presets as you type, with PgUp/PgDn support and "more" indicators.
 - Preserve authentication and model metadata when wrapping native providers on Pi 0.86 and later.
 
 ## [0.8.1] - 2026-09-22

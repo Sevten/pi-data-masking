@@ -37,6 +37,7 @@ import {
 } from "../config-loader.ts";
 import { Masker, isRegexRule, type MaskingRule } from "../masker.ts";
 import { generatePlaceholder } from "../placeholder-gen.ts";
+import type { PreserveStructure } from "../masker.ts";
 import { MASKING_PRESETS } from "../presets.ts";
 import {
   MASKING_SCREEN_OPTIONS,
@@ -230,7 +231,7 @@ export async function addConfigRule(
   }
 
   type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
-  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "json" | "test";
+  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "preserve" | "json" | "test";
   const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
   let selectedSource: (typeof sources)[number] = sources.find((source) => source.scope === "global")!;
   let selectedType: BuilderType | undefined;
@@ -251,7 +252,8 @@ export async function addConfigRule(
   if (!selectedType) return;
   let selectedPreset: (typeof MASKING_PRESETS)[number] | undefined;
   if (selectedType === "Built-in preset template") {
-    selectedPreset = await ctx.ui.custom<(typeof MASKING_PRESETS)[number] | undefined>((tui, theme, keybindings, done) => {
+    type PresetPick = { preset: (typeof MASKING_PRESETS)[number] } | { batch: Array<(typeof MASKING_PRESETS)[number]> };
+    const pick = await ctx.ui.custom<PresetPick | undefined>((tui, theme, keybindings, done) => {
       let query = "";
       const filtered = () => {
         const q = query.trim().toLowerCase();
@@ -263,6 +265,7 @@ export async function addConfigRule(
         return [...list].sort((a, b) => a.label.localeCompare(b.label));
       };
       let selectedIndex = 0;
+      const marked = new Set<string>();
       // Rows consumed by the title, filter input, blank lines, description/example, and hint lines.
       const chromeRows = 10;
       const viewportSize = () => Math.max(3, tui.terminal.rows - chromeRows);
@@ -281,12 +284,15 @@ export async function addConfigRule(
           ensureVisible(list.length);
           const selected = list[selectedIndex];
           const size = viewportSize();
-          const lines = [theme.fg("accent", theme.bold(`Choose a built-in preset (${list.length}/${MASKING_PRESETS.length})`))];
+          const markedCount = marked.size;
+          const lines = [theme.fg("accent", theme.bold(`Choose a built-in preset (${list.length}/${MASKING_PRESETS.length})${markedCount > 0 ? ` · ${markedCount} marked` : ""}`))];
           lines.push(theme.fg(query ? "accent" : "dim", `Filter: ${query}▊`));
           lines.push("");
           for (let index = scrollTop; index < Math.min(scrollTop + size, list.length); index++) {
             const preset = list[index]!;
-            const row = `${index === selectedIndex ? "▶" : " "} ${preset.label}`;
+            const cursor = index === selectedIndex ? "▶" : " ";
+            const mark = marked.has(preset.name) ? "●" : " ";
+            const row = `${cursor}${mark} ${preset.label}`;
             lines.push(index === selectedIndex ? theme.fg("accent", row) : theme.fg("muted", row));
           }
           if (list.length === 0) lines.push(theme.fg("dim", "  no matching presets"));
@@ -298,7 +304,7 @@ export async function addConfigRule(
             lines.push(...wrappedMaskingText(theme.fg("dim", `Example: ${selected.example}`), width));
           }
           lines.push("");
-          lines.push(...wrappedMaskingText(theme.fg("dim", "Type to filter · ↑↓ select · PgUp/PgDn page · Enter continue · Esc cancel"), width));
+          lines.push(...wrappedMaskingText(theme.fg("dim", "Space mark · Type to filter · ↑↓ select · PgUp/PgDn page · Enter continue · Esc cancel"), width));
           return fillMaskingScreen(lines, width, tui.terminal.rows);
         },
         invalidate: () => {},
@@ -320,6 +326,13 @@ export async function addConfigRule(
             const list = filtered();
             if (list.length > 0) selectedIndex = Math.min(list.length - 1, selectedIndex + size);
             tui.requestRender();
+          } else if (data === " ") {
+            const preset = filtered()[selectedIndex];
+            if (preset) {
+              if (marked.has(preset.name)) marked.delete(preset.name);
+              else marked.add(preset.name);
+            }
+            tui.requestRender();
           } else if (data === "\x7f" || data === "\b") {
             query = query.slice(0, -1);
             selectedIndex = 0;
@@ -329,14 +342,61 @@ export async function addConfigRule(
             selectedIndex = 0;
             tui.requestRender();
           } else if (keybindings.matches(data, "tui.select.confirm")) {
-            done(filtered()[selectedIndex]);
+            const list = filtered();
+            const batch = list.filter((preset) => marked.has(preset.name));
+            if (batch.length > 1) done({ batch });
+            else if (list[selectedIndex]) done({ preset: list[selectedIndex]! });
           } else if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
             done(undefined);
           }
         },
       };
     }, MASKING_SCREEN_OPTIONS);
-    if (!selectedPreset) return;
+    if (!pick) return;
+    if ("batch" in pick) {
+      const source = sources.find((source) => source.scope === "global")!;
+      if (!existsSync(source.path)) {
+        const initial = buildInitialConfig([]);
+        try {
+          await createJsonFileExclusive(source.path, {
+            $schema: initial.$schema,
+            version: initial.version,
+            rules: [],
+          });
+        } catch (err) {
+          if (!existsSync(source.path)) {
+            ctx.ui.notify(`Failed to create config file: ${(err as Error).message}`, "error");
+            return;
+          }
+        }
+      }
+      const usedIds = existingIds.get(source.path) ?? [];
+      const rules: RawConfigRule[] = pick.batch.map((preset) => {
+        const id = generateUniqueRuleId(preset.label, usedIds);
+        usedIds.push(id);
+        return {
+          id,
+          type: "regex",
+          enabled: true,
+          name: preset.label,
+          description: `${preset.description} · Example: ${preset.example}`,
+          pattern: preset.pattern,
+          ...(preset.flags ? { flags: preset.flags } : {}),
+          ...(preset.preserveStructure ? { preserveStructure: { ...preset.preserveStructure } } : { preserveStructure: { keepPrefix: true } }),
+        };
+      });
+      const mutations = rules.map((rule) => ({ kind: "append" as const, path: source.path, rule }));
+      const preview = await previewConfigRuleMutations(mutations);
+      const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
+      const outcome = await bridge.confirmConfigSave(ctx, candidate.config);
+      if (!outcome.saved) return;
+      const saved = await saveConfigRuleMutations(mutations);
+      bridge.notifyWarnings(ctx, saved.warnings);
+      await bridge.reloadConfigNow(ctx);
+      ctx.ui.notify(`Added ${rules.length} preset rules to ${source.scope} config`, "info");
+      return;
+    }
+    selectedPreset = pick.preset;
   }
 
   type BuiltRule = { source: typeof sources[number]; rule: RawConfigRule; createdSource: boolean; impact?: string };
@@ -399,6 +459,15 @@ export async function addConfigRule(
     // global on/off master switch pauses it anyway.
     let discloseOn = editing && editing.initial.disclosePlaceholder === true;
     let caseSensitiveOn = editing ? editing.initial.caseSensitive !== false : true;
+    // "Keep prefix" (preserveStructure.keepPrefix): Off, First segment
+    // (true), or a custom number of characters typed inline.
+    {
+      const kp = (editing?.initial.preserveStructure as PreserveStructure | undefined)?.keepPrefix
+        ?? (selectedPreset
+          ? selectedPreset.preserveStructure?.keepPrefix ?? (selectedPreset.preserveStructure ? false : true)
+          : false);
+      var preserveMode: "off" | "first" | "custom" = kp === true ? "first" : typeof kp === "number" ? "custom" : "off";
+    }
     const discloseGlobalMode = bridge.config().options.disclosePlaceholders;
     let mode: "form" | "json" = options.initialMode ?? "form";
     let focusIndex = !editing && mode === "form" ? 2 : 0;
@@ -446,6 +515,9 @@ export async function addConfigRule(
       }),
       placeholder: makeEditor(typeof editing?.initial.placeholder === "string" && editing.initial.placeholder !== "auto" ? editing.initial.placeholder : ""),
       json: makeEditor("", false),
+      preserve: makeEditor(String(typeof (editing?.initial.preserveStructure as PreserveStructure | undefined)?.keepPrefix === "number"
+        ? (editing!.initial.preserveStructure as PreserveStructure).keepPrefix
+        : typeof selectedPreset?.preserveStructure?.keepPrefix === "number" ? selectedPreset.preserveStructure.keepPrefix : "")),
       test: makeEditor("", false, () => {
         if (!updatingAutoTest) testAutoManaged = false;
       }),
@@ -496,14 +568,16 @@ export async function addConfigRule(
       common.push("type", "scope", "name", "description");
       // Case sensitivity is a literal-rule field: regex rules control it
       // through their own flags.
-      if (currentType() === "Built-in preset template" || currentType() === "Custom regex") common.push("pattern", "flags");
+      if (currentType() === "Built-in preset template" || currentType() === "Custom regex") common.push("pattern", "flags", "preserve");
       else if (currentType() === "Literal from environment") {
         common.push("env", "replacement");
+        if (replacementIndex === 0) common.push("preserve");
         if (replacementIndex === 1) common.push("placeholder");
         common.push("disclose", "case");
       }
       else {
         common.push("real", "replacement");
+        if (replacementIndex === 0) common.push("preserve");
         if (replacementIndex === 1) common.push("placeholder");
         common.push("disclose", "case");
       }
@@ -568,10 +642,19 @@ export async function addConfigRule(
           type: "regex",
           pattern: editors.pattern.getExpandedText(),
           ...(flags ? { flags } : {}),
-          ...(base.preserveStructure === undefined && preset?.preserveStructure
-            ? { preserveStructure: { ...preset.preserveStructure } }
-            : {}),
         };
+        {
+          const presetStruct = preset?.preserveStructure
+            ?? (typeof base.preserveStructure === "object" && base.preserveStructure ? base.preserveStructure : undefined);
+          const struct = { ...presetStruct } as PreserveStructure;
+          if (preserveMode === "first") struct.keepPrefix = true;
+          else if (preserveMode === "custom") {
+            const n = Number.parseInt(editors.preserve.getExpandedText(), 10);
+            struct.keepPrefix = Number.isFinite(n) && n > 0 ? n : true;
+          } else delete struct.keepPrefix;
+          if (Object.keys(struct).length > 0) regexRule.preserveStructure = struct;
+          else delete regexRule.preserveStructure;
+        }
         if (!flags) delete regexRule.flags;
         delete regexRule.caseSensitive;
         delete regexRule.real;
@@ -586,6 +669,9 @@ export async function addConfigRule(
           ...base,
           realFromEnv: editors.env.getExpandedText().trim(),
           placeholder: replacementIndex === 0 ? "auto" : editors.placeholder.getExpandedText(),
+          ...(replacementIndex === 0 && preserveMode !== "off"
+            ? { preserveStructure: { keepPrefix: preserveMode === "first" ? true : Number.parseInt(editors.preserve.getExpandedText(), 10) || true } }
+            : {}),
         };
         delete envRule.type;
         delete envRule.disclosePlaceholder;
@@ -603,6 +689,9 @@ export async function addConfigRule(
         ...base,
         real: editors.real.getExpandedText(),
         placeholder: replacementIndex === 0 ? "auto" : editors.placeholder.getExpandedText(),
+        ...(replacementIndex === 0 && preserveMode !== "off"
+          ? { preserveStructure: { keepPrefix: preserveMode === "first" ? true : Number.parseInt(editors.preserve.getExpandedText(), 10) || true } }
+          : {}),
       };
       delete literalRule.disclosePlaceholder;
       if (discloseOn) literalRule.disclosePlaceholder = true;
@@ -663,6 +752,11 @@ export async function addConfigRule(
       advancedFields = { ...rule };
       discloseOn = rule.disclosePlaceholder === true;
       caseSensitiveOn = rule.caseSensitive !== false;
+      {
+        const kp = (rule.preserveStructure as PreserveStructure | undefined)?.keepPrefix;
+        preserveMode = kp === true ? "first" : typeof kp === "number" ? "custom" : "off";
+        editors.preserve.setText(typeof kp === "number" ? String(kp) : "");
+      }
       explicitId = typeof rule.id === "string" ? rule.id : undefined;
       editors.name.setText(typeof rule.name === "string" ? rule.name : "");
       editors.description.setText(typeof rule.description === "string" ? rule.description : "");
@@ -756,8 +850,8 @@ export async function addConfigRule(
       lines.push(...wrappedMaskingText(description, width));
     }
 
-    function renderSelector(lines: string[], field: BuilderField, label: string, value: string, width: number, description: string, selectorSuffix?: string): void {
-      renderFieldRow(lines, field, label, value, width, description, { selector: true, selectorSuffix });
+    function renderSelector(lines: string[], field: BuilderField, label: string, value: string, width: number, description: string, selectorSuffix?: string, cursorEditor?: Editor): void {
+      renderFieldRow(lines, field, label, value, width, description, { selector: true, selectorSuffix, cursorEditor });
     }
 
     function renderSingleLineField(lines: string[], field: BuilderField, label: string, editor: Editor, width: number, description: string): void {
@@ -829,6 +923,11 @@ export async function addConfigRule(
       if (mode === "form" && currentType() === "Literal from environment" && !editors.env.getExpandedText().trim()) {
         saveMessage = "Cannot save: enter an environment variable name, for example PROD_API_KEY";
         focusFormField("env");
+        return;
+      }
+      if (mode === "form" && preserveMode === "custom" && !/^\d+$/.test(editors.preserve.getExpandedText().trim())) {
+        saveMessage = "Cannot save: prefix length must be a positive number";
+        focusFormField("preserve");
         return;
       }
       if (mode === "form" && (currentType() === "Built-in preset template" || currentType() === "Custom regex")
@@ -939,9 +1038,17 @@ export async function addConfigRule(
           if (currentType() === "Built-in preset template" || currentType() === "Custom regex") {
             renderSingleLineField(lines, "pattern", "Pattern", editors.pattern, width, "JavaScript regex without /.../ · e.g. \\btoken_[A-Za-z0-9]{24}\\b");
             renderSingleLineField(lines, "flags", "Flags", editors.flags, width, "Optional: i case-insensitive · m multiline anchors · s dot matches newline · g automatic");
+            renderSelector(lines, "preserve", "Keep prefix",
+              preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "First N chars") : "Off",
+              width, preserveMode === "custom" ? "Digits only — number of prefix characters to keep" : "←/→ or Space changes mode",
+              undefined, preserveMode === "custom" ? editors.preserve : undefined);
           } else if (currentType() === "Literal from environment") {
             renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
+            if (replacementIndex === 0) renderSelector(lines, "preserve", "Keep prefix",
+              preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "First N chars") : "Off",
+              width, preserveMode === "custom" ? "Digits only — number of prefix characters to keep" : "←/→ or Space changes mode",
+              undefined, preserveMode === "custom" ? editors.preserve : undefined);
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, discloseSuffixText);
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
@@ -949,6 +1056,10 @@ export async function addConfigRule(
           } else {
             renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
+            if (replacementIndex === 0) renderSelector(lines, "preserve", "Keep prefix",
+              preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "First N chars") : "Off",
+              width, preserveMode === "custom" ? "Digits only — number of prefix characters to keep" : "←/→ or Space changes mode",
+              undefined, preserveMode === "custom" ? editors.preserve : undefined);
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, discloseSuffixText);
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
@@ -1065,11 +1176,26 @@ export async function addConfigRule(
             focusIndex = Math.min(focusIndex, fields().length - 1);
           } else if (field === "disclose") {
             discloseOn = !discloseOn;
+          } else if (field === "preserve") {
+            const modes: Array<"off" | "first" | "custom"> = ["off", "first", "custom"];
+            preserveMode = modes[(((modes.indexOf(preserveMode) + selectorDirection) % modes.length) + modes.length) % modes.length]!;
           } else if (field === "case") {
             caseSensitiveOn = !caseSensitiveOn;
           } else {
             editorForField(field)?.handleInput(data);
             return;
+          }
+          saveMessage = "";
+          saveWarnings = [];
+          warningSignature = "";
+          tui.requestRender();
+          return;
+        }
+        if (mode === "form" && field === "preserve" && preserveMode === "custom") {
+          // Only digits and backspace reach the inline editor; everything
+          // else (e.g. letters) is ignored so the value stays numeric.
+          if ((data.length === 1 && /^[0-9]$/.test(data)) || data === "\x7f" || data === "\b") {
+            editors.preserve.handleInput(data);
           }
           saveMessage = "";
           saveWarnings = [];
