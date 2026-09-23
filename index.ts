@@ -55,7 +55,12 @@ import { existsSync } from "node:fs";
 import { createHmac } from "node:crypto";
 import { Masker } from "./masker.ts";
 import type { DynamicPlaceholderMap, MaskOptions } from "./masker.ts";
-import { armStreamRestore, createStreamRestore, registerStreamRestoreProviders } from "./stream-restore.ts";
+import {
+  armStreamRestore,
+  createStreamRestore,
+  registerNativeStreamRestoreProvider,
+  registerStreamRestoreProviders,
+} from "./stream-restore.ts";
 import { openMaskingConfig } from "./ui/config-screen.ts";
 import { configuredRuleDisplayName, selectMaskingOption, type ConfigSaveResult, type MaskingUIBridge } from "./ui/masking-common.ts";
 import { previewWithRules, toggleGlobalMasking } from "./ui/rule-editor.ts";
@@ -819,6 +824,7 @@ export default async function (pi: ExtensionAPI) {
   // Pristine provider streams, captured before any registration so the
   // delegation never recurses into our own wrapper (a composed provider's
   // streamWith closure keeps the extension binding from its composition time).
+  const pristineProviders = new Map<string, Provider>();
   const pristineProviderStreams = new Map<string, Provider["stream"]>();
   const streamRestoredApis = new Map<string, string>();
 
@@ -826,29 +832,24 @@ export default async function (pi: ExtensionAPI) {
     if (!model?.provider || !model.api) return;
     const providerId = model.provider;
     if (streamRestoredApis.get(providerId) === model.api) return;
+    let provider = pristineProviders.get(providerId);
     let stream = pristineProviderStreams.get(providerId);
-    if (!stream) {
-      let provider: Provider | undefined;
+    if (!provider || !stream) {
       try {
         provider = ctx.modelRegistry.getProvider(providerId);
       } catch {
         provider = undefined;
       }
       const fn = provider?.stream;
-      if (typeof fn !== "function") return;
+      if (!provider || typeof fn !== "function") return;
       stream = fn.bind(provider);
+      pristineProviders.set(providerId, provider);
       pristineProviderStreams.set(providerId, stream);
     }
     const pristine = stream;
     try {
-      // registerProvider applies immediately and merges over previous
-      // registrations; refresh({ allowNetwork: false }) it triggers is
-      // offline-safe. Optional chaining keeps older cores loadable — they
-      // simply keep today's behavior (mask restored at message_end only).
-      pi.registerProvider?.(providerId, {
-        api: model.api,
-        streamSimple: (m, c, o) => streamRestore.wrap(pristine(m, c, o)),
-      });
+      // The legacy overload replaces native providers and drops their authentication.
+      registerNativeStreamRestoreProvider(pi, provider, pristine, streamRestore);
       streamRestoredApis.set(providerId, model.api);
     } catch {
       // Registration refused — leave streaming untouched.

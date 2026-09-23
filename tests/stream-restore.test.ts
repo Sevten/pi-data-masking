@@ -7,13 +7,19 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { ModelRegistry, ModelRuntime, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   createAssistantMessageEventStream,
   type AssistantMessage,
   type AssistantMessageEvent,
+  type Provider,
 } from "@earendil-works/pi-ai";
 import { Masker } from "../masker.ts";
-import { createStreamRestore, type StreamRestoreBlockState } from "../stream-restore.ts";
+import {
+  createStreamRestore,
+  registerNativeStreamRestoreProvider,
+  type StreamRestoreBlockState,
+} from "../stream-restore.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 
@@ -232,6 +238,79 @@ test("displayHoldbackLength: strict prefixes only, case-insensitive support", ()
   assert.equal(ci.displayHoldbackLength("value @SECR"), 5);
   assert.equal(ci.displayHoldbackLength("value @secre"), 6);
   assert.equal(ci.displayHoldbackLength("unrelated"), 0);
+});
+
+test("native provider registration preserves authentication", () => {
+  const auth = {
+    apiKey: {
+      name: "Test credentials",
+      async resolve() {
+        return { auth: { apiKey: "test-key" }, source: "test" };
+      },
+    },
+  };
+  const upstream = createAssistantMessageEventStream();
+  upstream.end();
+  const provider: Provider = {
+    id: "native-test",
+    name: "Native test",
+    auth,
+    getModels: () => [],
+    stream: () => upstream,
+    streamSimple: () => upstream,
+  };
+  const calls: unknown[][] = [];
+  const pi = {
+    registerProvider(...args: unknown[]) {
+      calls.push(args);
+    },
+  } as unknown as ExtensionAPI;
+
+  registerNativeStreamRestoreProvider(pi, provider, provider.stream.bind(provider), { wrap: (stream) => stream });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].length, 1);
+  const registered = calls[0][0] as Provider;
+  assert.equal(registered.id, provider.id);
+  assert.equal(registered.auth, auth);
+  assert.equal(registered.getModels, provider.getModels);
+});
+
+test("Pi 0.86 keeps native provider auth after stream registration", async () => {
+  const emptyStream = () => {
+    const stream = createAssistantMessageEventStream();
+    stream.end();
+    return stream;
+  };
+  const provider: Provider = {
+    id: "native-auth-test",
+    name: "Native auth test",
+    auth: {
+      apiKey: {
+        name: "Test credentials",
+        async resolve() {
+          return { auth: { apiKey: "test-key" }, source: "test" };
+        },
+      },
+    },
+    getModels: () => [],
+    stream: emptyStream,
+    streamSimple: emptyStream,
+  };
+  const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+  const registry = new ModelRegistry(runtime);
+  registry.registerProvider(provider);
+
+  registerNativeStreamRestoreProvider(
+    registry as unknown as ExtensionAPI,
+    registry.getProvider(provider.id)!,
+    provider.stream,
+    { wrap: (stream) => stream },
+  );
+
+  assert.equal(registry.getRegisteredProviderConfig(provider.id), undefined);
+  assert.ok(registry.getRegisteredNativeProvider(provider.id));
+  assert.equal((await registry.getProviderAuth(provider.id))?.auth.apiKey, "test-key");
 });
 
 test("dynamic placeholders participate in restoration and hold-back", async () => {
