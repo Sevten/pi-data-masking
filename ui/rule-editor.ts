@@ -1039,8 +1039,6 @@ export async function addConfigRule(
           } else {
             renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
-            if (replacementIndex === 0) renderSelector(lines, "preserve", "Keep prefix", preserveOn ? (preserveNumeric !== undefined ? `First ${preserveNumeric} chars` : "First segment") : "Off", width,
-              "←/→ or Space toggles · type digits to keep an exact number of characters · Backspace deletes");
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, discloseSuffixText);
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
