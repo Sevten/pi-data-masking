@@ -469,7 +469,6 @@ export async function addConfigRule(
           : false);
       var preserveOn = kp === true || typeof kp === "number";
       var preserveNumeric: number | undefined = typeof kp === "number" ? kp : undefined;
-      var preserveNumericInput = typeof kp === "number" ? String(kp) : "";
     }
     const discloseGlobalMode = bridge.config().options.disclosePlaceholders;
     let mode: "form" | "json" = options.initialMode ?? "form";
@@ -1027,12 +1026,12 @@ export async function addConfigRule(
             renderSingleLineField(lines, "pattern", "Pattern", editors.pattern, width, "JavaScript regex without /.../ · e.g. \\btoken_[A-Za-z0-9]{24}\\b");
             renderSingleLineField(lines, "flags", "Flags", editors.flags, width, "Optional: i case-insensitive · m multiline anchors · s dot matches newline · g automatic");
             renderSelector(lines, "preserve", "Keep prefix", preserveOn ? (preserveNumeric !== undefined ? `First ${preserveNumeric} chars` : "First segment") : "Off", width,
-              "←/→ or Space toggles · type digits to keep an exact number of characters · Backspace deletes");
+              "←/→ or Space keeps the key prefix (from the rule's or preset's preserveStructure, default First segment) visible in the placeholder · use Advanced JSON for other values");
           } else if (currentType() === "Literal from environment") {
             renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
             if (replacementIndex === 0) renderSelector(lines, "preserve", "Keep prefix", preserveOn ? (preserveNumeric !== undefined ? `First ${preserveNumeric} chars` : "First segment") : "Off", width,
-              "←/→ or Space toggles · type digits to keep an exact number of characters · Backspace deletes");
+              "←/→ or Space keeps the leading segment of the value (up to - _ . : / @) visible in the generated placeholder");
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, discloseSuffixText);
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
@@ -1160,39 +1159,8 @@ export async function addConfigRule(
             discloseOn = !discloseOn;
           } else if (field === "preserve") {
             preserveOn = !preserveOn;
-            if (preserveOn && preserveNumeric !== undefined) preserveNumericInput = String(preserveNumeric);
           } else if (field === "case") {
             caseSensitiveOn = !caseSensitiveOn;
-          } else {
-            editorForField(field)?.handleInput(data);
-            return;
-          }
-          saveMessage = "";
-          saveWarnings = [];
-          warningSignature = "";
-          tui.requestRender();
-          return;
-        }
-        if (mode === "form" && field === "preserve" && data.length === 1) {
-          // Direct numeric input: digits append to the char count,
-          // Backspace removes one digit (empty turns the feature off).
-          if (/^[0-9]$/.test(data)) {
-            const candidate = preserveNumericInput + data;
-            const n = Number.parseInt(candidate, 10);
-            if (n > 0 && n <= 999) {
-              preserveNumericInput = candidate;
-              preserveNumeric = n;
-              preserveOn = true;
-            }
-          } else if (data === "\x7f" || data === "\b") {
-            preserveNumericInput = preserveNumericInput.slice(0, -1);
-            if (preserveNumericInput) {
-              preserveNumeric = Number.parseInt(preserveNumericInput, 10);
-              preserveOn = true;
-            } else {
-              preserveNumeric = undefined;
-              preserveOn = false;
-            }
           } else {
             editorForField(field)?.handleInput(data);
             return;
