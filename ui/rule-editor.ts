@@ -1039,14 +1039,14 @@ export async function addConfigRule(
             renderSingleLineField(lines, "pattern", "Pattern", editors.pattern, width, "JavaScript regex without /.../ · e.g. \\btoken_[A-Za-z0-9]{24}\\b");
             renderSingleLineField(lines, "flags", "Flags", editors.flags, width, "Optional: i case-insensitive · m multiline anchors · s dot matches newline · g automatic");
             renderSelector(lines, "preserve", "Keep prefix",
-              preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "digits…") : "Off",
+              preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "First N chars") : "Off",
               width, preserveMode === "custom" ? "Digits only — number of prefix characters to keep" : "←/→ or Space changes mode",
               undefined, preserveMode === "custom" ? editors.preserve : undefined);
           } else if (currentType() === "Literal from environment") {
             renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
             if (replacementIndex === 0) renderSelector(lines, "preserve", "Keep prefix",
-              preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "digits…") : "Off",
+              preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "First N chars") : "Off",
               width, preserveMode === "custom" ? "Digits only — number of prefix characters to keep" : "←/→ or Space changes mode",
               undefined, preserveMode === "custom" ? editors.preserve : undefined);
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
@@ -1057,7 +1057,7 @@ export async function addConfigRule(
             renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
             if (replacementIndex === 0) renderSelector(lines, "preserve", "Keep prefix",
-              preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "digits…") : "Off",
+              preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "First N chars") : "Off",
               width, preserveMode === "custom" ? "Digits only — number of prefix characters to keep" : "←/→ or Space changes mode",
               undefined, preserveMode === "custom" ? editors.preserve : undefined);
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
