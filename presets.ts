@@ -23,6 +23,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "GitHub access token",
     description: "GitHub tokens: classic (ghp_), OAuth (gho_), GitHub App (ghu_/ghs_), refresh (ghr_), and fine-grained (github_pat_)",
     example: "ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bgh[posur]_[A-Za-z0-9]{36}\\b|\\bgithub_pat_[A-Za-z0-9_]{22,}\\b",
   },
   {
@@ -30,6 +31,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "npm access token",
     description: "npm access tokens beginning with npm_",
     example: "npm_1234567890abcdefghijklmnopqrstuvwxyz",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bnpm_[A-Za-z0-9]{36}\\b",
   },
   {
@@ -37,6 +39,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Hugging Face access token",
     description: "Hugging Face access tokens beginning with hf_",
     example: "hf_1234567890abcdefghijklmnopqrstuvwx",
+    preserveStructure: { keepPrefix: 3 },
     pattern: "\\bhf_[A-Za-z0-9]{34,}\\b",
   },
   {
@@ -44,6 +47,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "AWS access key ID",
     description: "AWS access key IDs beginning with AKIA",
     example: "AKIAIOSFODNN7EXAMPLE",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bAKIA[0-9A-Z]{16}\\b",
   },
   {
@@ -51,6 +55,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Slack token",
     description: "Slack bot, user, app, refresh, and legacy tokens",
     example: "xoxb-1234567890-abcdefghijkl",
+    preserveStructure: { keepPrefix: 5 },
     pattern: "\\bxox[eabprs]-[A-Za-z0-9-]{10,}\\b",
   },
   {
@@ -58,6 +63,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "OpenAI API key",
     description: "OpenAI API keys beginning with sk- (including project and service-account keys)",
     example: "sk-proj-4fJ8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0bVqN",
+    preserveStructure: { keepPrefix: 3 },
     pattern: "\\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}\\b",
   },
   {
@@ -65,6 +71,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Anthropic API key",
     description: "Anthropic API keys beginning with sk-ant-",
     example: "sk-ant-api03-9dWf2xQ7mLvBnR4sT8wYhKdPcE6uZa",
+    preserveStructure: { keepPrefix: 7 },
     pattern: "\\bsk-ant-[A-Za-z0-9_-]{20,}\\b",
   },
   {
@@ -72,6 +79,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Google API key",
     description: "Google API keys beginning with AIza (Cloud Platform and Maps)",
     example: "AIzaSyA4fJ8xQ2mL9vBnR7sT3wYhKdPcE6uZa1X",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bAIza[0-9A-Za-z_-]{35}\\b",
   },
   {
@@ -79,6 +87,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Cloudflare API credential",
     description: "Cloudflare API credentials: prefixed format (cfk_/cfut_/cfat_ + 40 chars + 8-char hex checksum) and legacy Global API keys (37 hex chars)",
     example: "cfut_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0ba1b2c3d4e5",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bc(?:fk|fut|fat)_[A-Za-z0-9]{40}[0-9a-fA-F]{8}\\b|\\b[A-Fa-f0-9]{37}\\b",
   },
   {
@@ -86,6 +95,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "GitLab personal access token",
     description: "GitLab personal access tokens beginning with glpat-",
     example: "glpat-J8xQ2mL9vBnR7sT3wYhK",
+    preserveStructure: { keepPrefix: 6 },
     pattern: "\\bglpat-[A-Za-z0-9_-]{20,}(?:\\.\\d{2}\\.[A-Za-z0-9]+)?\\b",
   },
   {
@@ -93,6 +103,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Stripe secret key",
     description: "Stripe secret keys, restricted keys, and webhook signing secrets (sk_/rk_/whsec_)",
     example: "sk_live_J8xQ2mL9vBnR7sT3wYhKdPc",
+    preserveStructure: { keepPrefix: 8 },
     pattern: "\\b[sr]k_(?:test|live)_[A-Za-z0-9]{16,}\\b|\\bwhsec_[A-Za-z0-9]{16,}\\b",
   },
   {
@@ -100,6 +111,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "SendGrid API key",
     description: "SendGrid API keys starting with SG. and two dot-separated segments",
     example: "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",
+    preserveStructure: { keepPrefix: 3 },
     pattern: "\\bSG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}\\b",
   },
   {
@@ -107,6 +119,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Twilio API key SID",
     description: "Twilio API key SIDs beginning with SK followed by 32 hex characters",
     example: "SK0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d",
+    preserveStructure: { keepPrefix: 2 },
     pattern: "\\bSK[0-9a-fA-F]{32}\\b",
   },
   {
@@ -114,6 +127,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Telegram bot token",
     description: "Telegram bot tokens (bot ID, colon, token starting with AA)",
     example: "1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawk",
+    preserveStructure: { keepPrefix: false },
     pattern: "\\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\\b",
   },
   {
@@ -121,6 +135,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Linear API key",
     description: "Linear API keys beginning with lin_api_",
     example: "lin_api_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0b",
+    preserveStructure: { keepPrefix: 8 },
     pattern: "\\blin_api_[A-Za-z0-9]{38,}\\b",
   },
   {
@@ -128,6 +143,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Groq API key",
     description: "Groq API keys beginning with gsk_",
     example: "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",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bgsk_[A-Za-z0-9]{48,}\\b",
   },
   {
@@ -135,6 +151,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "OpenRouter API key",
     description: "OpenRouter API keys: sk-or-v1- followed by 64 lowercase hex characters",
     example: "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",
+    preserveStructure: { keepPrefix: 9 },
     pattern: "\\bsk-or-v1-[0-9a-f]{64}\\b",
   },
   {
@@ -142,6 +159,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "xAI API key",
     description: "xAI (Grok) API keys beginning with xai-",
     example: "xai-J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0bwvFtRnMkLpQrZeCsVaHoDlGjWfEyUiOaPzXcBmNkRt",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bxai-[A-Za-z0-9]{60,}\\b",
   },
   {
@@ -149,6 +167,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Cerebras API key",
     description: "Cerebras API keys beginning with csk-",
     example: "csk-J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0bwvFtRnMk",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bcsk-[A-Za-z0-9]{20,}\\b",
   },
   {
@@ -156,6 +175,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Vercel AI Gateway API key",
     description: "Vercel AI Gateway API keys beginning with vck_",
     example: "vck_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bvck_[A-Za-z0-9]{20,}\\b",
   },
   {
@@ -163,6 +183,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Kimi (Moonshot) API key",
     description: "Kimi Code API keys beginning with sk-kimi-",
     example: "sk-kimi-J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0",
+    preserveStructure: { keepPrefix: 8 },
     pattern: "\\bsk-kimi-[A-Za-z0-9_-]{20,}\\b",
   },
   {
@@ -170,6 +191,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "NVIDIA API key",
     description: "NVIDIA (NIM) API keys beginning with nvapi-",
     example: "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",
+    preserveStructure: { keepPrefix: 6 },
     pattern: "\\bnvapi-[A-Za-z0-9]{20,}\\b",
   },
   {
@@ -177,6 +199,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Qwen plan API key",
     description: "Qwen Coding Plan (sk-sp-) and Token Plan (sk-ws-) API keys",
     example: "sk-sp-J8xQ2mL9vBnR7sT3wYhKdPc",
+    preserveStructure: { keepPrefix: 6 },
     pattern: "\\bsk-(?:sp|ws)-[A-Za-z0-9]{16,}\\b",
   },
   {
@@ -184,6 +207,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Brave Search API key",
     description: "Brave Search API keys beginning with BSA",
     example: "BSAJ8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0bwvF",
+    preserveStructure: { keepPrefix: 3 },
     pattern: "\\bBSA[A-Za-z0-9_-]{24,}\\b",
   },
   {
@@ -191,6 +215,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Perplexity API key",
     description: "Perplexity API keys beginning with pplx-",
     example: "pplx-J8xQ2mL9vBnR7sT3wYhKdPc",
+    preserveStructure: { keepPrefix: 5 },
     pattern: "\\bpplx-[A-Za-z0-9]{16,}\\b",
   },
   {
@@ -198,6 +223,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Tavily API key",
     description: "Tavily API keys beginning with tvly-",
     example: "tvly-dev-J8xQ2mL9vBnR7sT3wYhKdPc",
+    preserveStructure: { keepPrefix: 5 },
     pattern: "\\btvly-[A-Za-z0-9-]{16,}\\b",
   },
   {
@@ -205,6 +231,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Firecrawl API key",
     description: "Firecrawl API keys: fc- followed by 32 lowercase hex characters (UUID without dashes)",
     example: "fc-3d478a296e59403e85c794aba81ffd2a",
+    preserveStructure: { keepPrefix: 3 },
     pattern: "\\bfc-[0-9a-f]{32}\\b",
   },
   {
@@ -212,6 +239,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Jina AI API key",
     description: "Jina AI API keys beginning with jina_",
     example: "jina_J8xQ2mL9vBnR7sT3wYhKdPc",
+    preserveStructure: { keepPrefix: 5 },
     pattern: "\\bjina_[A-Za-z0-9]{16,}\\b",
   },
   {
@@ -219,6 +247,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "TinyFish API key",
     description: "TinyFish API keys beginning with sk-tinyfish-",
     example: "sk-tinyfish-J8xQ2mL9vBnR7sT3wYhKdPc",
+    preserveStructure: { keepPrefix: 12 },
     pattern: "\\bsk-tinyfish-[A-Za-z0-9]{16,}\\b",
   },
   {
@@ -226,6 +255,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Atlassian API token",
     description: "Atlassian (Jira/Confluence) API tokens beginning with ATATT",
     example: "ATATTJ8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0bwv",
+    preserveStructure: { keepPrefix: 5 },
     pattern: "\\bATATT[A-Za-z0-9_-]{40}\\b",
   },
   {
@@ -233,6 +263,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "DigitalOcean API token",
     description: "DigitalOcean tokens: do[pao]_v1_ followed by 64 lowercase hex characters",
     example: "dop_v1_0e6f44a47a05f1dad2ad7e88c4c1d6b77688157716fb1a5271146f7464951c96",
+    preserveStructure: { keepPrefix: 8 },
     pattern: "\\bdo[pao]_v1_[0-9a-f]{64}\\b",
   },
   {
@@ -240,6 +271,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Sentry auth token",
     description: "Sentry auth tokens beginning with sntrys_",
     example: "sntrys_eyJpYXQiOjE2ODczMzY1NDMsInVybCI6bnVsbH0_NzJkYzA3NzMyZTRjNGE2",
+    preserveStructure: { keepPrefix: 7 },
     pattern: "\\bsntrys_[A-Za-z0-9+/=_]{30,}\\b",
   },
   {
@@ -247,6 +279,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Shopify access token",
     description: "Shopify Admin API tokens (shpat_), delegate tokens (shppa_), and app client secrets (shpss_)",
     example: "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",
+    preserveStructure: { keepPrefix: 6 },
     pattern: "\\bshp(?:at|pa|ss)_[a-f0-9]{32}\\b",
   },
   {
@@ -254,6 +287,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Notion integration token",
     description: "Notion integration secrets: current ntn_ and legacy secret_ prefixes",
     example: "ntn_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0bwvFtRnMkLp",
+    preserveStructure: { keepPrefix: true },
     pattern: "\\b(?:ntn|secret)_[A-Za-z0-9]{40,}\\b",
   },
   {
@@ -261,6 +295,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "HubSpot private app token",
     description: "HubSpot private app tokens: pat-<region>- followed by a UUID",
     example: "pat-na1-2c5a1b3d-9f4e-4a7b-8c6d-1e2f3a4b5c6d",
+    preserveStructure: { keepPrefix: 7 },
     pattern: "\\bpat-(?:na|eu|ap)\\d-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b",
   },
   {
@@ -268,6 +303,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Docker Hub personal access token",
     description: "Docker Hub personal access tokens beginning with dckr_pat_",
     example: "dckr_pat_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa",
+    preserveStructure: { keepPrefix: 9 },
     pattern: "\\bdckr_pat_[A-Za-z0-9_-]{27,64}\\b",
   },
   {
@@ -275,6 +311,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Figma access token",
     description: "Figma personal access tokens: current figu_ and legacy figd_ prefixes",
     example: "figd_J8xQ2mL9vBnR7sT3wYhKdPc",
+    preserveStructure: { keepPrefix: 5 },
     pattern: "\\bfig[du]_[A-Za-z0-9-]{20,}\\b",
   },
   {
@@ -282,6 +319,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Resend API key",
     description: "Resend API keys beginning with re_",
     example: "re_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa",
+    preserveStructure: { keepPrefix: 3 },
     pattern: "\\bre_[A-Za-z0-9]{20,}\\b",
   },
   {
@@ -289,6 +327,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Supabase access token",
     description: "Supabase personal access tokens: sbp_ followed by 40 lowercase hex characters",
     example: "sbp_fc0e6f44a47a05f1dad2ad7e88c4c1d6b7768815",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bsbp_(?:oauth_)?[0-9a-f]{40}\\b",
   },
   {
@@ -296,6 +335,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Supabase secret key",
     description: "Supabase new-style secret API keys beginning with sb_secret_",
     example: "sb_secret_J8xQ2mL9vBnR7sT3wYhKdPc",
+    preserveStructure: { keepPrefix: 10 },
     pattern: "\\bsb_secret_[A-Za-z0-9]{20,}\\b",
   },
   {
@@ -303,6 +343,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Neon API key",
     description: "Neon API keys beginning with napi_",
     example: "napi_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0bwvFtRnMkLp",
+    preserveStructure: { keepPrefix: 5 },
     pattern: "\\bnapi_[A-Za-z0-9]{40,}\\b",
   },
   {
@@ -310,6 +351,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "New Relic API key",
     description: "New Relic user API keys (NRAK-) and API access keys (NRAA-)",
     example: "NRAK-J8xQ2mL9vBnR7sT3wYhKdPcE6uZa",
+    preserveStructure: { keepPrefix: 5 },
     pattern: "\\bNRA[KA]-[A-Za-z0-9]{20,}\\b",
   },
   {
@@ -317,6 +359,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Grafana service account token",
     description: "Grafana service account tokens: glsa_ + token body + 8-character hex checksum",
     example: "glsa_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1X_5b582697",
+    preserveStructure: { keepPrefix: 5 },
     pattern: "\\bglsa_[A-Za-z0-9]{20,}_[0-9a-f]{8}\\b",
   },
   {
@@ -324,6 +367,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "HashiCorp Vault token",
     description: "HashiCorp Vault tokens: hvs. (service), hvb. (batch), and hvr. (recovery) prefixes",
     example: "hvs.J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bhv[sbr]\\.[A-Za-z0-9]{20,}\\b",
   },
   {
@@ -331,6 +375,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "PlanetScale service token",
     description: "PlanetScale service tokens beginning with pscale_tkn_",
     example: "pscale_tkn_J8xQ2mL9vBnR7sT3wYhKdPc",
+    preserveStructure: { keepPrefix: 11 },
     pattern: "\\bpscale_tkn_[A-Za-z0-9]{20,}\\b",
   },
   {
@@ -338,6 +383,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Square access token",
     description: "Square access tokens: EAAA followed by 60 characters",
     example: "EAAAJ8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0bwvFtRnMkLpQrZeCsVaHoDl",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bEAAA[A-Za-z0-9-+=]{60}\\b",
   },
   {
@@ -345,6 +391,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "WooCommerce consumer key/secret",
     description: "WooCommerce REST API consumer keys (ck_) and secrets (cs_): 64 lowercase hex characters",
     example: "cs_0e6f44a47a05f1dad2ad7e88c4c1d6b77688157716fb1a5271146f7464951c96",
+    preserveStructure: { keepPrefix: 3 },
     pattern: "\\bc[ks]_[0-9a-f]{64}\\b",
   },
   {
@@ -352,6 +399,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Mercado Pago access token",
     description: "Mercado Pago access tokens beginning with APP_USR-",
     example: "APP_USR-1585551492-030918-J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI-2880736",
+    preserveStructure: { keepPrefix: 8 },
     pattern: "\\bAPP_USR-[0-9]+-[0-9]+-[A-Za-z0-9-]{16,}-[0-9]+\\b",
   },
   {
@@ -359,6 +407,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Flutterwave secret key",
     description: "Flutterwave secret keys: FLWSECK- followed by 32 lowercase hex characters and -X suffix",
     example: "FLWSECK-0e6f44a47a05f1dad2ad7e88c4c1d6b7-X",
+    preserveStructure: { keepPrefix: 8 },
     pattern: "\\bFLWSECK-[0-9a-f]{32}-X\\b",
   },
   {
@@ -366,6 +415,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Paystack/Clerk live secret key",
     description: "Live secret keys with the shared sk_live_ prefix used by Paystack and Clerk",
     example: "sk_live_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa",
+    preserveStructure: { keepPrefix: 8 },
     pattern: "\\bsk_live_[A-Za-z0-9]{16,}\\b",
   },
   {
@@ -373,6 +423,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Braintree access token",
     description: "Braintree OAuth access tokens: access_token$production$ + id + 32-character hex secret",
     example: "access_token$production$x8y2k4m6q8w0r2t4$0e6f44a47a05f1dad2ad7e88c4c1d6b7",
+    preserveStructure: { keepPrefix: 24 },
     pattern: "\\baccess_token\\$production\\$[0-9a-z]{16}\\$[0-9a-f]{32}\\b",
   },
   {
@@ -380,6 +431,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Brevo API key",
     description: "Brevo (Sendinblue) API keys: xkeysib- followed by 64 lowercase hex characters and a suffix",
     example: "xkeysib-a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456-Ab1Cd2Ef3Gh4",
+    preserveStructure: { keepPrefix: 8 },
     pattern: "\\bxkeysib-[0-9a-f]{64}-[A-Za-z0-9]+\\b",
   },
   {
@@ -387,6 +439,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "PostHog personal API key",
     description: "PostHog personal API keys beginning with phx_",
     example: "phx_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0bwvFtRnMkLp",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bphx_[A-Za-z0-9]{43,48}\\b",
   },
   {
@@ -394,6 +447,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Mapbox secret token",
     description: "Mapbox secret access tokens: sk. followed by a JWT (pk. public tokens are not matched)",
     example: "sk.eyJ1IjoiZXhhbXBsZS11c2VyIiwiYSI6IjEyMzQ1Njc4OTAifQ.J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI",
+    preserveStructure: { keepPrefix: 3 },
     pattern: "\\bsk\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\b",
   },
   {
@@ -401,6 +455,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Shippo API token",
     description: "Shippo live API tokens beginning with shippo_live_",
     example: "shippo_live_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa",
+    preserveStructure: { keepPrefix: 12 },
     pattern: "\\bshippo_live_[A-Za-z0-9]{16,}\\b",
   },
   {
@@ -408,6 +463,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Stytch secret key",
     description: "Stytch backend API secrets: secret-live- (production) and secret-test- prefixes",
     example: "secret-live-IJ7zLTgXp8xoS7yXO2xavNxZTbYfvm-2nZM=",
+    preserveStructure: { keepPrefix: 12 },
     pattern: "\\bsecret-(?:live|test)-[A-Za-z0-9_-]{20,}={0,2}\\b",
   },
   {
@@ -415,6 +471,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "ElevenLabs API key",
     description: "ElevenLabs API keys: sk_ followed by 32-48 lowercase hex characters",
     example: "sk_7b3e5d8c1a9f4e2b6c8d3a5e9f1b7c4d1a2c5e8f0b9d6a3c",
+    preserveStructure: { keepPrefix: 3 },
     pattern: "(?<![A-Za-z0-9_])sk_[0-9a-f]{32,48}(?![A-Za-z0-9_])",
   },
   {
@@ -422,6 +479,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Tailscale key",
     description: "Tailscale API access tokens (tskey-api-), auth keys (tskey-auth-), and OAuth client secrets (tskey-client-)",
     example: "tskey-api-J8xQ2mL9vBnR7sT3-091234567890ABCDEF",
+    preserveStructure: { keepPrefix: 6 },
     pattern: "\\btskey-(?:api|auth|client)-[A-Za-z0-9-]{10,}\\b",
   },
   {
@@ -429,6 +487,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Doppler token",
     description: "Doppler personal tokens (dp.pt.) and service tokens (dp.st.): followed by 40-44 alphanumeric characters",
     example: "dp.st.dev.J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU0bwvF",
+    preserveStructure: { keepPrefix: 6 },
     pattern: "\\bdp\\.(?:pt|st(?:\\.[a-z0-9_-]{2,35})?\\.)[A-Za-z0-9]{40,44}\\b",
   },
   {
@@ -436,6 +495,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "1Password service account token",
     description: "1Password service account tokens: ops_ followed by a JWT",
     example: "ops_eyJ1IjoiZXhhbXBsZS11c2VyIiwiYSI6IjEyMzQ1Njc4OTAifQ.J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bops_[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\b",
   },
   {
@@ -443,6 +503,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Netlify token",
     description: "Netlify authentication tokens: nfp_ (personal), nfc_ (CLI), nfo_ (OAuth), nfu_ (website), and nfb_ (build)",
     example: "nfp_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bnf[p.cou]_[A-Za-z0-9_-]{20,}\\b",
   },
   {
@@ -450,6 +511,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Render API key",
     description: "Render API keys beginning with rnd_",
     example: "rnd_J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\brnd_[A-Za-z0-9]{20,}\\b",
   },
   {
@@ -457,6 +519,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Pulumi access token",
     description: "Pulumi Cloud access tokens beginning with pul-",
     example: "pul-J8xQ2mL9vBnR7sT3wYhKdPcE6uZa1XoI5gyU",
+    preserveStructure: { keepPrefix: 4 },
     pattern: "\\bpul-[A-Za-z0-9]{20,}\\b",
   },
   {
@@ -464,6 +527,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "JSON Web Token",
     description: "JSON Web Tokens with three base64url segments",
     example: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signatureABC",
+    preserveStructure: { keepPrefix: false },
     pattern: "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
   },
   {
@@ -471,6 +535,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "PEM private key",
     description: "PEM private-key body while preserving BEGIN/END markers",
     example: "-----BEGIN PRIVATE KEY----- … -----END PRIVATE KEY-----",
+    preserveStructure: { keepPrefix: false },
     pattern: "-----BEGIN [A-Z ]*PRIVATE KEY-----([\\s\\S]*?)-----END [A-Z ]*PRIVATE KEY-----",
   },
   {
@@ -478,6 +543,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Bearer token",
     description: "Bearer token value while preserving the authorization prefix",
     example: "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.demo-token",
+    preserveStructure: { keepPrefix: false },
     pattern: "Authorization:\\s*Bearer\\s+([A-Za-z0-9._-]+)",
     flags: "i",
   },
@@ -486,6 +552,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Database connection credentials",
     description: "Credentials in common database and message-queue connection strings",
     example: "postgresql://admin:secret@db.example/app",
+    preserveStructure: { keepPrefix: false },
     pattern: "(?:postgresql|mysql|mariadb|redis|mongodb(?:\\+srv)?|amqp|amqps):\\/\\/([^\\s]+)@",
   },
   {
@@ -501,6 +568,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     label: "Public IPv4 address",
     description: "Publicly routable IPv4 addresses, excluding private and common special-use ranges",
     example: "8.8.8.8",
+    preserveStructure: { keepIPv4Octets: 1 },
     pattern: `\\b(?!(?:0|10|127)\\.)(?!100\\.(?:6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.)(?!169\\.254\\.)(?!172\\.(?:1[6-9]|2\\d|3[01])\\.)(?!192\\.0\\.(?:0|2)\\.)(?!192\\.88\\.99\\.)(?!192\\.168\\.)(?!198\\.(?:18|19)\\.)(?!198\\.51\\.100\\.)(?!203\\.0\\.113\\.)(?!(?:22[4-9]|23\\d|24\\d|25[0-5])\\.)${IPV4_OCTET}(?:\\.${IPV4_OCTET}){3}\\b`,
   },
 ];

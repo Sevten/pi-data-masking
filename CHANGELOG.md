@@ -10,7 +10,11 @@
 
 - Improved built-in preset coverage: GitHub tokens now include OAuth, GitHub App, and refresh prefixes (gho_/ghu_/ghs_/ghr_), Slack tokens cover refresh tokens, GitLab tokens match the new versioned format, Stripe covers webhook signing secrets, and Telegram tokens no longer require a fixed prefix.
 - Rule Builder: Disclose row appends a highlighted "not in effect — global ON/OFF" note when a global override is active.
+### Changed
+
 - Rule Builder preset picker: Space marks presets for multi-select; Enter with multiple marked presets adds them all to the global config with their default settings in one step (single selection still opens the editor for customization).
+- Rule Builder structured form: new "Keep prefix" selector (Off / First segment / First N chars) controlling `preserveStructure.keepPrefix`; regex and auto-placeholder literal rules only.
+- Presets now declare an explicit `preserveStructure.keepPrefix` matching their key prefix (e.g. 8 for `sk_live_`, 9 for `sk-or-v1-`), so generated placeholders keep the full service prefix visible; Public IPv4 presets keep the first octet.
 
 ### Fixed
 

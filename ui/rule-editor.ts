@@ -37,6 +37,7 @@ import {
 } from "../config-loader.ts";
 import { Masker, isRegexRule, type MaskingRule } from "../masker.ts";
 import { generatePlaceholder } from "../placeholder-gen.ts";
+import type { PreserveStructure } from "../masker.ts";
 import { MASKING_PRESETS } from "../presets.ts";
 import {
   MASKING_SCREEN_OPTIONS,
@@ -230,7 +231,7 @@ export async function addConfigRule(
   }
 
   type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
-  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "json" | "test";
+  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "preserve" | "json" | "test";
   const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
   let selectedSource: (typeof sources)[number] = sources.find((source) => source.scope === "global")!;
   let selectedType: BuilderType | undefined;
@@ -381,7 +382,7 @@ export async function addConfigRule(
           description: `${preset.description} · Example: ${preset.example}`,
           pattern: preset.pattern,
           ...(preset.flags ? { flags: preset.flags } : {}),
-          ...(preset.preserveStructure ? { preserveStructure: { ...preset.preserveStructure } } : {}),
+          ...(preset.preserveStructure ? { preserveStructure: { ...preset.preserveStructure } } : { preserveStructure: { keepPrefix: true } }),
         };
       });
       const mutations = rules.map((rule) => ({ kind: "append" as const, path: source.path, rule }));
@@ -458,6 +459,17 @@ export async function addConfigRule(
     // global on/off master switch pauses it anyway.
     let discloseOn = editing && editing.initial.disclosePlaceholder === true;
     let caseSensitiveOn = editing ? editing.initial.caseSensitive !== false : true;
+    // "Keep prefix" (preserveStructure.keepPrefix): Off, First segment (true),
+    // or a fixed number of characters. The numeric value is remembered so
+    // toggling Off/On does not lose it.
+    {
+      const kp = (editing?.initial.preserveStructure as PreserveStructure | undefined)?.keepPrefix
+        ?? (selectedPreset
+          ? selectedPreset.preserveStructure?.keepPrefix ?? (selectedPreset.preserveStructure ? false : true)
+          : false);
+      var preserveOn = kp === true || typeof kp === "number";
+      var preserveNumeric: number | undefined = typeof kp === "number" ? kp : undefined;
+    }
     const discloseGlobalMode = bridge.config().options.disclosePlaceholders;
     let mode: "form" | "json" = options.initialMode ?? "form";
     let focusIndex = !editing && mode === "form" ? 2 : 0;
@@ -555,14 +567,16 @@ export async function addConfigRule(
       common.push("type", "scope", "name", "description");
       // Case sensitivity is a literal-rule field: regex rules control it
       // through their own flags.
-      if (currentType() === "Built-in preset template" || currentType() === "Custom regex") common.push("pattern", "flags");
+      if (currentType() === "Built-in preset template" || currentType() === "Custom regex") common.push("pattern", "flags", "preserve");
       else if (currentType() === "Literal from environment") {
         common.push("env", "replacement");
+        if (replacementIndex === 0) common.push("preserve");
         if (replacementIndex === 1) common.push("placeholder");
         common.push("disclose", "case");
       }
       else {
         common.push("real", "replacement");
+        if (replacementIndex === 0) common.push("preserve");
         if (replacementIndex === 1) common.push("placeholder");
         common.push("disclose", "case");
       }
@@ -627,10 +641,16 @@ export async function addConfigRule(
           type: "regex",
           pattern: editors.pattern.getExpandedText(),
           ...(flags ? { flags } : {}),
-          ...(base.preserveStructure === undefined && preset?.preserveStructure
-            ? { preserveStructure: { ...preset.preserveStructure } }
-            : {}),
         };
+        {
+          const presetStruct = preset?.preserveStructure
+            ?? (typeof base.preserveStructure === "object" && base.preserveStructure ? base.preserveStructure : undefined);
+          const struct = { ...presetStruct } as PreserveStructure;
+          if (preserveOn) struct.keepPrefix = preserveNumeric ?? true;
+          else delete struct.keepPrefix;
+          if (Object.keys(struct).length > 0) regexRule.preserveStructure = struct;
+          else delete regexRule.preserveStructure;
+        }
         if (!flags) delete regexRule.flags;
         delete regexRule.caseSensitive;
         delete regexRule.real;
@@ -645,6 +665,7 @@ export async function addConfigRule(
           ...base,
           realFromEnv: editors.env.getExpandedText().trim(),
           placeholder: replacementIndex === 0 ? "auto" : editors.placeholder.getExpandedText(),
+          ...(replacementIndex === 0 && preserveOn ? { preserveStructure: { keepPrefix: preserveNumeric ?? true } } : {}),
         };
         delete envRule.type;
         delete envRule.disclosePlaceholder;
@@ -662,6 +683,7 @@ export async function addConfigRule(
         ...base,
         real: editors.real.getExpandedText(),
         placeholder: replacementIndex === 0 ? "auto" : editors.placeholder.getExpandedText(),
+        ...(replacementIndex === 0 && preserveOn ? { preserveStructure: { keepPrefix: preserveNumeric ?? true } } : {}),
       };
       delete literalRule.disclosePlaceholder;
       if (discloseOn) literalRule.disclosePlaceholder = true;
@@ -722,6 +744,11 @@ export async function addConfigRule(
       advancedFields = { ...rule };
       discloseOn = rule.disclosePlaceholder === true;
       caseSensitiveOn = rule.caseSensitive !== false;
+      {
+        const kp = (rule.preserveStructure as PreserveStructure | undefined)?.keepPrefix;
+        preserveOn = kp === true || typeof kp === "number";
+        preserveNumeric = typeof kp === "number" ? kp : undefined;
+      }
       explicitId = typeof rule.id === "string" ? rule.id : undefined;
       editors.name.setText(typeof rule.name === "string" ? rule.name : "");
       editors.description.setText(typeof rule.description === "string" ? rule.description : "");
@@ -998,9 +1025,13 @@ export async function addConfigRule(
           if (currentType() === "Built-in preset template" || currentType() === "Custom regex") {
             renderSingleLineField(lines, "pattern", "Pattern", editors.pattern, width, "JavaScript regex without /.../ · e.g. \\btoken_[A-Za-z0-9]{24}\\b");
             renderSingleLineField(lines, "flags", "Flags", editors.flags, width, "Optional: i case-insensitive · m multiline anchors · s dot matches newline · g automatic");
+            renderSelector(lines, "preserve", "Keep prefix", preserveOn ? (preserveNumeric !== undefined ? `First ${preserveNumeric} chars` : "First segment") : "Off", width,
+              "←/→ or Space keeps the key prefix (from the rule's or preset's preserveStructure, default First segment) visible in the placeholder · use Advanced JSON for other values");
           } else if (currentType() === "Literal from environment") {
             renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
+            if (replacementIndex === 0) renderSelector(lines, "preserve", "Keep prefix", preserveOn ? (preserveNumeric !== undefined ? `First ${preserveNumeric} chars` : "First segment") : "Off", width,
+              "←/→ or Space keeps the leading segment of the value (up to - _ . : / @) visible in the generated placeholder");
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, discloseSuffixText);
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
@@ -1124,6 +1155,8 @@ export async function addConfigRule(
             focusIndex = Math.min(focusIndex, fields().length - 1);
           } else if (field === "disclose") {
             discloseOn = !discloseOn;
+          } else if (field === "preserve") {
+            preserveOn = !preserveOn;
           } else if (field === "case") {
             caseSensitiveOn = !caseSensitiveOn;
           } else {
