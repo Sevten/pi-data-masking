@@ -1026,12 +1026,12 @@ export async function addConfigRule(
             renderSingleLineField(lines, "pattern", "Pattern", editors.pattern, width, "JavaScript regex without /.../ · e.g. \\btoken_[A-Za-z0-9]{24}\\b");
             renderSingleLineField(lines, "flags", "Flags", editors.flags, width, "Optional: i case-insensitive · m multiline anchors · s dot matches newline · g automatic");
             renderSelector(lines, "preserve", "Keep prefix", preserveOn ? (preserveNumeric !== undefined ? `First ${preserveNumeric} chars` : "First segment") : "Off", width,
-              "←/→ or Space cycles Off · First segment · First N chars — keeps the key prefix visible in the placeholder");
+              "←/→ or Space keeps the key prefix (from the rule's or preset's preserveStructure, default First segment) visible in the placeholder · use Advanced JSON for other values");
           } else if (currentType() === "Literal from environment") {
             renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
             if (replacementIndex === 0) renderSelector(lines, "preserve", "Keep prefix", preserveOn ? (preserveNumeric !== undefined ? `First ${preserveNumeric} chars` : "First segment") : "Off", width,
-              "←/→ or Space cycles Off · First segment · First N chars — keeps the leading segment of the value (up to - _ . : / @) visible in the generated placeholder");
+              "←/→ or Space keeps the leading segment of the value (up to - _ . : / @) visible in the generated placeholder");
             if (replacementIndex === 1) renderSingleLineField(lines, "placeholder", "Placeholder", editors.placeholder, width, "Exact replacement shown to the model");
             renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, discloseSuffixText);
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
@@ -1156,13 +1156,7 @@ export async function addConfigRule(
           } else if (field === "disclose") {
             discloseOn = !discloseOn;
           } else if (field === "preserve") {
-            // Cycle Off → First segment → common prefix lengths (covering
-            // preset prefixes like sk_live_ = 8, sk-or-v1- = 9, tskey- = 6).
-            const stops: Array<false | true | number> = [false, true, 3, 4, 5, 6, 8, 9, 12, 24];
-            const current = preserveOn ? preserveNumeric ?? true : false;
-            const next = stops[(((stops.indexOf(current) + selectorDirection) % stops.length) + stops.length) % stops.length]!;
-            preserveOn = next !== false;
-            if (typeof next === "number") preserveNumeric = next;
+            preserveOn = !preserveOn;
           } else if (field === "case") {
             caseSensitiveOn = !caseSensitiveOn;
           } else {
