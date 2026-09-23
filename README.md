@@ -29,7 +29,7 @@ user/tool data → mask → LLM → restore tool arguments → tool uses real da
 pi install npm:@sevten/pi-data-masking
 ```
 
-Start Pi and open `/masking`. Select `+ Add new rule`, pick one of the four rule types (literal, environment, regex, or preset), choose project or global scope (global is the default), test the rule in the same screen, and save it. That's it—masked values are replaced from the next request on.
+Start Pi and open `/masking`. Select `+ Add new rule`, pick one of the four rule types (literal, environment, regex, or preset), choose project or global scope (global is the default), test the rule in the same screen, and save it. That's it—masked values are replaced from the next request on. When adding preset rules, mark several with `Space` in the picker to add them all at once with their default settings.
 
 Configuration files are created and updated by the UI automatically; see [Rules and configuration](#rules-and-configuration) for their locations and the manual format.
 

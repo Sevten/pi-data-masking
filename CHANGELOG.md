@@ -1,17 +1,16 @@
 # Changelog
 
-## [Unreleased]
+## [0.9.0] - 2026-09-23
 
 ### Added
 
-- Fifty-eight new built-in presets covering major AI model providers, AI search and scraping services, and popular developer platforms (cloud infrastructure, payments, version control, communication, monitoring, and more).
+- Built-in presets now cover major AI model providers, AI search and scraping services, and popular developer platforms (cloud infrastructure, payments, version control, communication, monitoring, and more): fifty-eight new presets, with updated token formats for the existing GitHub, Slack, GitLab, Stripe, and Telegram presets.
 - Rule Builder preset picker: type to filter presets by name, browse a scrollable alphabetically sorted list, and mark several with Space to add them all at once with their default settings.
 
 ### Changed
 
 - Placeholder values generated from preset rules keep the service prefix visible (for example `sk_live_`, `tskey-api-`), so masked keys stay recognizable.
 - Rule Builder structured form: new "Keep prefix" option controls how much of the value a generated placeholder keeps — Off, First segment, or First N chars.
-- Improved built-in preset coverage: GitHub tokens now include OAuth, GitHub App, and refresh prefixes, Slack tokens cover refresh tokens, GitLab tokens match the new versioned format, Stripe covers webhook signing secrets, and Telegram tokens no longer require a fixed prefix.
 - Rule Builder: the Disclose row shows when a global override is in effect.
 
 ### Fixed
