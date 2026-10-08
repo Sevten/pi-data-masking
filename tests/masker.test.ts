@@ -7,9 +7,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Masker, MAX_COLLISION_ATTEMPTS } from "../masker.ts";
-import { generatePlaceholder } from "../placeholder-gen.ts";
-import type { MaskingRule } from "../masker.ts";
+import { Masker, MAX_COLLISION_ATTEMPTS } from "../src/core/masker.ts";
+import { generatePlaceholder } from "../src/core/placeholder-gen.ts";
+import type { MaskingRule } from "../src/core/masker.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 

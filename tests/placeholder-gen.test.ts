@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generatePlaceholder, generateSessionKey } from "../placeholder-gen.ts";
+import { generatePlaceholder, generateSessionKey } from "../src/core/placeholder-gen.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 

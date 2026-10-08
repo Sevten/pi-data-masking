@@ -15,11 +15,11 @@ import {
   guidanceDisclosureEntries,
   guidanceNoteForConfig,
   type GuidanceDisclosureEntry,
-} from "../guidance.ts";
-import { loadConfigFromPaths, type ConfiguredMaskingRule, type MaskingConfig } from "../config-loader.ts";
-import { Masker } from "../masker.ts";
-import { generateSessionKey } from "../placeholder-gen.ts";
-import { decideGuidanceNotice, markGuidanceNoticeShown, GUIDANCE_NOTICE_VERSION } from "../migration.ts";
+} from "../src/util/guidance.ts";
+import { loadConfigFromPaths, type ConfiguredMaskingRule, type MaskingConfig } from "../src/config/config-loader.ts";
+import { Masker } from "../src/core/masker.ts";
+import { generateSessionKey } from "../src/core/placeholder-gen.ts";
+import { decideGuidanceNotice, markGuidanceNoticeShown, GUIDANCE_NOTICE_VERSION } from "../src/config/migration.ts";
 
 const KEY = generateSessionKey();
 

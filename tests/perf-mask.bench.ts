@@ -12,10 +12,10 @@
  */
 
 import { performance } from "node:perf_hooks";
-import { Masker } from "../masker.ts";
-import type { MaskingRule } from "../masker.ts";
-import { MaskedCache, hashMessage } from "../masked-cache.ts";
-import { transcriptKey } from "../history-viewer.ts";
+import { Masker } from "../src/core/masker.ts";
+import type { MaskingRule } from "../src/core/masker.ts";
+import { MaskedCache, hashMessage } from "../src/core/masked-cache.ts";
+import { transcriptKey } from "../src/history/history-viewer.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 const MESSAGE_COUNT = 200;

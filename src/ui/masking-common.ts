@@ -18,9 +18,9 @@ import {
   type ConfiguredMaskingRule,
   type MaskingConfig,
   type RawConfigRule,
-} from "../config-loader.ts";
-import { isRegexRule } from "../masker.ts";
-import type { RuleEpochReason } from "../rule-epoch.ts";
+} from "../config/config-loader.ts";
+import { isRegexRule } from "../core/masker.ts";
+import type { RuleEpochReason } from "../history/rule-epoch.ts";
 
 // ── Command: /masking ────────────────────────────────────────────────────
 

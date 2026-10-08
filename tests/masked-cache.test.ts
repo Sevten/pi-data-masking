@@ -8,10 +8,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MASKED_CACHE_MAX_ENTRIES, MaskedCache, hashMessage } from "../masked-cache.ts";
-import { Masker } from "../masker.ts";
-import type { MaskingRule } from "../masker.ts";
-import { mergePendingAssistant, mergeTranscript, transcriptKey } from "../history-viewer.ts";
+import { MASKED_CACHE_MAX_ENTRIES, MaskedCache, hashMessage } from "../src/core/masked-cache.ts";
+import { Masker } from "../src/core/masker.ts";
+import type { MaskingRule } from "../src/core/masker.ts";
+import { mergePendingAssistant, mergeTranscript, transcriptKey } from "../src/history/history-viewer.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 

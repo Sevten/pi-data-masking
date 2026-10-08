@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateConfig, validateRawConfigRule } from "../config-loader.ts";
-import { MASKING_PRESETS } from "../presets.ts";
-import { analyzeRegexSafety } from "../regex-safety.ts";
+import { validateConfig, validateRawConfigRule } from "../src/config/config-loader.ts";
+import { MASKING_PRESETS } from "../src/core/presets.ts";
+import { analyzeRegexSafety } from "../src/core/regex-safety.ts";
 
 test("regex safety diagnostics find common excessive-backtracking shapes", () => {
   assert.deepEqual(

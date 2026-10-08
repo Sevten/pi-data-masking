@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { diffText } from "./diff-text.ts";
+import { diffText } from "../util/diff-text.ts";
 import { transcriptKey, type TranscriptEntry } from "./history-viewer.ts";
 
 type JsonRecord = Record<string, unknown>;

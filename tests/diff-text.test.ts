@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { diffText } from "../diff-text.ts";
+import { diffText } from "../src/util/diff-text.ts";
 
 test("text diff keeps replacement spans separate without injecting punctuation", () => {
   assert.deepEqual(

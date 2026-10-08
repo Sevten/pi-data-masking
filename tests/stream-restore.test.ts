@@ -14,12 +14,12 @@ import {
   type AssistantMessageEvent,
   type Provider,
 } from "@earendil-works/pi-ai";
-import { Masker } from "../masker.ts";
+import { Masker } from "../src/core/masker.ts";
 import {
   createStreamRestore,
   registerNativeStreamRestoreProvider,
   type StreamRestoreBlockState,
-} from "../stream-restore.ts";
+} from "../src/stream-restore.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 

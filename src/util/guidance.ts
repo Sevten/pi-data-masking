@@ -11,7 +11,7 @@
  * that enables disclosure without guidance (see config-loader.ts).
  */
 
-import type { MaskingConfig } from "./config-loader.ts";
+import type { MaskingConfig } from "../config/config-loader.ts";
 
 export interface GuidanceDisclosureEntry {
   placeholder: string;

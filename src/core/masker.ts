@@ -82,7 +82,7 @@
  */
 
 import { generatePlaceholder } from "./placeholder-gen.ts";
-import { finalizeDetails, mergeDetailInto, type DetailAccumulator } from "./details.ts";
+import { finalizeDetails, mergeDetailInto, type DetailAccumulator } from "../util/details.ts";
 import { isCommonSemanticValue } from "./common-semantic-terms.ts";
 
 // ─── Rule types (discriminated union) ──────────────────────────────────────

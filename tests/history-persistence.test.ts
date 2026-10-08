@@ -7,7 +7,7 @@ import {
   buildMessageSnapshot,
   restoreHistory,
   type SnapshotBatch,
-} from "../history-persistence.ts";
+} from "../src/history/history-persistence.ts";
 
 test("message snapshot reconstructs the exact masked strings from position deltas", () => {
   const original = {

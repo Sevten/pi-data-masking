@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MASKING_PRESETS, expandMaskingPreset } from "../presets.ts";
+import { MASKING_PRESETS, expandMaskingPreset } from "../src/core/presets.ts";
 
 test("preset examples match their documented regular expressions", () => {
   for (const preset of MASKING_PRESETS) {

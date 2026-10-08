@@ -10,7 +10,7 @@ import {
   type MessageContentHashPair,
   type TranscriptEntry,
 } from "./history-viewer.ts";
-import { hashMessage } from "./masked-cache.ts";
+import { hashMessage } from "../core/masked-cache.ts";
 import { RULE_EPOCH_ENTRY, parseRuleEpoch, type RuleEpoch } from "./rule-epoch.ts";
 
 type JsonRecord = Record<string, unknown>;

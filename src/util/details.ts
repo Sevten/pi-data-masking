@@ -8,7 +8,7 @@
  * merge/finalize logic.
  */
 
-import type { MaskDetail } from "./masker.ts";
+import type { MaskDetail } from "../core/masker.ts";
 
 // ─── Mutable accumulator ────────────────────────────────────────────────────
 

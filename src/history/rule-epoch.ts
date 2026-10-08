@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
-import type { ConfiguredMaskingRule, MaskingConfig } from "./config-loader.ts";
-import { isRegexRule, type MaskingRule } from "./masker.ts";
+import type { ConfiguredMaskingRule, MaskingConfig } from "../config/config-loader.ts";
+import { isRegexRule, type MaskingRule } from "../core/masker.ts";
 
 export const RULE_EPOCH_ENTRY = "pi-data-masking.rule-epoch.v1";
 

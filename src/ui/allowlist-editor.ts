@@ -18,7 +18,7 @@
 
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Editor, Key, matchesKey, truncateToWidth, type EditorTheme } from "@earendil-works/pi-tui";
-import { type AllowlistEntry, type ConfigScope } from "../config-loader.ts";
+import { type AllowlistEntry, type ConfigScope } from "../config/config-loader.ts";
 import {
   MASKING_SCREEN_OPTIONS,
   fillMaskingScreen,

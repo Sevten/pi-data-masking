@@ -38,7 +38,7 @@ import { getApiProvider, registerBuiltInApiProviders } from "@earendil-works/pi-
 import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Masker } from "./masker.ts";
+import type { Masker } from "./core/masker.ts";
 
 /** Accumulated stream state for one content block (text or thinking). */
 export interface StreamRestoreBlockState {

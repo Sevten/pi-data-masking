@@ -53,8 +53,8 @@ import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil
 import { type Model, type Provider } from "@earendil-works/pi-ai";
 import { existsSync } from "node:fs";
 import { createHmac } from "node:crypto";
-import { Masker } from "./masker.ts";
-import type { DynamicPlaceholderMap, MaskOptions } from "./masker.ts";
+import { Masker } from "./core/masker.ts";
+import type { DynamicPlaceholderMap, MaskOptions } from "./core/masker.ts";
 import {
   armStreamRestore,
   createStreamRestore,
@@ -75,21 +75,21 @@ import {
   watchConfigs,
   migrateProjectOptionsToGlobalFiles,
   repairLegacyCaseSensitiveFile,
-} from "./config-loader.ts";
+} from "./config/config-loader.ts";
 import type {
   ConfigSourceSnapshot,
   MaskingConfig,
   RawConfigRule,
-} from "./config-loader.ts";
-import { generateSessionKey } from "./placeholder-gen.ts";
-import { guidanceNoteForConfig } from "./guidance.ts";
+} from "./config/config-loader.ts";
+import { generateSessionKey } from "./core/placeholder-gen.ts";
+import { guidanceNoteForConfig } from "./util/guidance.ts";
 import {
   decideGuidanceNotice,
   markGuidanceNoticeShown,
   migrationStatePath,
   readMigrationStateSync,
   writeMigrationState,
-} from "./migration.ts";
+} from "./config/migration.ts";
 import {
   createEpochHistoryViewer,
   createHistoryViewer,
@@ -98,7 +98,7 @@ import {
   transcriptKey,
   type MessageContentHashPair,
   type TranscriptEntry,
-} from "./history-viewer.ts";
+} from "./history/history-viewer.ts";
 import {
   SESSION_STATE_ENTRY,
   SNAPSHOT_ENTRY,
@@ -109,8 +109,8 @@ import {
   type PersistedSessionState,
   type SessionEntryLike,
   type SnapshotBatch,
-} from "./history-persistence.ts";
-import { MaskedCache, hashMessage } from "./masked-cache.ts";
+} from "./history/history-persistence.ts";
+import { MaskedCache, hashMessage } from "./core/masked-cache.ts";
 import {
   RULE_EPOCH_ENTRY,
   createRuleEpoch,
@@ -118,7 +118,7 @@ import {
   ruleBehaviorFingerprint,
   type RuleEpoch,
   type RuleEpochReason,
-} from "./rule-epoch.ts";
+} from "./history/rule-epoch.ts";
 import {
   EPOCH_TRANSCRIPT_ENTRY,
   appendUnobservedTail,
@@ -133,7 +133,7 @@ import {
   type EpochTranscriptBatch,
   type EpochTranscriptState,
   type PrefixComponentFingerprint,
-} from "./epoch-transcript.ts";
+} from "./history/epoch-transcript.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 

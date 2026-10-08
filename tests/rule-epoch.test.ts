@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ConfiguredMaskingRule, MaskingConfig } from "../config-loader.ts";
-import type { LiteralMaskingRule } from "../masker.ts";
+import type { ConfiguredMaskingRule, MaskingConfig } from "../src/config/config-loader.ts";
+import type { LiteralMaskingRule } from "../src/core/masker.ts";
 import {
   RULE_EPOCH_ENTRY,
   createRuleEpoch,
@@ -9,7 +9,7 @@ import {
   ruleBehaviorFingerprint,
   summarizeEpochNetChanges,
   summarizeRuleChanges,
-} from "../rule-epoch.ts";
+} from "../src/history/rule-epoch.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 

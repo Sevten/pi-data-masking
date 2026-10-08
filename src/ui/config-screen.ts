@@ -16,7 +16,7 @@ import {
   type MaskingOptions,
   type RuleEnabledChange,
   CACHE_IMPACT_HINT,
-} from "../config-loader.ts";
+} from "../config/config-loader.ts";
 import {
   MASKING_SCREEN_OPTIONS,
   confirmMaskingAction,

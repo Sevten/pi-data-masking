@@ -4,13 +4,13 @@ import { test } from "node:test";
 import { Ajv2020 } from "ajv/dist/2020.js";
 
 const schema = JSON.parse(
-  readFileSync(new URL("../masking.config.schema.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../src/config/masking.config.schema.json", import.meta.url), "utf8"),
 ) as object;
 const validate = new Ajv2020({ allErrors: true }).compile(schema);
 
 test("packaged example covers every rule source and matches the schema", () => {
   const example = JSON.parse(
-    readFileSync(new URL("../masking.config.example.json", import.meta.url), "utf8"),
+    readFileSync(new URL("../src/config/masking.config.example.json", import.meta.url), "utf8"),
   ) as { rules: Array<Record<string, unknown>> };
   assert.equal(validate(example), true, JSON.stringify(validate.errors));
   assert.equal(example.rules.some((rule) => typeof rule.real === "string"), true);

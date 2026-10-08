@@ -8,15 +8,9 @@
   },
   "license": "MIT",
   "type": "module",
-  "main": "./index.ts",
+  "main": "./src/index.ts",
   "files": [
-    "*.ts",
-    "ui/*.ts",
-    "common-semantic-terms.txt",
-    "masking.config.example.json",
-    "masking.config.schema.json",
-    "README.md",
-    "LICENSE"
+    "src"
   ],
   "keywords": [
     "pi-package",
@@ -54,7 +48,7 @@
   },
   "pi": {
     "extensions": [
-      "./index.ts"
+      "./src/index.ts"
     ]
   }
 }

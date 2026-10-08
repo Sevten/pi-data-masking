@@ -12,7 +12,7 @@ import test from "node:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Masker } from "../masker.ts";
+import { Masker } from "../src/core/masker.ts";
 
 const TEST_AGENT_DIR = mkdtempSync(join(tmpdir(), "masking-cache-agent-"));
 process.env.PI_CODING_AGENT_DIR = TEST_AGENT_DIR;
@@ -37,7 +37,7 @@ async function createHarness(cwd: string) {
     sessionManager: { getBranch: () => [] },
   };
 
-  const extension = (await import("../index.ts")).default;
+  const extension = (await import("../src/index.ts")).default;
   await extension(pi as never);
   for (const handler of events.get("session_start") ?? []) await handler({}, ctx);
 

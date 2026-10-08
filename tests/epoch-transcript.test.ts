@@ -10,10 +10,10 @@ import {
   mergeEpochPrefixObservation,
   restoreEpochTranscripts,
   type EpochFactObservation,
-} from "../epoch-transcript.ts";
-import { RULE_EPOCH_ENTRY } from "../rule-epoch.ts";
-import { hashMessage } from "../masked-cache.ts";
-import type { RuleEpoch } from "../rule-epoch.ts";
+} from "../src/history/epoch-transcript.ts";
+import { RULE_EPOCH_ENTRY } from "../src/history/rule-epoch.ts";
+import { hashMessage } from "../src/core/masked-cache.ts";
+import type { RuleEpoch } from "../src/history/rule-epoch.ts";
 
 function epoch(epochId: number): RuleEpoch {
   return {

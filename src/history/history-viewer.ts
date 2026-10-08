@@ -10,7 +10,7 @@ import {
   type Component,
 } from "@earendil-works/pi-tui";
 import { summarizeEpochNetChanges, type RuleEpoch, type RuleEpochChange } from "./rule-epoch.ts";
-import { diffText, type DiffSegment } from "./diff-text.ts";
+import { diffText, type DiffSegment } from "../util/diff-text.ts";
 
 type JsonRecord = Record<string, unknown>;
 

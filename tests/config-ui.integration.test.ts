@@ -107,7 +107,7 @@ async function createHarness(cwd: string, scenarios: Scenario[]) {
     sessionManager: { getBranch: () => [] },
   };
 
-  const extension = (await import("../index.ts")).default;
+  const extension = (await import("../src/index.ts")).default;
   await extension(pi as never);
   for (const handler of events.get("session_start") ?? []) await handler({}, ctx);
 

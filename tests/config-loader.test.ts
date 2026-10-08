@@ -26,11 +26,11 @@ import {
   saveRuleEnabledChanges,
   validateConfig,
   validateRawConfigRule,
-} from "../config-loader.ts";
-import { watchConfigPaths } from "../config-watcher.ts";
-import { Masker, isRegexRule } from "../masker.ts";
-import { generatePlaceholder } from "../placeholder-gen.ts";
-import { isCommonSemanticValue } from "../common-semantic-terms.ts";
+} from "../src/config/config-loader.ts";
+import { watchConfigPaths } from "../src/config/config-watcher.ts";
+import { Masker, isRegexRule } from "../src/core/masker.ts";
+import { generatePlaceholder } from "../src/core/placeholder-gen.ts";
+import { isCommonSemanticValue } from "../src/core/common-semantic-terms.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
 

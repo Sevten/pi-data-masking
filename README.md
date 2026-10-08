@@ -77,7 +77,7 @@ For manual configuration:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/sevten/pi-data-masking/main/masking.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/sevten/pi-data-masking/main/src/config/masking.config.schema.json",
   "version": 1,
   "enabled": true,
   "rules": [
@@ -108,7 +108,7 @@ Four rule sources are available:
 
 Literal rules may use a fixed `placeholder` or automatic generation; regex matches always receive generated placeholders, and capture groups restrict masking to the captured parts. Earlier rules take priority over overlapping later rules.
 
-Literal rules match case-sensitively by default; the Rule Builder's `Case` field makes a rule case-insensitive (regex rules use their own flags). An allowlist (`options.allowlist`, edited in `/masking`) exempts listed values or whole lines from masking even when a rule would match. Other options include `showStatusBar`, `systemPromptGuidance`, and `disclosePlaceholders`; see [`masking.config.schema.json`](masking.config.schema.json) for the complete field reference and defaults.
+Literal rules match case-sensitively by default; the Rule Builder's `Case` field makes a rule case-insensitive (regex rules use their own flags). An allowlist (`options.allowlist`, edited in `/masking`) exempts listed values or whole lines from masking even when a rule would match. Other options include `showStatusBar`, `systemPromptGuidance`, and `disclosePlaceholders`; see [`masking.config.schema.json`](src/config/masking.config.schema.json) for the complete field reference and defaults.
 
 ## Performance
 

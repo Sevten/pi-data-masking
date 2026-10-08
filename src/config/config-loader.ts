@@ -13,11 +13,11 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import { generatePlaceholder } from "./placeholder-gen.ts";
-import { isRegexRule, MAX_COLLISION_ATTEMPTS, type MaskingRule, type PreserveStructure } from "./masker.ts";
-import { expandMaskingPreset, getMaskingPreset } from "./presets.ts";
-import { analyzeRegexSafety } from "./regex-safety.ts";
-import { isCommonSemanticValue } from "./common-semantic-terms.ts";
+import { generatePlaceholder } from "../core/placeholder-gen.ts";
+import { isRegexRule, MAX_COLLISION_ATTEMPTS, type MaskingRule, type PreserveStructure } from "../core/masker.ts";
+import { expandMaskingPreset, getMaskingPreset } from "../core/presets.ts";
+import { analyzeRegexSafety } from "../core/regex-safety.ts";
+import { isCommonSemanticValue } from "../core/common-semantic-terms.ts";
 import { watchConfigPaths } from "./config-watcher.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ export const PERSISTENT_TOGGLE_PATH = join(
 export const CACHE_IMPACT_HINT = "may cause cache misses";
 
 export const CONFIG_SCHEMA_URL =
-  "https://raw.githubusercontent.com/sevten/pi-data-masking/main/masking.config.schema.json";
+  "https://raw.githubusercontent.com/sevten/pi-data-masking/main/src/config/masking.config.schema.json";
 
 /** Project-level config path: <cwd>/.pi/pi-data-masking/masking.config.json */
 export function getProjectConfigPath(cwd: string): string {

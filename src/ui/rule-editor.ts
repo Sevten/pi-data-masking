@@ -34,11 +34,11 @@ import {
   type MaskingOptions,
   type RawConfigRule,
   type RuleEnabledChange,
-} from "../config-loader.ts";
-import { Masker, isRegexRule, type MaskingRule } from "../masker.ts";
-import { generatePlaceholder } from "../placeholder-gen.ts";
-import type { PreserveStructure } from "../masker.ts";
-import { MASKING_PRESETS } from "../presets.ts";
+} from "../config/config-loader.ts";
+import { Masker, isRegexRule, type MaskingRule } from "../core/masker.ts";
+import { generatePlaceholder } from "../core/placeholder-gen.ts";
+import type { PreserveStructure } from "../core/masker.ts";
+import { MASKING_PRESETS } from "../core/presets.ts";
 import {
   MASKING_SCREEN_OPTIONS,
   chooseExistingSource,

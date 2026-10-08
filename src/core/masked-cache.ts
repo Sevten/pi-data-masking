@@ -38,7 +38,7 @@
  *    safe — misses merely refill.
  */
 
-import { textHash } from "./history-persistence.ts";
+import { textHash } from "../history/history-persistence.ts";
 
 /**
  * Strings longer than this are hashed individually during fingerprinting so
