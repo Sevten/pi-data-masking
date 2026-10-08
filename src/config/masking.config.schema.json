@@ -349,6 +349,15 @@
               }
             ]
           }
+        },
+        "trustedDestinations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(\\*\\.[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+|[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+|\\d{1,3}(\\.\\d{1,3}){0,2}\\.\\*)$"
+          },
+          "uniqueItems": true,
+          "description": "Global trusted destinations for scoped restoration: merged (union) into every rule's restoreScope destinations. Entries use restoreScope destination syntax: domains (dot-anchored suffix match, e.g. corp.internal covers api.corp.internal), single-label wildcards (*.corp), intranet wildcards (10.0.*), or IP literals. Widens destination checks only — tools checks and strict holds on unextractable destinations are unaffected. Read from the global config only."
         }
       }
     },

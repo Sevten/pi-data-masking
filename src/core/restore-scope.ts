@@ -49,6 +49,11 @@ export interface ScopeMaterializationInput {
   presetDestinations: string[] | undefined;
   sourceKind: "literal" | "regex" | "preset";
   realFromEnv: string | undefined;
+  /** Global `options.trustedDestinations`, validated at load time. Merged
+   *  (union) into the effective destinations — it widens the set of
+   *  verifiable destinations for every scoped rule but never creates scope
+   *  where none exists and never touches the tools check. */
+  trustedDestinations?: string[];
 }
 
 /**
@@ -62,11 +67,25 @@ export function effectiveScope(input: ScopeMaterializationInput): EffectiveScope
   const presetDefault = input.sourceKind === "preset" ? input.presetDestinations : undefined;
   if (!declared && !presetDefault) return null;
 
-  const destinations = declared?.destinations ?? presetDefault;
+  const destinations = unionDestinations(
+    declared?.destinations ?? presetDefault,
+    input.trustedDestinations,
+  );
   const envNames = declared?.envNames ?? (input.realFromEnv ? [input.realFromEnv] : undefined);
   const mode: ScopeMode =
     declared?.mode ?? (presetDefault !== undefined ? "strict" : "permissive");
   return { destinations, tools: declared?.tools, envNames, mode };
+}
+
+/** Merge the global trusted-destination list into a rule's destinations
+ *  (order-preserving dedupe: rule/preset entries first, trusted entries
+ *  after). */
+function unionDestinations(
+  base: string[] | undefined,
+  trusted: string[] | undefined,
+): string[] | undefined {
+  if (!trusted || trusted.length === 0) return base;
+  return [...new Set([...(base ?? []), ...trusted])];
 }
 
 // ─── Host normalization ─────────────────────────────────────────────────────

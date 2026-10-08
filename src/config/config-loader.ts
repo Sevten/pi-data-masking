@@ -53,6 +53,12 @@ export interface MaskingOptions {
    *  case-sensitivity flag. Global and project lists merge by union,
    *  project entries first. */
   allowlist: AllowlistEntry[];
+  /** Global trusted destinations for scoped restoration: merged (union)
+   *  into every rule's restoreScope destinations so e.g. a trusted intranet
+   *  or registry mirror needs no per-rule repetition. Entries use the same
+   *  dot-anchored syntax as restoreScope destinations. Global-only;
+   *  default undefined (= no widening). */
+  trustedDestinations?: string[];
 }
 
 export interface MaskingConfig {
@@ -1072,6 +1078,22 @@ function buildLoadResult(
     warnings,
   );
 
+  // Trusted destinations: global entries only, same entry syntax as
+  // restoreScope destinations; invalid entries are dropped with a warning.
+  const trustedRaw = (globalData?.options as Record<string, unknown> | undefined)?.trustedDestinations;
+  if (trustedRaw !== undefined) {
+    if (Array.isArray(trustedRaw)) {
+      const trusted = trustedRaw.filter((entry) => {
+        if (typeof entry === "string" && entry.trim().length > 0 && validDestinationEntry(entry)) return true;
+        warnings.push(`options.trustedDestinations entry ${JSON.stringify(entry)} is not a valid destination (expected a domain, "*.host", intranet wildcard like "10.0.*", or IP literal) and was dropped`);
+        return false;
+      }) as string[];
+      if (trusted.length > 0) config.options.trustedDestinations = trusted;
+    } else {
+      warnings.push("options.trustedDestinations must be an array of destination entries and was ignored");
+    }
+  }
+
   // Switch coupling: disclosure requires the model guidance. The intent to
   // disclose is clear, so the loader auto-corrects instead of erroring.
   if (config.options.disclosePlaceholders !== false && !config.options.systemPromptGuidance) {
@@ -1140,6 +1162,7 @@ function buildLoadResult(
             : undefined,
           sourceKind,
           realFromEnv,
+          trustedDestinations: config.options.trustedDestinations,
         }),
         placeholderMode: !isRegexRule(rule)
           ? typeof rawRecord.placeholder === "string" && rawRecord.placeholder !== "auto"

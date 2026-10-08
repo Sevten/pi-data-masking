@@ -58,6 +58,10 @@
     "systemPromptGuidance": false,
     "disclosePlaceholders": false,
     "persistHistory": true,
+    "trustedDestinations": [
+      "artifactory.corp.internal",
+      "10.0.*"
+    ],
     "allowlist": [
       "10.0.0.5",
       {

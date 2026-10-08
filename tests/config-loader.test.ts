@@ -1027,6 +1027,52 @@ test("watchConfigPaths survives watched directory deletion without throwing unca
   }
 });
 
+test("options.trustedDestinations: union into scoped rules, invalid entries dropped", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    writeFileSync(globalPath, JSON.stringify({
+      options: { trustedDestinations: ["artifactory.corp", "10.0.*", "not a host!!"] },
+      rules: [
+        { id: "preset-default", preset: "github-pat" },
+        { id: "custom-scope", real: "trusted-union-secret", restoreScope: { destinations: ["internal.acme.com"], mode: "strict" } },
+        // no scope, no preset default → null; global list must NOT create scope
+        { id: "unscoped", real: "unscoped-trusted-secret" },
+      ],
+    }));
+    const { config, warnings } = await loadConfigFromPaths(globalPath, join(dir, "missing-project.json"), KEY);
+    const byId = new Map(config.configuredRules.map((c) => [c.rule.id, c]));
+
+    assert.deepEqual(byId.get("preset-default")?.effectiveScope, {
+      destinations: ["github.com", "api.github.com", "artifactory.corp", "10.0.*"],
+      tools: undefined, envNames: undefined, mode: "strict",
+    });
+    assert.deepEqual(byId.get("custom-scope")?.effectiveScope, {
+      destinations: ["internal.acme.com", "artifactory.corp", "10.0.*"],
+      tools: undefined, envNames: undefined, mode: "strict",
+    });
+    assert.equal(byId.get("unscoped")?.effectiveScope ?? null, null);
+    assert.deepEqual(config.options.trustedDestinations, ["artifactory.corp", "10.0.*"]);
+    assert.ok(warnings.some((w) => w.includes("trustedDestinations") && w.includes("not a host")));
+
+    // dedupe: trusted entries already covered by preset defaults are not repeated
+    writeFileSync(globalPath, JSON.stringify({
+      options: { trustedDestinations: ["github.com"] },
+      rules: [{ id: "preset-default", preset: "github-pat" }],
+    }));
+    const dedup = await loadConfigFromPaths(globalPath, join(dir, "missing-project.json"), KEY);
+    assert.deepEqual(dedup.config.configuredRules[0].effectiveScope?.destinations,
+      ["github.com", "api.github.com"]);
+
+    // non-array → ignored with warning
+    writeFileSync(globalPath, JSON.stringify({ options: { trustedDestinations: "corp.com" }, rules: [] }));
+    const bad = await loadConfigFromPaths(globalPath, join(dir, "missing-project.json"), KEY);
+    assert.ok(bad.warnings.some((w) => w.includes("trustedDestinations must be an array")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("restoreScope: validation, materialization, and preset defaults", async () => {
   const dir = makeTmp();
   try {

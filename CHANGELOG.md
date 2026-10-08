@@ -4,7 +4,7 @@
 
 ### Added
 
-- Scoped restoration: rules can declare a `restoreScope` restricting where their real values may flow once restored into tool arguments — an allowlist of network destinations (dot-anchored domains, IP literals, intranet wildcards), an allowed-tools list, and a strict/permissive mode. When a check fails, the placeholder stays in place and the hold is reported with the rule and reason; the real value never reaches an unverified destination. Issuing-service presets (GitHub, npm, Hugging Face, AWS, Slack) scope their keys to the issuer's domains by default with zero configuration. Configure the field in the Rule Builder's Restore scope row or as rule JSON.
+- Scoped restoration: rules can declare a `restoreScope` restricting where their real values may flow once restored into tool arguments — an allowlist of network destinations (dot-anchored domains, IP literals, intranet wildcards), an allowed-tools list, and a strict/permissive mode. When a check fails, the placeholder stays in place and the hold is reported with the rule and reason; the real value never reaches an unverified destination. Issuing-service presets (GitHub, npm, Hugging Face, AWS, Slack) scope their keys to the issuer's domains by default with zero configuration. A global `options.trustedDestinations` list (trusted intranet, registry mirrors) is merged into every rule's destination allowlist, so shared trusted destinations are declared once instead of per rule; it widens destination checks only and never relaxes tool restrictions. Configure the field in the Rule Builder's Restore scope row or as rule JSON.
 
 ## [0.9.0] - 2026-09-23
 
