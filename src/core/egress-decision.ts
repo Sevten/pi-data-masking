@@ -151,6 +151,22 @@ export function decideToolCallRestore(
   };
 }
 
+// ── Marker dimension: read-result marking ─────────────────────────────
+
+/**
+ * Rule ids whose placeholders appear in a text blob — the read-result
+ * marking probe (design: "File markers", read-result marking). When the
+ * masked result of a read-like call contains values of rule X and the call
+ * referenced path F, the caller marks "F contains values of rule X" so the
+ * custody chain covers values that already lived on disk before the
+ * session. Pure probe: no restoration is written anywhere.
+ */
+export function ruleIdsInText(masker: Masker, text: string): Set<string> {
+  if (!text) return new Set();
+  const probe = masker.unmaskValue(text);
+  return new Set(probe.details.map((d) => d.ruleId));
+}
+
 // ── Marker dimension: marked-path egress check ─────────────────────────────
 
 /**

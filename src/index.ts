@@ -58,6 +58,7 @@ import type { DynamicPlaceholderMap, MaskOptions } from "./core/masker.ts";
 import {
   decideMarkedPaths,
   decideToolCallRestore,
+  ruleIdsInText,
 } from "./core/egress-decision.ts";
 import {
   createFileMarkerRegistry,
@@ -1294,6 +1295,23 @@ export default async function (pi: ExtensionAPI) {
         );
       }
     }
+  });
+
+  // ── Hook 3b: tool_result — read-result marking ────────────────────
+  // When a read-like call's masked result contains values of rule X and
+  // the call referenced path F, mark "F contains values of rule X" — the
+  // custody chain then covers values that already lived on disk before
+  // the session (the model read the file; a later outbound reference to
+  // it gets the marker-dimension check).
+  pi.on("tool_result", (event) => {
+    if (!config.enabled || config.rules.length === 0) return;
+    if (event.toolName !== "read" && event.toolName !== "grep" && event.toolName !== "find") return;
+    const path = (event.input as Record<string, unknown>).path;
+    if (typeof path !== "string" || !path.trim()) return;
+    const text = event.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+    const ruleIds = ruleIdsInText(masker, text);
+    if (ruleIds.size === 0) return;
+    fileMarkers.mark(path, process.cwd(), ruleIds);
   });
 
   // ── Hook 4: turn_start — reset the per-turn fallback notification flag ────

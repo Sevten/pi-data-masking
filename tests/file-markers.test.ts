@@ -17,8 +17,10 @@ import {
   structuredTargetPaths,
 } from "../src/core/file-markers.ts";
 import { hasNetworkSignature } from "../src/core/network-signature.ts";
-import { decideMarkedPaths } from "../src/core/egress-decision.ts";
+import { decideMarkedPaths, ruleIdsInText } from "../src/core/egress-decision.ts";
 import type { EffectiveScope } from "../src/core/restore-scope.ts";
+import { Masker } from "../src/core/masker.ts";
+import { generateSessionKey } from "../src/core/placeholder-gen.ts";
 
 const CWD = "/srv/app";
 
@@ -122,6 +124,21 @@ test("hasNetworkSignature: command-position matches, text mentions do not", () =
   assert.equal(hasNetworkSignature("grep curl notes.md"), false);
   assert.equal(hasNetworkSignature("cat file | grep -v wget"), false);
   assert.equal(hasNetworkSignature("ls -la"), false);
+});
+
+// ── read-result marking probe ──────────────────────────────────────────
+
+test("ruleIdsInText: placeholders in read results map to rule ids", () => {
+  const rule = {
+    id: "stripe-key",
+    real: "sk_live_realvalue1234567890",
+    placeholder: "ph_stripe_key_placeholder",
+  } as never;
+  const masker = new Masker([rule], generateSessionKey());
+  const text = `token=$(cat /srv/app/.env)\nSTRIPE=ph_stripe_key_placeholder\n`; // masked read result
+  assert.deepEqual([...ruleIdsInText(masker, text)], ["stripe-key"]);
+  assert.equal(ruleIdsInText(masker, "no secrets here").size, 0);
+  assert.equal(ruleIdsInText(masker, "").size, 0);
 });
 
 // ── decideMarkedPaths ───────────────────────────────────────────────────────
