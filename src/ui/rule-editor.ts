@@ -231,7 +231,7 @@ export async function addConfigRule(
   }
 
   type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
-  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "preserve" | "json" | "test";
+  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "preserve" | "restoreScope" | "json" | "test";
   const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
   let selectedSource: (typeof sources)[number] = sources.find((source) => source.scope === "global")!;
   let selectedType: BuilderType | undefined;
@@ -521,6 +521,11 @@ export async function addConfigRule(
       test: makeEditor("", false, () => {
         if (!updatingAutoTest) testAutoManaged = false;
       }),
+      restoreScope: makeEditor(
+        editing?.initial.restoreScope !== undefined && editing.initial.restoreScope !== null
+          ? JSON.stringify(editing.initial.restoreScope)
+          : "",
+      ),
     };
     testEditor = editors.test;
 
@@ -581,7 +586,7 @@ export async function addConfigRule(
         if (replacementIndex === 1) common.push("placeholder");
         common.push("disclose", "case");
       }
-      common.push("test");
+      common.push("restoreScope", "test");
       return common;
     }
     const fields = () => mode === "json" ? ["json", "test"] as BuilderField[] : formFields();
@@ -620,6 +625,13 @@ export async function addConfigRule(
       tui.requestRender();
     }
 
+    const restoreScopeDescription = (): string => {
+      const presetDefaults = currentType() === "Built-in preset template" ? selectedPreset?.destinations : undefined;
+      if (presetDefaults && presetDefaults.length > 0) {
+        return `JSON: {"destinations":[...],"tools":[...],"mode":"strict"} · preset default: ${presetDefaults.join(", ")} · empty = preset default`;
+      }
+      return 'Optional JSON: {"destinations":["stripe.com"],"tools":["write"],"mode":"strict"} · empty = restore everywhere';
+    };
     function draftFromForm(): RawConfigRule {
       const name = editors.name.getExpandedText().trim();
       const description = editors.description.getExpandedText().trim();
@@ -630,6 +642,18 @@ export async function addConfigRule(
       const id = generatedId();
       if (id) base.id = id;
       else delete base.id;
+      // Restore scope: edited as JSON; empty means unrestricted. Invalid
+      // JSON is kept raw so the save path can block with a clear message.
+      {
+        const scopeText = editors.restoreScope.getExpandedText().trim();
+        if (scopeText) {
+          try {
+            base.restoreScope = JSON.parse(scopeText);
+          } catch {
+            base.restoreScope = scopeText as unknown as RawConfigRule["restoreScope"];
+          }
+        } else delete base.restoreScope;
+      }
       if (name) base.name = name;
       else delete base.name;
       if (description) base.description = description;
@@ -952,6 +976,15 @@ export async function addConfigRule(
         }
         draft.rule.id = generateUniqueRuleId(name, existingIds.get(currentSource().path) ?? []);
       }
+      if (mode === "form" && editors.restoreScope.getExpandedText().trim()) {
+        try {
+          JSON.parse(editors.restoreScope.getExpandedText());
+        } catch (err) {
+          saveMessage = `Cannot save: Restore scope is not valid JSON — ${(err as Error).message}`;
+          tui.requestRender();
+          return;
+        }
+      }
       let warnings: string[];
       try {
         warnings = validateRawConfigRule(draft.rule);
@@ -1042,6 +1075,7 @@ export async function addConfigRule(
               preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "First N chars") : "Off",
               width, preserveMode === "custom" ? "Digits only — number of prefix characters to keep" : "←/→ or Space changes mode",
               undefined, preserveMode === "custom" ? editors.preserve : undefined);
+            renderSingleLineField(lines, "restoreScope", "Restore scope", editors.restoreScope, width, restoreScopeDescription());
           } else if (currentType() === "Literal from environment") {
             renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
@@ -1053,6 +1087,7 @@ export async function addConfigRule(
             renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, discloseSuffixText);
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
               "←/→ or Space toggles case-sensitive matching for this rule");
+          renderSingleLineField(lines, "restoreScope", "Restore scope", editors.restoreScope, width, restoreScopeDescription());
           } else {
             renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
@@ -1065,7 +1100,8 @@ export async function addConfigRule(
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
               "←/→ or Space toggles case-sensitive matching for this rule");
           }
-          const fixedFieldRowCount = 8;
+          renderSingleLineField(lines, "restoreScope", "Restore scope", editors.restoreScope, width, restoreScopeDescription());
+          const fixedFieldRowCount = 9;
           while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
           lines.push(editorDivider);
           renderActiveFieldDescription(lines, width);
