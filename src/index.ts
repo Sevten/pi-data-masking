@@ -58,6 +58,7 @@ import type { DynamicPlaceholderMap, MaskOptions } from "./core/masker.ts";
 import {
   decideMarkedPaths,
   decideToolCallRestore,
+  referencedEnvRuleIds,
   ruleIdsInText,
 } from "./core/egress-decision.ts";
 import {
@@ -1175,8 +1176,16 @@ export default async function (pi: ExtensionAPI) {
     // so violations block (strict) or confirm (permissive), unlike the
     // placeholder flows below which hold-and-notify.
     const markedRefs = referencedMarkedPaths(fileMarkers, event.input, cwd);
-    if (markedRefs.length > 0) {
-      const referencedRuleIds = new Set(markedRefs.flatMap((ref) => ref.ruleIds));
+    const referencedRuleIds = new Set(markedRefs.flatMap((ref) => ref.ruleIds));
+    // $NAME references govern like marked paths: the real value lives in
+    // the environment, so a referencing command with egress intent gets
+    // the same block/confirm treatment.
+    if (command !== "") {
+      for (const ruleId of referencedEnvRuleIds(command, scopes)) {
+        referencedRuleIds.add(ruleId);
+      }
+    }
+    if (referencedRuleIds.size > 0) {
       const markedScopes = new Map<string, EffectiveScope>();
       for (const ruleId of referencedRuleIds) {
         const scope = scopes.get(ruleId);

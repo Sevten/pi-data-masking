@@ -167,6 +167,39 @@ export function ruleIdsInText(masker: Masker, text: string): Set<string> {
   return new Set(probe.details.map((d) => d.ruleId));
 }
 
+// ── Env-reference dimension: $NAME references ───────────────────────────
+
+/**
+ * Rule ids whose environment-variable names are referenced in a command —
+ * `$NAME`, `${NAME}`, or Windows `$env:NAME` (design: "Env-name binding").
+ * The real value lives in the environment, so a referencing command is
+ * governed like a marked path: egress intent + unverifiable destination →
+ * block (strict) or confirm (permissive). Same word-boundary rule as the
+ * shell: `$STRIPE_KEY` does not match inside `$STRIPE_KEY_FULL`.
+ */
+export function referencedEnvRuleIds(
+  command: string,
+  scopes: ReadonlyMap<string, EffectiveScope>,
+): Set<string> {
+  const hits = new Set<string>();
+  for (const [ruleId, scope] of scopes) {
+    if (scope.envNames?.some((name) => envNameReferenced(command, name))) {
+      hits.add(ruleId);
+    }
+  }
+  return hits;
+}
+
+function envNameReferenced(command: string, name: string): boolean {
+  // Only plain shell-variable names are matchable; anything else in
+  // envNames is skipped rather than risked as a regex.
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `\\$env:${escaped}(?![A-Za-z0-9_])|\\$\\{${escaped}\\}|\\$${escaped}(?![A-Za-z0-9_])`,
+  ).test(command);
+}
+
 // ── Marker dimension: marked-path egress check ─────────────────────────────
 
 /**

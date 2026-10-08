@@ -17,7 +17,7 @@ import {
   structuredTargetPaths,
 } from "../src/core/file-markers.ts";
 import { hasNetworkSignature } from "../src/core/network-signature.ts";
-import { decideMarkedPaths, ruleIdsInText } from "../src/core/egress-decision.ts";
+import { decideMarkedPaths, referencedEnvRuleIds, ruleIdsInText } from "../src/core/egress-decision.ts";
 import type { EffectiveScope } from "../src/core/restore-scope.ts";
 import { Masker } from "../src/core/masker.ts";
 import { generateSessionKey } from "../src/core/placeholder-gen.ts";
@@ -141,7 +141,24 @@ test("ruleIdsInText: placeholders in read results map to rule ids", () => {
   assert.equal(ruleIdsInText(masker, "").size, 0);
 });
 
-// ── decideMarkedPaths ───────────────────────────────────────────────────────
+// ── env-name binding ─────────────────────────────────────────────────────
+
+test("referencedEnvRuleIds: $NAME / ${NAME} / $env:NAME, word-boundary safe", () => {
+  const scopes = new Map([
+    ["stripe", { destinations: ["stripe.com"], tools: undefined, envNames: ["STRIPE_KEY"], mode: "strict" } as EffectiveScope],
+    ["other", { destinations: ["a.com"], tools: undefined, envNames: ["OTHER_VAR"], mode: "strict" } as EffectiveScope],
+  ]);
+  const hits = (cmd: string) => [...referencedEnvRuleIds(cmd, scopes)].sort();
+  assert.deepEqual(hits('curl -H "Auth: Bearer $STRIPE_KEY" https://x'), ["stripe"]);
+  assert.deepEqual(hits("curl https://x -d ${STRIPE_KEY}"), ["stripe"]);
+  assert.deepEqual(hits("Invoke-WebRequest -Headers @{Auth=\"$env:STRIPE_KEY\"} https://x"), ["stripe"]);
+  assert.deepEqual(hits("echo $STRIPE_KEY_FULL"), []); // prefix of a longer name
+  assert.deepEqual(hits("echo $UNRELATED"), []);
+  assert.deepEqual(hits("curl https://stripe.com -d $OTHER_VAR"), ["other"]);
+  assert.deepEqual(hits("echo nothing"), []);
+});
+
+// ── decideMarkedPaths ────────────────────────────────────────────────────────
 
 test("marker decision: strict + unmatched destination → block", () => {
   const d = decideMarkedPaths(new Set(["r"]), {
