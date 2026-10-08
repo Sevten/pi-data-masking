@@ -168,6 +168,14 @@ The opt-in `systemPromptGuidance` note mitigates both: its escape hatch (report 
 
   No guidance can prevent this—it is inherent to whole-string matching. Low-entropy and common values are therefore unsuitable: prefer high-entropy secrets and narrow contextual rules, and test positive and negative samples before relying on a rule.
 
+### Scoped restoration (restoreScope)
+
+Rules may declare a `restoreScope` restricting where their real values may flow once restored into tool arguments: `destinations` (a dot-anchored host allowlist — `stripe.com` covers `api.stripe.com`, not `api.stripe.com.evil.com`; IP literals and intranet wildcards like `10.0.*` are supported), `tools` (tool names allowed to receive the value), and `mode` (`strict` holds the restoration whenever the destination cannot be verified; `permissive` restores with a notice when no destination can be extracted). Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
+
+When a scope check fails, the placeholder stays in place and the hold is reported with the rule name and the offending destination or tool; the real value never reaches an unverified destination. Holds and notices are reported at most once per turn; edit the rule in `/masking` to widen or tighten its scope.
+
+This is argument-layer enforcement with documented evasion limits (open redirects on allowlisted destinations, crafted staging chains, and /etc/hosts repointing are invisible to it). It complements, and does not replace, host-level tool approval and network egress controls. See [`docs/egress-scoping-design.md`](docs/egress-scoping-design.md) for the full boundary statement.
+
 ### Immutable first-seen classification
 
 pi-data-masking deliberately classifies each exact string once, at its first matching occurrence, and never reclassifies it. Reclassifying a string the model has already seen would rewrite model-facing history mid-conversation—contradicting what the model read earlier and discarding provider prompt-cache prefixes:

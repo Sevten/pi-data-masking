@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/sevten/pi-data-masking/main/masking.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/sevten/pi-data-masking/main/src/config/masking.config.schema.json",
   "version": 1,
   "enabled": true,
   "rules": [
@@ -34,6 +34,23 @@
       "name": "GitHub personal access token",
       "preset": "github-pat",
       "enabled": true
+    },
+    {
+      "id": "scoped-deploy-token",
+      "name": "Scoped deploy token",
+      "enabled": false,
+      "description": "restoreScope: the value is restored only for local config writes and only strict-verified stripe.com destinations",
+      "realFromEnv": "DEPLOY_TOKEN",
+      "restoreScope": {
+        "destinations": [
+          "stripe.com"
+        ],
+        "tools": [
+          "write",
+          "edit"
+        ],
+        "mode": "strict"
+      }
     }
   ],
   "options": {
