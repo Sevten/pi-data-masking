@@ -752,3 +752,32 @@ test("allowlist: token-only entry still exempts the bare value", () => {
   assert.equal(masked.count, 0);
   assert.equal(masked.text, "Authorization: Bearer test123456");
 });
+
+test("unmaskValue with allowRuleId restores only the accepted rules' spans", () => {
+  const m = new Masker(
+    [
+      { id: "keep", real: "allowed-secret-value", placeholder: "masked-allowed-value" },
+      { id: "hold", real: "held-secret-value", placeholder: "masked-held-value" },
+    ],
+    KEY,
+  );
+  const input = { a: "masked-allowed-value", b: ["masked-held-value"], c: { d: "masked-allowed-value masked-held-value" } };
+
+  const full = m.unmaskValue(input);
+  assert.equal(full.count, 4);
+
+  const scoped = m.unmaskValue(input, { allowRuleId: (id) => id === "keep" });
+  assert.equal(scoped.count, 2);
+  assert.equal((scoped.value as { a: string }).a, "allowed-secret-value");
+  assert.deepEqual((scoped.value as { b: string[] }).b, ["masked-held-value"]);
+  assert.equal(
+    ((scoped.value as { c: { d: string } }).c.d),
+    "allowed-secret-value masked-held-value",
+  );
+  // original input untouched (top level is a fresh object)
+  assert.equal((input as { a: string }).a, "masked-allowed-value");
+
+  const none = m.unmaskValue(input, { allowRuleId: () => false });
+  assert.equal(none.count, 0);
+  assert.equal((none.value as { a: string }).a, "masked-allowed-value");
+});

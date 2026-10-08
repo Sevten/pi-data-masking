@@ -49,3 +49,15 @@ test("public IPv4 preset excludes private and common special-use ranges", () => 
     assert.doesNotMatch(address, regex);
   }
 });
+
+test("issuer presets carry default destinations; generic presets do not", () => {
+  const byName = new Map(MASKING_PRESETS.map((p) => [p.name, p]));
+  assert.deepEqual(byName.get("github-pat")?.destinations, ["github.com", "api.github.com"]);
+  assert.deepEqual(byName.get("npm-token")?.destinations, ["npmjs.org", "registry.npmjs.org"]);
+  assert.deepEqual(byName.get("huggingface-token")?.destinations, ["huggingface.co"]);
+  assert.deepEqual(byName.get("aws-access-key-id")?.destinations, ["amazonaws.com"]);
+  assert.deepEqual(byName.get("slack-token")?.destinations, ["slack.com"]);
+  for (const generic of ["jwt", "pem-private-key", "bearer-token", "database-userinfo", "private-ipv4", "public-ipv4"]) {
+    assert.equal(byName.get(generic)?.destinations, undefined, generic);
+  }
+});

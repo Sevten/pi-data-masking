@@ -84,6 +84,7 @@
 import { generatePlaceholder } from "./placeholder-gen.ts";
 import { finalizeDetails, mergeDetailInto, type DetailAccumulator } from "../util/details.ts";
 import { isCommonSemanticValue } from "./common-semantic-terms.ts";
+import type { RestoreScope } from "./restore-scope.ts";
 
 // ─── Rule types (discriminated union) ──────────────────────────────────────
 
@@ -110,6 +111,10 @@ interface BaseMaskingRule {
   preserveStructure?: PreserveStructure;
   /** Opt-out flag for the config-loader low-entropy warning. */
   lowEntropy?: boolean;
+  /** Where the rule's real values may flow once restored into tool
+   *  arguments. Omitted = unconditional restoration (backward compatible).
+   *  Enforcement lives in the tool_call decision flow, not the Masker. */
+  restoreScope?: RestoreScope;
 }
 
 export interface LiteralMaskingRule extends BaseMaskingRule {
@@ -1175,16 +1180,24 @@ export class Masker {
     return { value, count: 0, details: [] };
   }
 
-  unmaskValue(value: unknown): { value: unknown; count: number; details: UnmaskDetail[] } {
+  unmaskValue(
+    value: unknown,
+    opts?: { allowRuleId?: (ruleId: string) => boolean }
+  ): { value: unknown; count: number; details: UnmaskDetail[] } {
+    const allow = opts?.allowRuleId;
     if (typeof value === "string") {
-      const r = this.unmask(value);
+      if (!allow) {
+        const r = this.unmask(value);
+        return { value: r.text, count: r.count, details: r.details };
+      }
+      const r = this.unmaskFiltered(value, allow);
       return { value: r.text, count: r.count, details: r.details };
     }
     if (Array.isArray(value)) {
       let count = 0;
       const detailMap = new Map<string, DetailAccumulator>();
       const arr = value.map((item) => {
-        const r = this.unmaskValue(item);
+        const r = this.unmaskValue(item, opts);
         count += r.count;
         r.details.forEach((d) => mergeDetailInto(detailMap, d));
         return r.value;
@@ -1196,7 +1209,7 @@ export class Masker {
       const detailMap = new Map<string, DetailAccumulator>();
       const obj: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        const r = this.unmaskValue(v);
+        const r = this.unmaskValue(v, opts);
         obj[k] = r.value;
         count += r.count;
         r.details.forEach((d) => mergeDetailInto(detailMap, d));
@@ -1204,5 +1217,38 @@ export class Masker {
       return { value: obj, count, details: finalizeDetails(detailMap) };
     }
     return { value, count: 0, details: [] };
+  }
+
+  /**
+   * unmask() restricted to spans of rules the callback accepts: spans of
+   * rules rejected (or filtered out) keep their placeholder in place. Used
+   * by the scoped-restoration decision flow to restore per-rule outcomes
+   * within one tool call. Mirrors unmask()'s span application exactly.
+   */
+  private unmaskFiltered(
+    text: string,
+    allow: (ruleId: string) => boolean
+  ): UnmaskResult {
+    if (!text) return { text, count: 0, details: [] };
+    const spans = this.collectUnmaskSpans(text).filter((span) => allow(span.ruleId));
+    if (spans.length === 0) return { text, count: 0, details: [] };
+
+    const detailMap = new Map<string, DetailAccumulator>();
+    let result = "";
+    let cursor = 0;
+    let count = 0;
+    for (const span of spans) {
+      result += text.slice(cursor, span.start);
+      result += span.real;
+      cursor = span.end;
+      count++;
+      mergeDetailInto(detailMap, {
+        ruleId: span.ruleId,
+        description: span.description,
+        values: [{ real: span.real, occurrences: 1 }],
+      });
+    }
+    result += text.slice(cursor);
+    return { text: result, count, details: finalizeDetails(detailMap) };
   }
 }

@@ -16,6 +16,7 @@ import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { generatePlaceholder } from "../core/placeholder-gen.ts";
 import { isRegexRule, MAX_COLLISION_ATTEMPTS, type MaskingRule, type PreserveStructure } from "../core/masker.ts";
 import { expandMaskingPreset, getMaskingPreset } from "../core/presets.ts";
+import { effectiveScope, type EffectiveScope, type RestoreScope } from "../core/restore-scope.ts";
 import { analyzeRegexSafety } from "../core/regex-safety.ts";
 import { isCommonSemanticValue } from "../core/common-semantic-terms.ts";
 import { watchConfigPaths } from "./config-watcher.ts";
@@ -82,6 +83,9 @@ export interface ConfiguredMaskingRule {
   realFromEnv?: string;
   /** Whether the configured literal replacement is generated or fixed. */
   placeholderMode?: "auto" | "custom";
+  /** Materialized restoration scope. Null = no tool-call constraints
+   *  (unconditional restoration, backward compatible). */
+  effectiveScope: EffectiveScope | null;
 }
 
 export interface RuleEnabledChange {
@@ -478,6 +482,13 @@ export function validateConfig(
       preserveStructure = rule.preserveStructure as PreserveStructure;
     }
 
+    let restoreScope: RestoreScope | undefined;
+    if (rule.restoreScope !== undefined) {
+      const parsed = parseRestoreScope(rule.restoreScope, id, warnings);
+      if (!parsed) continue;
+      restoreScope = parsed;
+    }
+
     if (rule.preset !== undefined) {
       if (typeof rule.preset !== "string" || rule.preset.length === 0) {
         warnings.push(`Rule [${id}] has invalid 'preset' (must be a non-empty string) and was skipped`);
@@ -501,6 +512,7 @@ export function validateConfig(
         description: typeof rule.description === "string" ? rule.description : undefined,
         lowEntropy: rule.lowEntropy === true,
         preserveStructure,
+        restoreScope,
       }));
       continue;
     }
@@ -548,7 +560,7 @@ export function validateConfig(
           );
         }
       }
-      rules.push({ ...(raw as MaskingRule), preserveStructure } as MaskingRule);
+      rules.push({ ...(raw as MaskingRule), preserveStructure, restoreScope } as MaskingRule);
       continue;
     }
 
@@ -628,6 +640,7 @@ export function validateConfig(
         real,
         placeholder: rule.placeholder as string | undefined,
         disclosePlaceholder: rule.disclosePlaceholder as boolean | undefined,
+        restoreScope,
       };
       rules.push(resolved);
       continue;
@@ -790,6 +803,88 @@ function estimateMatchLength(pattern: string): { min: number; max: number } | nu
  * mirroring masker.ts's runtime logic). The same real value always reuses
  * the same placeholder, so global + project rules stay consistent.
  */
+/**
+ * Parse and validate one rule's 'restoreScope'. Returns null (with a
+ * warning) on any invalid member — a half-understood scope must never
+ * silently loosen enforcement, so the whole rule is skipped.
+ */
+function parseRestoreScope(
+  raw: unknown,
+  id: string,
+  warnings: string[],
+): RestoreScope | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    warnings.push(`Rule [${id}] has invalid 'restoreScope' (must be an object) and was skipped`);
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  const known = ["destinations", "tools", "envNames", "mode"];
+  const unknown = Object.keys(record).filter((key) => !known.includes(key));
+  if (unknown.length > 0) {
+    warnings.push(`Rule [${id}] has unknown 'restoreScope' field(s) ${unknown.join(", ")} and was skipped`);
+    return null;
+  }
+  const scope: RestoreScope = {};
+
+  const stringList = (field: "tools" | "envNames"):
+    | { ok: true; value: string[] }
+    | { ok: false } => {
+    const value = record[field];
+    if (value === undefined) return { ok: true, value: undefined as unknown as string[] };
+    if (!Array.isArray(value) || value.length === 0 ||
+        value.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
+      warnings.push(`Rule [${id}] has invalid 'restoreScope.${field}' (must be a non-empty array of non-empty strings) and was skipped`);
+      return { ok: false };
+    }
+    return { ok: true, value: [...new Set(value.map((entry) => entry.trim()))] };
+  };
+
+  const tools = stringList("tools");
+  if (!tools.ok) return null;
+  if (tools.value) scope.tools = tools.value;
+
+  const envNames = stringList("envNames");
+  if (!envNames.ok) return null;
+  if (envNames.value) scope.envNames = envNames.value;
+
+  if (record.destinations !== undefined) {
+    const value = record.destinations;
+    if (!Array.isArray(value) || value.length === 0) {
+      warnings.push(`Rule [${id}] has invalid 'restoreScope.destinations' (must be a non-empty array) and was skipped`);
+      return null;
+    }
+    const entries: string[] = [];
+    for (const entry of value) {
+      if (typeof entry !== "string" || !validDestinationEntry(entry)) {
+        warnings.push(`Rule [${id}] has an invalid 'restoreScope.destinations' entry ${JSON.stringify(entry)} and was skipped`);
+        return null;
+      }
+      entries.push(entry.trim().toLowerCase());
+    }
+    scope.destinations = [...new Set(entries)];
+  }
+
+  if (record.mode !== undefined) {
+    if (record.mode !== "strict" && record.mode !== "permissive") {
+      warnings.push(`Rule [${id}] has invalid 'restoreScope.mode' (must be "strict" or "permissive") and was skipped`);
+      return null;
+    }
+    scope.mode = record.mode;
+  }
+  return scope;
+}
+
+/** Syntax check for one destinations entry: a host, a leading-wildcard
+ *  intranet pattern (`*.internal.acme.com`), or a trailing-wildcard IP
+ *  prefix (`10.0.*`). Wildcards must occupy a whole label. */
+function validDestinationEntry(entry: string): boolean {
+  const e = entry.trim().toLowerCase().replace(/\.$/, "");
+  if (!e || /\s/.test(e)) return false;
+  if (e.startsWith("*.")) return !e.slice(2).includes("*") && /^[*.a-z0-9-]+$/.test(e);
+  if (e.endsWith(".*")) return !e.slice(0, -2).includes("*") && /^[*.a-z0-9-]+$/.test(e);
+  return !e.includes("*") && /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(e);
+}
+
 function fillPlaceholders(rules: MaskingRule[], sessionKey: Buffer, warnings: string[]): void {
   const used = new Set<string>();
   const seen = new Map<string, string>(); // real → placeholder, for dedup
@@ -1026,6 +1121,8 @@ function buildLoadResult(
         }
       }
       if (!rule) return;
+      const sourceKind: "literal" | "regex" | "preset" =
+        presetName ? "preset" : isRegexRule(rule) ? "regex" : "literal";
       configuredRules.push({
         rule,
         scope,
@@ -1033,9 +1130,17 @@ function buildLoadResult(
         sourceIndex,
         enabled: rule.enabled !== false,
         available,
-        sourceKind: presetName ? "preset" : isRegexRule(rule) ? "regex" : "literal",
+        sourceKind,
         presetName,
         realFromEnv,
+        effectiveScope: effectiveScope({
+          scope: rule.restoreScope,
+          presetDestinations: presetName
+            ? getMaskingPreset(presetName)?.destinations
+            : undefined,
+          sourceKind,
+          realFromEnv,
+        }),
         placeholderMode: !isRegexRule(rule)
           ? typeof rawRecord.placeholder === "string" && rawRecord.placeholder !== "auto"
             ? "custom"

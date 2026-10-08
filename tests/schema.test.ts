@@ -56,3 +56,30 @@ test("JSON Schema accepts a valid allowlist and rejects bad entries", () => {
   const nonString = validate({ ...base, options: { allowlist: [42] } });
   assert.equal(nonString, false);
 });
+
+test("JSON Schema accepts restoreScope and rejects unknown members", () => {
+  const valid = {
+    $schema: "./masking.config.schema.json",
+    version: 1,
+    enabled: true,
+    rules: [
+      { id: "k", preset: "github-pat", restoreScope: { destinations: ["github.com"], mode: "strict" } },
+      { id: "t", real: "local-secret-value", placeholder: "masked-local-value", restoreScope: { tools: ["write", "edit"] } },
+      { id: "e", real: "another-secret-value", placeholder: "masked-another-value", restoreScope: { envNames: ["OTHER_KEY"] } },
+      { id: "w", real: "wildcard-secret-value", placeholder: "masked-wildcard-value", restoreScope: { destinations: ["*.internal.acme.com", "10.0.*"] } },
+    ],
+    options: {},
+  };
+  assert.equal(validate(valid), true, JSON.stringify(validate.errors));
+
+  const invalid = [
+    { id: "x", real: "secret-value-1", restoreScope: { unknownField: true } },
+    { id: "y", real: "secret-value-2", restoreScope: { mode: "yolo" } },
+    { id: "z", real: "secret-value-3", restoreScope: { destinations: [] } },
+    { id: "w2", real: "secret-value-4", restoreScope: { destinations: ["a.*.b"] } },
+  ];
+  for (const rule of invalid) {
+    const config = { $schema: "./masking.config.schema.json", version: 1, enabled: true, rules: [rule], options: {} };
+    assert.equal(validate(config), false, `expected rejection: ${JSON.stringify(rule)}`);
+  }
+});

@@ -1026,3 +1026,49 @@ test("watchConfigPaths survives watched directory deletion without throwing unca
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("restoreScope: validation, materialization, and preset defaults", async () => {
+  const dir = makeTmp();
+  try {
+    const globalPath = join(dir, "global.json");
+    writeFileSync(globalPath, JSON.stringify({ rules: [
+      // explicit scope on a literal rule → permissive default
+      { id: "custom-scope", real: "custom-secret-value", placeholder: "masked-custom-value",
+        restoreScope: { destinations: ["internal.acme.com"], tools: ["write"], envNames: ["CUSTOM_KEY"], mode: "strict" } },
+      // preset default destinations + strict with zero configuration
+      { id: "preset-default", preset: "github-pat" },
+      // explicit destinations REPLACE preset defaults, permissive flip keeps declared list
+      { id: "preset-override", preset: "github-pat",
+        restoreScope: { destinations: ["git-proxy.corp"], mode: "permissive" } },
+      // invalid scope member → rule skipped with a warning
+      { id: "bad-scope", real: "bad-secret-value", restoreScope: { mode: "yolo" } },
+      // invalid wildcard → skipped
+      { id: "bad-wildcard", real: "wildcard-secret-value", restoreScope: { destinations: ["a.*.b.com"] } },
+    ] }));
+    const { config, warnings } = await loadConfigFromPaths(globalPath, join(dir, "missing-project.json"), KEY);
+    const byId = new Map(config.configuredRules.map((c) => [c.rule.id, c]));
+
+    assert.deepEqual(byId.get("custom-scope")?.effectiveScope, {
+      destinations: ["internal.acme.com"], tools: ["write"], envNames: ["CUSTOM_KEY"], mode: "strict",
+    });
+    assert.deepEqual(byId.get("preset-default")?.effectiveScope, {
+      destinations: ["github.com", "api.github.com"], tools: undefined, envNames: undefined, mode: "strict",
+    });
+    assert.deepEqual(byId.get("preset-override")?.effectiveScope, {
+      destinations: ["git-proxy.corp"], tools: undefined, envNames: undefined, mode: "permissive",
+    });
+    assert.equal(byId.has("bad-scope"), false);
+    assert.equal(byId.has("bad-wildcard"), false);
+    assert.ok(warnings.some((w) => w.includes("bad-scope") && w.includes("'restoreScope.mode'")));
+    assert.ok(warnings.some((w) => w.includes("bad-wildcard") && w.includes("restoreScope")));
+    // rules without restoreScope materialize to null (unconditional)
+    const { config: plain } = await loadConfigFromPaths(
+      join(dir, "missing.json"),
+      join(dir, "missing-project.json"),
+      KEY,
+    );
+    assert.equal(plain.configuredRules.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

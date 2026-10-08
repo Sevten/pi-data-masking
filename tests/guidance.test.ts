@@ -38,6 +38,7 @@ function configuredRule(overrides: Partial<ConfiguredMaskingRule> & { placeholde
     enabled: true,
     available: true,
     sourceKind: "literal",
+    effectiveScope: null,
     placeholderMode: "auto",
     ...rest,
   };

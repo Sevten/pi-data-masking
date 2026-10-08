@@ -4,6 +4,7 @@
  */
 
 import type { PreserveStructure, RegexMaskingRule } from "./masker.ts";
+import type { RestoreScope } from "./restore-scope.ts";
 
 const IPV4_OCTET = "(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)";
 
@@ -15,6 +16,12 @@ export interface MaskingPreset {
   pattern: string;
   flags?: string;
   preserveStructure?: PreserveStructure;
+  /** Issuing service's domains. Presets with a known issuer gain a default
+   *  restoreScope: preset rules restore only toward these destinations and
+   *  default to strict mode, with zero configuration. Generic presets
+   *  (jwt, bearer-token, IP ranges, …) deliberately have none — their
+   *  values have no single legitimate destination. */
+  destinations?: string[];
 }
 
 export const MASKING_PRESETS: readonly MaskingPreset[] = [
@@ -24,6 +31,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     description: "GitHub tokens: classic (ghp_), OAuth (gho_), GitHub App (ghu_/ghs_), refresh (ghr_), and fine-grained (github_pat_)",
     example: "ghp_1234567890abcdefghijklmnopqrstuvwxyz",
     preserveStructure: { keepPrefix: 4 },
+    destinations: ["github.com", "api.github.com"],
     pattern: "\\bgh[posur]_[A-Za-z0-9]{36}\\b|\\bgithub_pat_[A-Za-z0-9_]{22,}\\b",
   },
   {
@@ -32,6 +40,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     description: "npm access tokens beginning with npm_",
     example: "npm_1234567890abcdefghijklmnopqrstuvwxyz",
     preserveStructure: { keepPrefix: 4 },
+    destinations: ["npmjs.org", "registry.npmjs.org"],
     pattern: "\\bnpm_[A-Za-z0-9]{36}\\b",
   },
   {
@@ -40,6 +49,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     description: "Hugging Face access tokens beginning with hf_",
     example: "hf_1234567890abcdefghijklmnopqrstuvwx",
     preserveStructure: { keepPrefix: 3 },
+    destinations: ["huggingface.co"],
     pattern: "\\bhf_[A-Za-z0-9]{34,}\\b",
   },
   {
@@ -48,6 +58,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     description: "AWS access key IDs beginning with AKIA",
     example: "AKIAIOSFODNN7EXAMPLE",
     preserveStructure: { keepPrefix: 4 },
+    destinations: ["amazonaws.com"],
     pattern: "\\bAKIA[0-9A-Z]{16}\\b",
   },
   {
@@ -56,6 +67,7 @@ export const MASKING_PRESETS: readonly MaskingPreset[] = [
     description: "Slack bot, user, app, refresh, and legacy tokens",
     example: "xoxb-1234567890-abcdefghijkl",
     preserveStructure: { keepPrefix: 5 },
+    destinations: ["slack.com"],
     pattern: "\\bxox[eabprs]-[A-Za-z0-9-]{10,}\\b",
   },
   {
@@ -588,6 +600,10 @@ export function expandMaskingPreset(
     description?: string;
     lowEntropy?: boolean;
     preserveStructure?: PreserveStructure;
+    /** Explicit per-rule scope. When declared it REPLACES the preset's
+     *  default destinations (user-widening means listing entries, not
+     *  merging) — predictable and documented. */
+    restoreScope?: RestoreScope;
   },
 ): RegexMaskingRule {
   return {
@@ -599,6 +615,7 @@ export function expandMaskingPreset(
     pattern: preset.pattern,
     flags: preset.flags,
     lowEntropy: overrides.lowEntropy,
+    restoreScope: overrides.restoreScope,
     preserveStructure: overrides.preserveStructure ?? (
       preset.preserveStructure ? { ...preset.preserveStructure } : undefined
     ),

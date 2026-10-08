@@ -38,6 +38,7 @@ function literalConfig(args: {
     enabled: args.ruleEnabled ?? true,
     available: true,
     sourceKind: "literal",
+    effectiveScope: null,
     placeholderMode: "custom",
   };
   return {
@@ -156,6 +157,7 @@ test("enable, disable, and rule movement produce sanitized change records", () =
     enabled: true,
     available: true,
     sourceKind: "literal",
+    effectiveScope: null,
     placeholderMode: "custom",
   };
   const beforeMove: MaskingConfig = {

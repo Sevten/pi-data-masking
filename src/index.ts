@@ -55,6 +55,8 @@ import { existsSync } from "node:fs";
 import { createHmac } from "node:crypto";
 import { Masker } from "./core/masker.ts";
 import type { DynamicPlaceholderMap, MaskOptions } from "./core/masker.ts";
+import { decideToolCallRestore } from "./core/egress-decision.ts";
+import type { EffectiveScope } from "./core/restore-scope.ts";
 import {
   armStreamRestore,
   createStreamRestore,
@@ -1127,18 +1129,69 @@ export default async function (pi: ExtensionAPI) {
     return { message: message as typeof event.message };
   });
 
-  // ── Hook 3: tool_call — pre-execution unmasking ───────────────────────────
+  // ── Hook 3: tool_call — pre-execution unmasking with scoped restoration ──
 
-  pi.on("tool_call", async (event, _ctx) => {
+  // Per-turn dedup for scope hold/warn notifications; reset in turn_start.
+  let scopeNotifiedThisTurn = new Set<string>();
+
+  pi.on("tool_call", async (event, ctx) => {
     if (!config.enabled || config.rules.length === 0) return;
 
-    const { value, count } = masker.unmaskValue(event.input as unknown);
-    if (count === 0) return;
+    // Effective scopes of the active rules; rules without one restore
+    // unconditionally. Recomputed per call — cheap, and always in sync
+    // with hot-reloaded configs.
+    const scopes = new Map<string, EffectiveScope>();
+    for (const configured of config.configuredRules) {
+      if (configured.enabled && configured.available && configured.effectiveScope) {
+        scopes.set(configured.rule.id, configured.effectiveScope);
+      }
+    }
 
-    // Update event.input in place so the tool runs with real arguments
-    const unmasked = value as Record<string, unknown>;
-    for (const key of Object.keys(unmasked)) {
-      (event.input as Record<string, unknown>)[key] = unmasked[key];
+    const decision = decideToolCallRestore(masker, event.input as unknown, {
+      toolName: event.toolName,
+      scopes,
+      ruleName: (ruleId) =>
+        config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
+    });
+    if (decision.count === 0 && decision.held.length === 0 && decision.warned.length === 0) return;
+
+    // Update event.input in place so the tool runs with the (scoped) real
+    // arguments; held-back rules keep their placeholders.
+    if (decision.count > 0) {
+      const unmasked = decision.value as Record<string, unknown>;
+      for (const key of Object.keys(unmasked)) {
+        (event.input as Record<string, unknown>)[key] = unmasked[key];
+      }
+    }
+
+    // Hold-back and permissive notices, once per turn per (rule, reason).
+    if (ctx.ui && (decision.held.length > 0 || decision.warned.length > 0)) {
+      for (const held of decision.held) {
+        const key = `hold:${held.ruleId}:${held.reason}`;
+        if (scopeNotifiedThisTurn.has(key)) continue;
+        scopeNotifiedThisTurn.add(key);
+        const detail =
+          held.reason === "tool"
+            ? `tool "${held.offending.join(", ")}" is not in the rule's allowed tools`
+            : held.reason === "destination"
+              ? `destination ${held.offending.join(", ")} is outside the rule's allowed destinations`
+              : "no destination could be verified (strict mode)";
+        ctx.ui.notify(
+          `pi-data-masking: held "${held.ruleName}" — ${detail}; ` +
+            `the placeholder stays in place. Edit the rule in /masking to widen its scope`,
+          "warning",
+        );
+      }
+      for (const warned of decision.warned) {
+        const key = `warn:${warned.ruleId}:${warned.kind}`;
+        if (scopeNotifiedThisTurn.has(key)) continue;
+        scopeNotifiedThisTurn.add(key);
+        ctx.ui.notify(
+          `pi-data-masking: restored "${warned.ruleName}" — no destination could be verified ` +
+            `(permissive mode). Edit the rule in /masking to tighten its scope`,
+          "warning",
+        );
+      }
     }
   });
 
@@ -1146,6 +1199,7 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("turn_start", async () => {
     fallbackNotifiedThisTurn = false;
+    scopeNotifiedThisTurn = new Set();
   });
 
   // before_agent_start normally pins the run before agent_start fires. The
