@@ -31,6 +31,9 @@ export interface FileMarkerRegistry {
   /** Rule ids governing this exact path (normalized), or an empty set. */
   ruleIdsFor(path: string, cwd: string): ReadonlySet<string>;
   markedPaths(): readonly string[];
+  /** Replace all state from a persisted snapshot (paths must already be
+   *  normalized; used by session resume). */
+  restore(markers: Record<string, string[]>): void;
   clear(): void;
 }
 
@@ -52,6 +55,12 @@ export function createFileMarkerRegistry(): FileMarkerRegistry {
     },
     markedPaths() {
       return [...byPath.keys()];
+    },
+    restore(markers) {
+      byPath.clear();
+      for (const [path, ruleIds] of Object.entries(markers)) {
+        if (ruleIds.length > 0) byPath.set(path, new Set(ruleIds));
+      }
     },
     clear() {
       byPath.clear();

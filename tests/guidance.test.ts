@@ -14,6 +14,7 @@ import {
   composeGuidanceNote,
   guidanceDisclosureEntries,
   guidanceNoteForConfig,
+  guidanceScopeEntries,
   type GuidanceDisclosureEntry,
 } from "../src/util/guidance.ts";
 import { loadConfigFromPaths, type ConfiguredMaskingRule, type MaskingConfig } from "../src/config/config-loader.ts";
@@ -247,4 +248,36 @@ test("migration notice fires once and only for existing-config users", () => {
 test("composed note is deterministic within a session", () => {
   const cfg = config({ discloseGlobal: true });
   assert.equal(guidanceNoteForConfig(cfg), guidanceNoteForConfig(cfg));
+});
+
+// ── Phase 3: scope declarations ─────────────────────────────────────────────
+
+test("guidanceScopeEntries collects only enabled rules with destinations", () => {
+  const cfg = config({
+    discloseGlobal: true,
+    configuredRules: [
+      configuredRule({ effectiveScope: { destinations: ["stripe.com"], tools: undefined, envNames: undefined, mode: "strict" } }),
+      configuredRule({ effectiveScope: { destinations: [], tools: undefined, envNames: undefined, mode: "strict" } }),
+      configuredRule({ enabled: false, effectiveScope: { destinations: ["x.com"], tools: undefined, envNames: undefined, mode: "strict" } }),
+      configuredRule({ effectiveScope: null }),
+    ],
+  });
+  assert.deepEqual(guidanceScopeEntries(cfg), [{ name: "r1", destinations: ["stripe.com"] }]);
+});
+
+test("scope block rides on the full form only and caps entries", () => {
+  const scope = [{ name: "Stripe", destinations: ["stripe.com"] }];
+  const full = composeGuidanceNote([{ placeholder: "p-1", custom: false }], scope);
+  assert.ok(full.includes("Stripe: only stripe.com"));
+  assert.ok(full.includes("report the contradiction"));
+  const guidanceOnly = composeGuidanceNote([], scope);
+  assert.ok(!guidanceOnly.includes("stripe.com"));
+});
+
+test("scope block truncates beyond the cap", () => {
+  const many = Array.from({ length: 15 }, (_, i) => ({ name: `rule-${i}`, destinations: [`h${i}.test`] }));
+  const note = composeGuidanceNote([{ placeholder: "p-1", custom: false }], many);
+  assert.ok(note.includes("rule-11"));
+  assert.ok(!note.includes("rule-12"));
+  assert.ok(note.includes("3 more rules"));
 });

@@ -69,6 +69,16 @@ import {
 } from "./core/file-markers.ts";
 import { extractDestinations } from "./core/destination-extract.ts";
 import { hasNetworkSignature } from "./core/network-signature.ts";
+import {
+  AUDIT_ENTRY,
+  MARKERS_ENTRY,
+  buildMarkerSnapshot,
+  loadAuditEvents,
+  loadMarkerSnapshot,
+  type AuditEvent,
+  type AuditEventKind,
+} from "./history/audit-log.ts";
+import { createAuditViewer } from "./history/audit-viewer.ts";
 import type { EffectiveScope } from "./core/restore-scope.ts";
 import {
   armStreamRestore,
@@ -904,6 +914,8 @@ export default async function (pi: ExtensionAPI) {
    *  Not reset: stopWatching (watcher lifecycle), config/masker/configSnapshot
    *  (config lifecycle), sessionKey (re-derived per branch),
    *  guidanceNoticePending (session_start migration flow). */
+  let auditEvents: AuditEvent[] = [];
+
   function resetSessionState(): void {
     transcript = [];
     snapshotSignatures = new Map();
@@ -929,6 +941,8 @@ export default async function (pi: ExtensionAPI) {
     fallbackNotifiedThisTurn = false;
     systemPromptWarned = false;
     dynamicMapWarned = false;
+    auditEvents = [];
+    fileMarkers.clear();
     persistenceWarned = false;
   }
 
@@ -936,6 +950,11 @@ export default async function (pi: ExtensionAPI) {
     resetSessionState();
     const branchEntries = ctx.sessionManager.getBranch() as unknown as SessionEntryLike[];
     const restored = restoreHistory(branchEntries);
+    // Replay the audit trail and file-marker registry from the branch so a
+    // resume keeps both the audit view and the custody chain.
+    auditEvents = loadAuditEvents(branchEntries);
+    const markerSnapshot = loadMarkerSnapshot(branchEntries);
+    if (markerSnapshot) fileMarkers.restore(markerSnapshot.markers);
     transcript = restored.transcript;
     snapshotSignatures = restored.signatures;
     requestSequence = restored.requestSequence;
@@ -1148,8 +1167,30 @@ export default async function (pi: ExtensionAPI) {
   let scopeNotifiedThisTurn = new Set<string>();
 
   // Session-scoped file markers: paths that received restored values, plus
-  // cp/mv/rsync propagations. Advisory state; never persisted.
+  // cp/mv/rsync propagations. Advisory state; persisted to the session so a
+  // resume keeps its custody chain.
   const fileMarkers = createFileMarkerRegistry();
+
+  const recordAudit = (event: AuditEvent): void => {
+    auditEvents.push(event);
+    try {
+      pi.appendEntry(AUDIT_ENTRY, event);
+    } catch {
+      // Audit is best-effort; never fail a decision over persistence.
+    }
+  };
+
+  const persistMarkers = (): void => {
+    const snapshot: Record<string, string[]> = {};
+    for (const path of fileMarkers.markedPaths()) {
+      snapshot[path] = [...fileMarkers.ruleIdsFor(path, process.cwd())];
+    }
+    try {
+      pi.appendEntry(MARKERS_ENTRY, buildMarkerSnapshot(new Map(Object.entries(snapshot).map(([p, ids]) => [p, new Set(ids)]))));
+    } catch {
+      // Same best-effort contract.
+    }
+  };
 
   pi.on("tool_call", async (event, ctx) => {
     if (!config.enabled || config.rules.length === 0) return;
@@ -1205,6 +1246,15 @@ export default async function (pi: ExtensionAPI) {
         });
         for (const v of markerDecision.blocked) {
           const key = `marker:${v.ruleId}`;
+          recordAudit({
+            at: Date.now(),
+            kind: "blocked",
+            ruleId: v.ruleId,
+            ruleName: v.ruleName,
+            tool: event.toolName,
+            destinations: v.offending.length > 0 ? v.offending : undefined,
+            detail: `paths: ${markedRefs.map((r) => r.path).join(", ")}`,
+          });
           if (!scopeNotifiedThisTurn.has(key)) {
             scopeNotifiedThisTurn.add(key);
             ctx.ui?.notify(
@@ -1236,6 +1286,15 @@ export default async function (pi: ExtensionAPI) {
                     "\nAllow this call?",
               )
             : false;
+          recordAudit({
+            at: Date.now(),
+            kind: allowed ? "confirmed" : "declined",
+            ruleId: v.ruleId,
+            ruleName: v.ruleName,
+            tool: event.toolName,
+            destinations: v.offending.length > 0 ? v.offending : undefined,
+            detail: `paths: ${markedRefs.map((r) => r.path).join(", ")}`,
+          });
           if (!allowed) {
             return {
               block: true,
@@ -1250,7 +1309,11 @@ export default async function (pi: ExtensionAPI) {
 
     // cp/mv/rsync propagation runs even for placeholder-free commands
     // (the copied file carries values the arguments never mention).
-    if (command !== "") propagateCopies(command, fileMarkers, cwd);
+    if (command !== "") {
+      const before = fileMarkers.markedPaths().length;
+      propagateCopies(command, fileMarkers, cwd);
+      if (fileMarkers.markedPaths().length !== before) persistMarkers();
+    }
 
     const decision = decideToolCallRestore(masker, event.input as unknown, {
       toolName: event.toolName,
@@ -1272,7 +1335,42 @@ export default async function (pi: ExtensionAPI) {
       const target = structuredTargetPaths(event.toolName, event.input)[0];
       if (target) {
         fileMarkers.mark(target, cwd, new Set(decision.restoredRuleIds));
+        persistMarkers();
       }
+    }
+
+    // Audit: one factual entry per rule decision on this call.
+    const auditDestinations = extractDestinations(event.input);
+    for (const ruleId of decision.restoredRuleIds) {
+      recordAudit({
+        at: Date.now(),
+        kind: "restored",
+        ruleId,
+        ruleName: config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
+        tool: event.toolName,
+        destinations: auditDestinations.length > 0 ? auditDestinations : undefined,
+      });
+    }
+    for (const held of decision.held) {
+      recordAudit({
+        at: Date.now(),
+        kind: "held",
+        ruleId: held.ruleId,
+        ruleName: held.ruleName,
+        tool: event.toolName,
+        destinations: held.offending.length > 0 ? held.offending : undefined,
+        detail: held.reason === "tool" ? `tool not in allowlist: ${held.offending.join(", ")}` : held.reason === "no-destination" ? "no destination verifiable (strict)" : undefined,
+      });
+    }
+    for (const warned of decision.warned) {
+      recordAudit({
+        at: Date.now(),
+        kind: "warned",
+        ruleId: warned.ruleId,
+        ruleName: warned.ruleName,
+        tool: event.toolName,
+        detail: "restored unchecked — no destination verifiable (permissive)",
+      });
     }
 
     // Hold-back and permissive notices, once per turn per (rule, reason).
@@ -1597,6 +1695,24 @@ export default async function (pi: ExtensionAPI) {
       await ctx.ui.custom<void>((tui, theme, keybindings, done) => epochViews.length > 0
         ? createEpochHistoryViewer(tui, theme, keybindings, epochViews, done)
         : createHistoryViewer(tui, theme, keybindings, transcript, done),
+      {
+        overlay: true,
+        overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
+      });
+    },
+  });
+
+  // ── Command: /masking-audit ───────────────────────────────────────────────
+
+  pi.registerCommand("masking-audit", {
+    description: "Replay restoration/hold/block decisions by rule",
+    handler: async (_args, ctx) => {
+      if (auditEvents.length === 0) {
+        ctx.ui.notify("No restoration events recorded in this session yet", "info");
+        return;
+      }
+      await ctx.ui.custom<void>((tui, theme, keybindings, done) =>
+        createAuditViewer(tui, theme, keybindings, auditEvents, done),
       {
         overlay: true,
         overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
