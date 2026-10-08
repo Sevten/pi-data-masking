@@ -48,6 +48,9 @@ export interface ToolCallDecision {
   count: number;
   held: HeldRestore[];
   warned: ScopeWarning[];
+  /** Rule ids whose values were restored (hit minus held) — the caller uses
+   *  this to mark write targets (file markers). */
+  restoredRuleIds: string[];
 }
 
 export interface DecisionOptions {
@@ -78,13 +81,19 @@ export function decideToolCallRestore(
 ): ToolCallDecision {
   const probe = masker.unmaskValue(input);
   if (probe.count === 0) {
-    return { value: probe.value, count: 0, held: [], warned: [] };
+    return { value: probe.value, count: 0, held: [], warned: [], restoredRuleIds: [] };
   }
 
   const hitRuleIds = new Set(probe.details.map((d) => d.ruleId));
   const constrained = [...hitRuleIds].filter((id) => opts.scopes.has(id));
   if (constrained.length === 0) {
-    return { value: probe.value, count: probe.count, held: [], warned: [] };
+    return {
+      value: probe.value,
+      count: probe.count,
+      held: [],
+      warned: [],
+      restoredRuleIds: [...hitRuleIds],
+    };
   }
 
   const destinations = extractDestinations(input);
@@ -138,5 +147,82 @@ export function decideToolCallRestore(
     count: result.count,
     held: [...held.values()],
     warned: [...warned.values()],
+    restoredRuleIds: [...hitRuleIds].filter((id) => !held.has(id)),
   };
+}
+
+// ── Marker dimension: marked-path egress check ─────────────────────────────
+
+/**
+ * Decision for a call whose arguments reference a marked path (design:
+ * "File markers" + "Hold vs block"). The real value lives on disk — if the
+ * call runs, the leak is already complete — so violations block (strict) or
+ * confirm (permissive) instead of holding a placeholder.
+ *
+ * Triggered only by egress intent: an extractable destination or a network
+ * signature. Calls with neither are never checked here (local reads, diffs
+ * and greps stay untouched). Rules without a destination allowlist are not
+ * governed by the marker dimension (scopeless rules create no scope).
+ */
+
+export interface MarkedPathViolation {
+  ruleId: string;
+  ruleName: string;
+  /** The offending destinations; empty when the trigger was a network
+   *  signature with no verifiable destination. */
+  offending: string[];
+}
+
+export interface MarkedPathDecision {
+  /** Rule ids of the governing scopes that fired a violation. */
+  blocked: MarkedPathViolation[];
+  /** Permissive violations the user should confirm. */
+  confirm: MarkedPathViolation[];
+}
+
+export interface MarkedPathOptions {
+  /** Effective scopes of the marked rules only (ruleId → scope). Rules
+   *  without a destination allowlist can be omitted — they are skipped. */
+  scopes: ReadonlyMap<string, EffectiveScope>;
+  ruleName: (ruleId: string) => string;
+  /** Destinations extracted from the call arguments. */
+  destinations: string[];
+  /** Whether the command shows outbound intent without a destination
+   *  (bash network signature). Both modes treat this as
+   *  destination-present-but-unverifiable. */
+  signatureOnly: boolean;
+}
+
+export function decideMarkedPaths(
+  referencedRuleIds: ReadonlySet<string>,
+  opts: MarkedPathOptions,
+): MarkedPathDecision {
+  const blocked: MarkedPathViolation[] = [];
+  const confirm: MarkedPathViolation[] = [];
+
+  for (const ruleId of referencedRuleIds) {
+    const scope = opts.scopes.get(ruleId);
+    if (!scope?.destinations) continue; // not governed by markers
+    if (scope.destinations.length === 0) continue; // defensive: same rule
+
+    let offending: string[] = [];
+    if (opts.destinations.length > 0) {
+      offending = unmatchedDestinations(opts.destinations, matchersFor(scope));
+      if (offending.length === 0) continue; // all destinations allowlisted
+    } else if (!opts.signatureOnly) {
+      continue; // no egress intent at all — advisory state never blocks
+    }
+    // signatureOnly with zero destinations lands here: intent, no verified
+    // destination — the tightened form of decision-flow step 5.
+
+    const violation: MarkedPathViolation = {
+      ruleId,
+      ruleName: opts.ruleName(ruleId),
+      offending,
+    };
+    if (scope.mode === "strict") blocked.push(violation);
+    else confirm.push(violation);
+  }
+
+  return { blocked, confirm };
 }

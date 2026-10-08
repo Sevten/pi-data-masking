@@ -55,7 +55,18 @@ import { existsSync } from "node:fs";
 import { createHmac } from "node:crypto";
 import { Masker } from "./core/masker.ts";
 import type { DynamicPlaceholderMap, MaskOptions } from "./core/masker.ts";
-import { decideToolCallRestore } from "./core/egress-decision.ts";
+import {
+  decideMarkedPaths,
+  decideToolCallRestore,
+} from "./core/egress-decision.ts";
+import {
+  createFileMarkerRegistry,
+  propagateCopies,
+  referencedMarkedPaths,
+  structuredTargetPaths,
+} from "./core/file-markers.ts";
+import { extractDestinations } from "./core/destination-extract.ts";
+import { hasNetworkSignature } from "./core/network-signature.ts";
 import type { EffectiveScope } from "./core/restore-scope.ts";
 import {
   armStreamRestore,
@@ -1134,8 +1145,19 @@ export default async function (pi: ExtensionAPI) {
   // Per-turn dedup for scope hold/warn notifications; reset in turn_start.
   let scopeNotifiedThisTurn = new Set<string>();
 
+  // Session-scoped file markers: paths that received restored values, plus
+  // cp/mv/rsync propagations. Advisory state; never persisted.
+  const fileMarkers = createFileMarkerRegistry();
+
   pi.on("tool_call", async (event, ctx) => {
     if (!config.enabled || config.rules.length === 0) return;
+    const cwd = process.cwd();
+    const command =
+      event.toolName === "bash" || event.toolName === "powershell"
+        ? typeof (event.input as Record<string, unknown>).command === "string"
+          ? ((event.input as Record<string, unknown>).command as string)
+          : ""
+        : "";
 
     // Effective scopes of the active rules; rules without one restore
     // unconditionally. Recomputed per call — cheap, and always in sync
@@ -1146,6 +1168,79 @@ export default async function (pi: ExtensionAPI) {
         scopes.set(configured.rule.id, configured.effectiveScope);
       }
     }
+
+    // ── Marker dimension: paths that hold our restored values ──────────
+    // The real value is on disk; if the call runs, the leak is complete —
+    // so violations block (strict) or confirm (permissive), unlike the
+    // placeholder flows below which hold-and-notify.
+    const markedRefs = referencedMarkedPaths(fileMarkers, event.input, cwd);
+    if (markedRefs.length > 0) {
+      const referencedRuleIds = new Set(markedRefs.flatMap((ref) => ref.ruleIds));
+      const markedScopes = new Map<string, EffectiveScope>();
+      for (const ruleId of referencedRuleIds) {
+        const scope = scopes.get(ruleId);
+        if (scope?.destinations && scope.destinations.length > 0) {
+          markedScopes.set(ruleId, scope);
+        }
+      }
+      const destinations = extractDestinations(event.input);
+      const signature = command !== "" && hasNetworkSignature(command);
+      if (markedScopes.size > 0 && (destinations.length > 0 || signature)) {
+        const markerDecision = decideMarkedPaths(referencedRuleIds, {
+          scopes: markedScopes,
+          ruleName: (ruleId) =>
+            config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
+          destinations,
+          signatureOnly: signature && destinations.length === 0,
+        });
+        for (const v of markerDecision.blocked) {
+          const key = `marker:${v.ruleId}`;
+          if (!scopeNotifiedThisTurn.has(key)) {
+            scopeNotifiedThisTurn.add(key);
+            ctx.ui?.notify(
+              `pi-data-masking: blocked — "${v.ruleName}" values were written to ${markedRefs.map((r) => r.path).join(", ")}` +
+                (v.offending.length > 0
+                  ? `; destination ${v.offending.join(", ")} is outside the rule's allowed destinations`
+                  : "; an outbound command with no verifiable destination was detected"),
+              "warning",
+            );
+          }
+        }
+        if (markerDecision.blocked.length > 0) {
+          return {
+            block: true,
+            reason:
+              "Blocked by pi-data-masking: this command sends a file that contains restored secret values " +
+              `(${markerDecision.blocked.map((v) => `"${v.ruleName}"`).join(", ")}) to a destination outside those rules' scope. ` +
+              "Do not exfiltrate these files; ask the user how to proceed.",
+          };
+        }
+        for (const v of markerDecision.confirm) {
+          const allowed = ctx.ui
+            ? await ctx.ui.confirm(
+                "pi-data-masking: outbound file with secret values",
+                `"${v.ruleName}" values were written to ${markedRefs.map((r) => r.path).join(", ")}. ` +
+                  (v.offending.length > 0
+                    ? `The command sends it to ${v.offending.join(", ")}, outside the rule's allowed destinations.`
+                    : "The command is an outbound operation with no verifiable destination.") +
+                    "\nAllow this call?",
+              )
+            : false;
+          if (!allowed) {
+            return {
+              block: true,
+              reason:
+                "Blocked by pi-data-masking: the user declined to send this file " +
+                `(it contains values of "${v.ruleName}") outside its allowed destinations.`,
+            };
+          }
+        }
+      }
+    }
+
+    // cp/mv/rsync propagation runs even for placeholder-free commands
+    // (the copied file carries values the arguments never mention).
+    if (command !== "") propagateCopies(command, fileMarkers, cwd);
 
     const decision = decideToolCallRestore(masker, event.input as unknown, {
       toolName: event.toolName,
@@ -1161,6 +1256,12 @@ export default async function (pi: ExtensionAPI) {
       const unmasked = decision.value as Record<string, unknown>;
       for (const key of Object.keys(unmasked)) {
         (event.input as Record<string, unknown>)[key] = unmasked[key];
+      }
+      // The value now lives on disk at the write target — extend custody
+      // one hop so later outbound references to it stay checked.
+      const target = structuredTargetPaths(event.toolName, event.input)[0];
+      if (target) {
+        fileMarkers.mark(target, cwd, new Set(decision.restoredRuleIds));
       }
     }
 
