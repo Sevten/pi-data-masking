@@ -1075,7 +1075,6 @@ export async function addConfigRule(
               preserveMode === "first" ? "First segment" : preserveMode === "custom" ? (editors.preserve.getExpandedText() || "First N chars") : "Off",
               width, preserveMode === "custom" ? "Digits only — number of prefix characters to keep" : "←/→ or Space changes mode",
               undefined, preserveMode === "custom" ? editors.preserve : undefined);
-            renderSingleLineField(lines, "restoreScope", "Restore scope", editors.restoreScope, width, restoreScopeDescription());
           } else if (currentType() === "Literal from environment") {
             renderSingleLineField(lines, "env", "Environment", editors.env, width, "Variable name only, for example PROD_API_KEY (do not enter $ or the secret value)");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
