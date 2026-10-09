@@ -1098,7 +1098,21 @@ export async function addConfigRule(
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
               "←/→ or Space toggles case-sensitive matching for this rule");
           }
-          renderSingleLineField(lines, "restoreScope", "Restore scope", editors.restoreScope, width, restoreScopeDescription());
+          // Restore scope shows the effective value when empty: a preset
+          // with default destinations inherits them; anything else means
+          // unrestricted restore. Same dim-derived pattern as Keep prefix.
+          {
+            const scopeText = editors.restoreScope.getExpandedText().trim();
+            const presetDefaults = currentType() === "Built-in preset template" ? selectedPreset?.destinations : undefined;
+            if (scopeText) {
+              renderSingleLineField(lines, "restoreScope", "Restore scope", editors.restoreScope, width, restoreScopeDescription());
+            } else {
+              editors.restoreScope.focused = focusedField() === "restoreScope";
+              renderFieldRow(lines, "restoreScope", "Restore scope",
+                presetDefaults && presetDefaults.length > 0 ? `preset default: ${presetDefaults.join(", ")}` : "(empty = restore everywhere)",
+                width, restoreScopeDescription(), { dim: true, cursorEditor: editors.restoreScope });
+            }
+          }
           const fixedFieldRowCount = 9;
           while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
           lines.push(editorDivider);
