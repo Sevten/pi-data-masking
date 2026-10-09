@@ -265,6 +265,8 @@ export interface MaskingUIBridge {
   ): Promise<ConfigSaveResult>;
   reloadConfigNow(ctx: ExtensionContext): Promise<void>;
   notifyWarnings(ctx: ExtensionContext, warnings: string[]): void;
+  /** Validation warnings from the last config activation (loader + compile);
+   *  shown in the /masking UI after save actions, never in the main chat. */
   /** Field names of an options object present in the project config
    *  (ignored: settings are global-level). Empty when there is none. */
   /** True while the global config file still carries the legacy

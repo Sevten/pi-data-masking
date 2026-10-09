@@ -612,8 +612,9 @@ test("hot reload keeps the last valid rules visible after transient invalid JSON
 
   try {
     writeFileSync(projectPath, "{ transiently invalid");
-    await waitFor(() => harness.notifications.some((message) => message.includes("last valid project config")));
-    assert.ok(harness.statuses.at(-1)?.includes("1 active / 1 configured"));
+    await waitFor(() => Boolean(harness.statuses.at(-1)?.includes("1 active / 1 configured")));
+    // Config-load warnings no longer surface as main-chat notifications.
+    assert.equal(harness.notifications.some((message) => message.includes("last valid project config")), false);
     assert.equal(harness.notifications.some((message) => message.includes("last-valid-secret-value")), false);
     await harness.commands.get("masking")!.handler("", harness.ctx);
   } finally {
