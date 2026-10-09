@@ -31,6 +31,14 @@ const SIGNATURES = new Set([
   "fetch",
   "http",
   "https",
+  // DNS resolution family: encoded-subdomain exfiltration rides DNS
+  // queries; the domain charset forces encoding (naturally obfuscated)
+  // and the attacker's bare domain is not extracted by design, so
+  // without these the calls land in the permissive blind spot.
+  "dig",
+  "nslookup",
+  "host",
+  "resolvectl",
 ]);
 
 /** First word of a segment, with a leading absolute/relative path stripped

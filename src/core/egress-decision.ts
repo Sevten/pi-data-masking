@@ -13,8 +13,7 @@
  */
 
 import { extractDestinations } from "./destination-extract.ts";
-import type { Masker } from "./masker.ts";
-import {
+import type { Masker } from "./masker.ts";import {
   compileDestinations,
   unmatchedDestinations,
   type DestinationMatcher,
@@ -60,6 +59,13 @@ export interface DecisionOptions {
   scopes: ReadonlyMap<string, EffectiveScope>;
   /** Display name for a rule id, for reports. */
   ruleName: (ruleId: string) => string;
+  /** True when the call runs a known outbound tool at command position
+   *  (computed for bash-like tools only — write/edit contents must not
+   *  count). With a signature and no extractable destination, permissive
+   *  rules hold too: outbound intent is present, the destination is just
+   *  hidden (`curl … "$URL"`), so permissive stays loose only for calls
+   *  with no outbound form at all. */
+  commandSignature?: boolean;
 }
 
 /** Compiled allowlists live as long as the scope object they belong to. */
@@ -97,6 +103,22 @@ export function decideToolCallRestore(
   }
 
   const destinations = extractDestinations(input);
+  // Env-var destination resolution: `$VAR`/`${VAR}` references resolved
+  // from the extension's environment and fed through the same extraction,
+  // so a destination kept in a variable (`curl … "$DEPLOY_URL"`) becomes
+  // verifiable instead of a blind hold. Best-effort: session-mid exports
+  // are invisible → the value simply contributes nothing. Variables bound
+  // to rule secrets are never resolved (they are not destinations, and
+  // their values must not flow anywhere).
+  {
+    const skipEnv = new Set<string>();
+    for (const scope of opts.scopes.values()) {
+      for (const name of scope.envNames ?? []) skipEnv.add(name);
+    }
+    for (const hint of envDestinationHints(input, skipEnv)) {
+      if (!destinations.includes(hint)) destinations.push(hint);
+    }
+  }
   const held = new Map<string, HeldRestore>();
   const warned = new Map<string, ScopeWarning>();
 
@@ -122,7 +144,11 @@ export function decideToolCallRestore(
 
     if (scope.destinations) {
       if (destinations.length === 0) {
-        if (scope.mode === "strict") {
+        // Design (2026-10-09): a network signature with no extractable
+        // destination is treated as destination-present-but-unmatched —
+        // held in both modes. Permissive stays loose only for calls with
+        // no outbound form at all (`echo`, local writes, computation).
+        if (scope.mode === "strict" || opts.commandSignature) {
           setHold(ruleId, "no-destination", []);
           return false;
         }
@@ -149,6 +175,50 @@ export function decideToolCallRestore(
     warned: [...warned.values()],
     restoredRuleIds: [...hitRuleIds].filter((id) => !held.has(id)),
   };
+}
+
+// ── Env-var destination resolution ────────────────────────────────
+
+/** `$env:NAME` | `${NAME}` | `$NAME` (same shapes as envNameReferenced). */
+const ENV_REF =
+  /\$env:([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])/g;
+
+function collectStrings(value: unknown, out: string[]): void {
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) {
+    for (const item of value) collectStrings(item, out);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectStrings(item, out);
+  }
+}
+
+/**
+ * Destinations hidden behind environment-variable references in the
+ * arguments: each `$NAME` is resolved from the extension's environment and
+ * the resolved value is fed through the same destination extraction. Best-
+ * effort only — session-mid exports are invisible and contribute nothing.
+ * Secret-bound variable names (skip) are never resolved, and resolved
+ * values never leave this function: only extracted hosts do.
+ */
+export function envDestinationHints(
+  input: unknown,
+  skip: ReadonlySet<string>,
+): string[] {
+  const strings: string[] = [];
+  collectStrings(input, strings);
+  const text = strings.join("\n");
+  if (!text.includes("$")) return [];
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+  if (!env) return [];
+  const hints = new Set<string>();
+  for (const match of text.matchAll(ENV_REF)) {
+    const name = match[1] ?? match[2] ?? match[3];
+    if (!name || skip.has(name)) continue;
+    const value = env[name];
+    if (typeof value !== "string" || value.length === 0 || value.length > 2000) continue;
+    for (const destination of extractDestinations(value)) hints.add(destination);
+  }
+  return [...hints];
 }
 
 // ── Marker dimension: read-result marking ─────────────────────────────

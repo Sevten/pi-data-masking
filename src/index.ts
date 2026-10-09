@@ -1320,6 +1320,7 @@ export default async function (pi: ExtensionAPI) {
       scopes,
       ruleName: (ruleId) =>
         config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
+      commandSignature: command !== "" && hasNetworkSignature(command),
     });
     if (decision.count === 0 && decision.held.length === 0 && decision.warned.length === 0) return;
 

@@ -57,6 +57,19 @@ test("issuer presets carry default destinations; generic presets do not", () => 
   assert.deepEqual(byName.get("huggingface-token")?.destinations, ["huggingface.co"]);
   assert.deepEqual(byName.get("aws-access-key-id")?.destinations, ["amazonaws.com"]);
   assert.deepEqual(byName.get("slack-token")?.destinations, ["slack.com"]);
+  // vendor presets carry their issuer's API destinations (2026-10-09 batch)
+  assert.deepEqual(byName.get("openai-api-key")?.destinations, ["api.openai.com"]);
+  assert.deepEqual(byName.get("anthropic-api-key")?.destinations, ["api.anthropic.com"]);
+  assert.deepEqual(byName.get("google-api-key")?.destinations, ["googleapis.com"]);
+  assert.deepEqual(byName.get("stripe-secret-key")?.destinations, ["stripe.com"]);
+  assert.deepEqual(byName.get("telegram-bot-token")?.destinations, ["api.telegram.org"]);
+  assert.deepEqual(byName.get("kimi-api-key")?.destinations, ["moonshot.cn", "moonshot.ai"]);
+  assert.deepEqual(byName.get("supabase-secret-key")?.destinations, ["supabase.com", "supabase.co"]);
+  assert.deepEqual(byName.get("braintree-access-token")?.destinations, ["braintreegateway.com"]);
+  // issuer domain ambiguous or self-hosted → no default (deliberate)
+  for (const pending of ["vercel-ai-gateway-key", "tinyfish-api-key", "vault-token", "woocommerce-consumer-key"]) {
+    assert.equal(byName.get(pending)?.destinations, undefined, pending);
+  }
   for (const generic of ["jwt", "pem-private-key", "bearer-token", "database-userinfo", "private-ipv4", "public-ipv4"]) {
     assert.equal(byName.get(generic)?.destinations, undefined, generic);
   }
