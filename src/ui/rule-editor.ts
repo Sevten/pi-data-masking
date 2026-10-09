@@ -36,6 +36,7 @@ import {
   type RuleEnabledChange,
 } from "../config/config-loader.ts";
 import { Masker, isRegexRule, type MaskingRule } from "../core/masker.ts";
+import { compileDestination } from "../core/restore-scope.ts";
 import { generatePlaceholder } from "../core/placeholder-gen.ts";
 import type { PreserveStructure } from "../core/masker.ts";
 import { MASKING_PRESETS } from "../core/presets.ts";
@@ -524,7 +525,11 @@ export async function addConfigRule(
       restoreScope: makeEditor(
         editing?.initial.restoreScope !== undefined && editing.initial.restoreScope !== null
           ? JSON.stringify(editing.initial.restoreScope)
-          : "",
+          // Prefill the preset's default destinations so they are visible
+          // and directly editable (same prefill pattern as name/description).
+          : selectedPreset?.destinations && selectedPreset.destinations.length > 0
+            ? selectedPreset.destinations.join(", ")
+            : "",
       ),
     };
     testEditor = editors.test;
@@ -628,10 +633,33 @@ export async function addConfigRule(
     const restoreScopeDescription = (): string => {
       const presetDefaults = currentType() === "Built-in preset template" ? selectedPreset?.destinations : undefined;
       if (presetDefaults && presetDefaults.length > 0) {
-        return `JSON: {"destinations":[...],"tools":[...],"mode":"strict"} · preset default: ${presetDefaults.join(", ")} · empty = preset default`;
+        return `Comma-separated destinations (wildcards like *.corp.internal, 10.0.*) or JSON {"destinations":[...],"tools":[...],"mode":"strict"} · preset default: ${presetDefaults.join(", ")}`;
       }
-      return 'Optional JSON: {"destinations":["stripe.com"],"tools":["write"],"mode":"strict"} · empty = restore everywhere';
+      return 'Comma-separated destinations (wildcards like *.corp.internal, 10.0.*), or full JSON: {"destinations":["stripe.com"],"tools":["write"],"mode":"strict"} · empty = restore everywhere';
     };
+    /** Restore scope text: `{`-prefixed text is full JSON (kept raw on
+     *  parse error so the save path can block); anything else is a
+     *  comma-separated destination list — each entry validated with the
+     *  same compileDestination the enforcement matcher uses (so wildcards
+     *  like `*.corp.internal` and `10.0.*` are accepted, garbage is
+     *  reported). Returns either a scope object or an error message. */
+    function parseRestoreScopeText(text: string): { scope: Exclude<RawConfigRule["restoreScope"], undefined> } | { error: string } {
+      const trimmed = text.trim();
+      if (trimmed.startsWith("{")) {
+        try {
+          return { scope: JSON.parse(trimmed) };
+        } catch (err) {
+          return { error: `not valid JSON — ${(err as Error).message}` };
+        }
+      }
+      const entries = [...new Set(trimmed.split(",").map((entry) => entry.trim()).filter(Boolean))];
+      if (entries.length === 0) return { error: "no destinations given" };
+      const invalid = entries.filter((entry) => !compileDestination(entry));
+      if (invalid.length > 0) {
+        return { error: `not valid destinations: ${invalid.join(", ")} — use host names, IP literals, or wildcards (*.corp.internal, 10.0.*)` };
+      }
+      return { scope: { destinations: entries } };
+    }
     function draftFromForm(): RawConfigRule {
       const name = editors.name.getExpandedText().trim();
       const description = editors.description.getExpandedText().trim();
@@ -642,16 +670,16 @@ export async function addConfigRule(
       const id = generatedId();
       if (id) base.id = id;
       else delete base.id;
-      // Restore scope: edited as JSON; empty means unrestricted. Invalid
-      // JSON is kept raw so the save path can block with a clear message.
+      // Restore scope: `{`-prefixed text is full JSON; anything else is a
+      // comma-separated destination list (parseRestoreScopeText). Parse
+      // errors are kept raw so the save path can block with a clear message.
       {
         const scopeText = editors.restoreScope.getExpandedText().trim();
         if (scopeText) {
-          try {
-            base.restoreScope = JSON.parse(scopeText);
-          } catch {
-            base.restoreScope = scopeText as unknown as RawConfigRule["restoreScope"];
-          }
+          const parsed = parseRestoreScopeText(scopeText);
+          base.restoreScope = "scope" in parsed
+            ? parsed.scope
+            : scopeText as unknown as RawConfigRule["restoreScope"];
         } else delete base.restoreScope;
       }
       if (name) base.name = name;
@@ -977,10 +1005,10 @@ export async function addConfigRule(
         draft.rule.id = generateUniqueRuleId(name, existingIds.get(currentSource().path) ?? []);
       }
       if (mode === "form" && editors.restoreScope.getExpandedText().trim()) {
-        try {
-          JSON.parse(editors.restoreScope.getExpandedText());
-        } catch (err) {
-          saveMessage = `Cannot save: Restore scope is not valid JSON — ${(err as Error).message}`;
+        const parsed = parseRestoreScopeText(editors.restoreScope.getExpandedText());
+        if ("error" in parsed) {
+          saveMessage = `Cannot save: Restore scope ${parsed.error}`;
+          focusFormField("restoreScope");
           tui.requestRender();
           return;
         }

@@ -10,6 +10,8 @@
 - Destinations kept in environment variables are resolved at decision time (`curl … "$DEPLOY_URL"` with `DEPLOY_URL=https://api.stripe.com` verifies cleanly); variables bound to rule secrets are never resolved.
 - Most vendor API-key presets now carry their issuer's API domains by default (OpenAI, Anthropic, Google, Stripe, Telegram, … 59 of 69 presets). A handful with no single legitimate destination (Vault tokens, self-hosted WooCommerce keys, …) intentionally remain unrestricted.
 
+- Rule Builder Restore scope: preset default destinations are prefilled into the field (editable like any other field), and the field now accepts a comma-separated destination list in addition to full JSON — wildcards (`*.corp.internal`, `10.0.*`) are validated with the same matcher the enforcement uses, and invalid entries block the save with a clear message.
+
 - Restoration audit: every restore, hold, warn, block, and confirm decision is persisted as a session entry and replayed on resume; `/masking-audit` lists the trail (time, outcome, tool, rule, destinations) with a text filter, answering "where has this value been restored to" and "why was that command blocked".
 - Scope guidance: when model guidance is fully enabled, the system-prompt note declares each scoped rule's destination allowlist ("only stripe.com — report contradictions instead of rerouting"), so legitimate tasks pick the right destination up front and injected tasks surface as reported contradictions. Capped at 12 rules.
 
