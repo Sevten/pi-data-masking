@@ -36,7 +36,7 @@ import {
   type RuleEnabledChange,
 } from "../config/config-loader.ts";
 import { Masker, isRegexRule, type MaskingRule } from "../core/masker.ts";
-import { compileDestination } from "../core/restore-scope.ts";
+import { compileDestination, type RestoreScope } from "../core/restore-scope.ts";
 import { generatePlaceholder } from "../core/placeholder-gen.ts";
 import type { PreserveStructure } from "../core/masker.ts";
 import { MASKING_PRESETS } from "../core/presets.ts";
@@ -232,7 +232,7 @@ export async function addConfigRule(
   }
 
   type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
-  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "preserve" | "restoreScope" | "json" | "test";
+  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "preserve" | "restoreScope" | "scopeMode" | "json" | "test";
   const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
   let selectedSource: (typeof sources)[number] = sources.find((source) => source.scope === "global")!;
   let selectedType: BuilderType | undefined;
@@ -543,6 +543,34 @@ export async function addConfigRule(
 
     const currentSource = () => selectedSource;
     const currentType = () => builderType;
+    // Scope mode selector. Effective default mirrors effectiveScope():
+    // strict for preset-backed rules, permissive otherwise. Until the user
+    // toggles the selector the mode is not written to the rule — it keeps
+    // inheriting the effective default.
+    const initialScopeMode: { value: "strict" | "permissive"; explicit: boolean } = (() => {
+      const declared = editing?.initial.restoreScope;
+      if (declared && typeof declared === "object" && !Array.isArray(declared)) {
+        const mode = (declared as { mode?: unknown }).mode;
+        if (mode === "strict" || mode === "permissive") return { value: mode, explicit: true };
+      }
+      const presetBacked = editing?.configured.sourceKind === "preset" ||
+        (currentType() === "Built-in preset template" && !!selectedPreset?.destinations?.length);
+      return { value: presetBacked ? "strict" as const : "permissive" as const, explicit: false };
+    })();
+    let scopeMode: "strict" | "permissive" = initialScopeMode.value;
+    let scopeModeExplicit = initialScopeMode.explicit;
+    /** A scope is in play: the field has content, or the rule is preset-
+     *  backed with default destinations (visible or inherited). */
+    function scopePresent(): boolean {
+      if (editors.restoreScope.getExpandedText().trim()) return true;
+      if (currentType() === "Built-in preset template" && selectedPreset?.destinations?.length) return true;
+      if (editing?.configured.sourceKind === "preset" && editing.configured.presetName) {
+        const preset = MASKING_PRESETS.find((p) => p.name === editing!.configured.presetName);
+        return !!preset?.destinations?.length;
+      }
+      return false;
+    }
+
     const editableTypes: readonly BuilderType[] = ["Exact literal value", "Literal from environment", "Custom regex"];
     const typeLabel = (type = currentType()) => type === "Exact literal value"
       ? "exact"
@@ -591,7 +619,9 @@ export async function addConfigRule(
         if (replacementIndex === 1) common.push("placeholder");
         common.push("disclose", "case");
       }
-      common.push("restoreScope", "test");
+      common.push("restoreScope");
+      if (scopePresent()) common.push("scopeMode");
+      common.push("test");
       return common;
     }
     const fields = () => mode === "json" ? ["json", "test"] as BuilderField[] : formFields();
@@ -643,11 +673,11 @@ export async function addConfigRule(
      *  same compileDestination the enforcement matcher uses (so wildcards
      *  like `*.corp.internal` and `10.0.*` are accepted, garbage is
      *  reported). Returns either a scope object or an error message. */
-    function parseRestoreScopeText(text: string): { scope: Exclude<RawConfigRule["restoreScope"], undefined> } | { error: string } {
+    function parseRestoreScopeText(text: string): { scope: RestoreScope; fromList: boolean } | { error: string } {
       const trimmed = text.trim();
       if (trimmed.startsWith("{")) {
         try {
-          return { scope: JSON.parse(trimmed) };
+          return { scope: JSON.parse(trimmed), fromList: false };
         } catch (err) {
           return { error: `not valid JSON — ${(err as Error).message}` };
         }
@@ -658,7 +688,7 @@ export async function addConfigRule(
       if (invalid.length > 0) {
         return { error: `not valid destinations: ${invalid.join(", ")} — use host names, IP literals, or wildcards (*.corp.internal, 10.0.*)` };
       }
-      return { scope: { destinations: entries } };
+      return { scope: { destinations: entries }, fromList: true };
     }
     function draftFromForm(): RawConfigRule {
       const name = editors.name.getExpandedText().trim();
@@ -677,9 +707,12 @@ export async function addConfigRule(
         const scopeText = editors.restoreScope.getExpandedText().trim();
         if (scopeText) {
           const parsed = parseRestoreScopeText(scopeText);
-          base.restoreScope = "scope" in parsed
-            ? parsed.scope
-            : scopeText as unknown as RawConfigRule["restoreScope"];
+          if ("scope" in parsed) {
+            if (scopeModeExplicit && parsed.fromList) parsed.scope.mode = scopeMode;
+            base.restoreScope = parsed.scope;
+          } else {
+            base.restoreScope = scopeText as unknown as RawConfigRule["restoreScope"];
+          }
         } else delete base.restoreScope;
       }
       if (name) base.name = name;
@@ -1141,7 +1174,17 @@ export async function addConfigRule(
                 width, restoreScopeDescription(), { dim: true, cursorEditor: editors.restoreScope });
             }
           }
-          const fixedFieldRowCount = 9;
+          // Scope mode selector: only meaningful when a scope is in play.
+          if (scopePresent()) {
+            renderSelector(lines, "scopeMode", "Scope mode",
+              scopeMode === "strict" ? "Strict" : "Permissive",
+              width,
+              scopeModeExplicit
+                ? "Strict holds the restoration when the destination cannot be verified · Permissive restores with a notice"
+                : `Default (strict for preset keys with destinations, permissive otherwise) · ←/→ or Space to override`,
+              scopeModeExplicit ? undefined : "(default)");
+          }
+          const fixedFieldRowCount = 10;
           while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
           lines.push(editorDivider);
           renderActiveFieldDescription(lines, width);
@@ -1255,6 +1298,21 @@ export async function addConfigRule(
           } else if (field === "preserve") {
             const modes: Array<"off" | "first" | "custom"> = ["off", "first", "custom"];
             preserveMode = modes[(((modes.indexOf(preserveMode) + selectorDirection) % modes.length) + modes.length) % modes.length]!;
+          } else if (field === "scopeMode") {
+            scopeMode = scopeMode === "strict" ? "permissive" : "strict";
+            scopeModeExplicit = true;
+            // Keep full-JSON text in sync so the saved rule matches what
+            // the selector shows.
+            const scopeText = editors.restoreScope.getExpandedText().trim();
+            if (scopeText.startsWith("{")) {
+              try {
+                const parsed = JSON.parse(scopeText) as Record<string, unknown>;
+                parsed.mode = scopeMode;
+                editors.restoreScope.setText(JSON.stringify(parsed));
+              } catch {
+                // Invalid JSON: the save path blocks with a clear message.
+              }
+            }
           } else if (field === "case") {
             caseSensitiveOn = !caseSensitiveOn;
           } else {

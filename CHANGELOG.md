@@ -10,6 +10,8 @@
 - Destinations kept in environment variables are resolved at decision time (`curl … "$DEPLOY_URL"` with `DEPLOY_URL=https://api.stripe.com` verifies cleanly); variables bound to rule secrets are never resolved.
 - Most vendor API-key presets now carry their issuer's API domains by default (OpenAI, Anthropic, Google, Stripe, Telegram, … 59 of 69 presets). A handful with no single legitimate destination (Vault tokens, self-hosted WooCommerce keys, …) intentionally remain unrestricted.
 
+- Rule Builder Scope mode selector: strict/permissive is now a dedicated ←/→ row next to Restore scope (shown whenever a scope is in play), prefilled with the effective default — strict for preset keys with destinations, permissive otherwise — and overridable per rule.
+
 - Rule Builder Restore scope: preset default destinations are prefilled into the field (editable like any other field), and the field now accepts a comma-separated destination list in addition to full JSON — wildcards (`*.corp.internal`, `10.0.*`) are validated with the same matcher the enforcement uses, and invalid entries block the save with a clear message.
 
 - Restoration audit: every restore, hold, warn, block, and confirm decision is persisted as a session entry and replayed on resume; `/masking-audit` lists the trail (time, outcome, tool, rule, destinations) with a text filter, answering "where has this value been restored to" and "why was that command blocked".

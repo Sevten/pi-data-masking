@@ -23,6 +23,7 @@ const INPUT = {
   up: "\x1b[A",
   down: "\x1b[B",
   left: "\x1b[D",
+  right: "\x1b[C",
   ctrlDown: "\x1b[1;5B",
   ctrlC: "\x03",
   f2: "\x1bOQ",
@@ -548,6 +549,71 @@ test("adding a rule keeps the type picker and builder on clean full-screen pages
   try {
     await harness.commands.get("masking")!.handler("", harness.ctx);
     assert.equal(configRules(projectPath).length, 0);
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Restore scope accepts a comma list and Scope mode toggles permissive", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(projectPath, JSON.stringify({ rules: [] }));
+
+  const harness = await createHarness(dir, [
+    async (component) => {
+      component.handleInput("a");
+      await waitFor(() => !component.render(100)[0]?.includes("Opening"));
+      component.handleInput(INPUT.escape);
+    },
+    async (component) => {
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.enter);
+    },
+    async (component) => {
+      await waitFor(() => component.render(100).some((line) => line.includes("New masking rule")));
+      // Switch Scope from global (default) to project so the test can read
+      // the project config file: name → scope → type, then back.
+      component.handleInput(INPUT.up);
+      component.handleInput(INPUT.up);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.right);
+      component.handleInput(INPUT.down);
+      // Name is focused again.
+      for (const character of "Scoped rule") component.handleInput(character);
+      // name → description → exact value
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.down);
+      for (const character of "sk_live_scopedvalue1234567890") component.handleInput(character);
+      // value → replacement → preserve → disclose → case → restore scope
+      for (let i = 0; i < 6; i++) component.handleInput(INPUT.down);
+      assert.ok(component.render(100).some((line) => line.includes("▶ Restore scope")), "Restore scope should be focused");
+      for (const character of "api.stripe.com, *.internal.example.com, api.stripe.com") component.handleInput(character);
+      // Scope mode row appears once a scope is present.
+      assert.ok(component.render(100).some((line) => line.includes("Scope mode")), "Scope mode selector should appear");
+      component.handleInput(INPUT.down);
+      assert.ok(component.render(100).some((line) => /Scope mode.*\(default\)/.test(line.replace(/\x1b\[[0-9;]*m/g, ""))), "unmodified mode shows the default marker");
+      component.handleInput(INPUT.right);
+      const toggled = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
+      assert.ok(/Scope mode.*Strict/.test(toggled), "right arrow toggles away from the permissive default");
+      component.handleInput(INPUT.right);
+      const toggledTwice = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
+      assert.ok(/Scope mode.*Permissive/.test(toggledTwice), "second toggle returns to Permissive");
+      assert.equal(toggled.includes("(default)"), false, "the default marker clears after an explicit choice");
+      component.handleInput(INPUT.enter);
+      await waitFor(() => configRules(projectPath).length === 1);
+    },
+  ]);
+
+  try {
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    const rule = configRules(projectPath)[0];
+    assert.deepEqual(rule.restoreScope, {
+      destinations: ["api.stripe.com", "*.internal.example.com"],
+      mode: "permissive",
+    }, "comma list dedupes into destinations; explicit mode is written");
   } finally {
     await harness.shutdown();
     rmSync(dir, { recursive: true, force: true });
