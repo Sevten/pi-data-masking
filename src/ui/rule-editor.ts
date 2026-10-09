@@ -1087,7 +1087,6 @@ export async function addConfigRule(
             renderSelector(lines, "disclose", "Disclose", discloseValue, width, discloseDescription, discloseSuffixText);
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
               "←/→ or Space toggles case-sensitive matching for this rule");
-          renderSingleLineField(lines, "restoreScope", "Restore scope", editors.restoreScope, width, restoreScopeDescription());
           } else {
             renderSingleLineField(lines, "real", "Exact value", editors.real, width, "Exact text to mask");
             renderSelector(lines, "replacement", "Replacement", replacementIndex === 0 ? "Generate automatically" : "Exact custom replacement", width, "←/→ or Space changes the replacement mode");
