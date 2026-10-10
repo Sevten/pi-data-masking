@@ -181,7 +181,7 @@ test("configuration home toggles and reorders in place while retaining selection
     assert.ok(narrowLines.every((line) => visibleWidth(line) <= 42));
     assert.match(narrow, /Space on\/off/);
     assert.match(narrow, /M masking/);
-    assert.doesNotMatch(narrow, /↑↓.*browse/);
+    assert.match(narrow, /↑↓\/PgUp\/PgDn/);
     assert.match(narrow, /F2 JSON/);
     assert.match(narrow, /\/\s+search/);
     assert.match(narrow, /R hide values/);
@@ -299,6 +299,47 @@ test("configuration home toggles and reorders in place while retaining selection
     }
   } finally {
     await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("rules zone title carries the cursor position and the filtered total", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(projectPath, JSON.stringify({ rules: [
+    { id: "first", name: "First rule", real: "first-secret-value" },
+    { id: "second", name: "Second rule", real: "second-secret-value", enabled: false },
+  ] }));
+
+  const harness = await createHarness(dir, [async (component) => {
+    const zoneLine = () => component.render(100).find((line) => line.includes("RULES · focused")) ?? "";
+    assert.ok(zoneLine().endsWith("(1/3)"), "cursor position · list size, the Add row counted as a list row");
+    assert.match(zoneLine(), /RULES · focused \(1\/3\)/, "counter sits next to the zone title");
+    component.handleInput(INPUT.down);
+    assert.ok(zoneLine().endsWith("(2/3)"));
+    component.handleInput(INPUT.down);
+    assert.ok(zoneLine().endsWith("(3/3)"), "the Add row is a reachable row");
+    component.handleInput(INPUT.pageUp);
+    assert.ok(zoneLine().endsWith("(1/3)"));
+    // The total is the filtered count, not the configured count: enabled and
+    // disabled each keep one of the two rules, project keeps both.
+    component.handleInput("f");
+    assert.ok(zoneLine().endsWith("(1/2)"));
+    component.handleInput("f");
+    assert.ok(zoneLine().endsWith("(1/2)"));
+    component.handleInput("f");
+    assert.ok(zoneLine().endsWith("(1/3)"));
+    component.handleInput("f");
+    assert.ok(component.render(100).some((line) => line.includes("No rules match")));
+    assert.equal(zoneLine().includes("("), false, "no counter when nothing is listed");
+    component.handleInput(INPUT.escape);
+  }]);
+
+  try {
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    await harness.shutdown();
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

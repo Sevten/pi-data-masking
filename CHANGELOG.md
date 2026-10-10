@@ -16,6 +16,7 @@
 
 - Restoration audit: every restore, hold, warn, block, and confirm decision is persisted as a session entry and replayed on resume; `/masking-audit` lists the trail (time, outcome, tool, rule, destinations) with a text filter, answering "where has this value been restored to" and "why was that command blocked".
 - Scope guidance: when model guidance is fully enabled, the system-prompt note declares each scoped rule's destination allowlist ("only stripe.com — report contradictions instead of rerouting"), so legitimate tasks pick the right destination up front and injected tasks surface as reported contradictions. Capped at 12 rules.
+- The rules list in `/masking` shows the cursor position and the filtered total on the rules heading, and the hint bar lists the navigation keys, so a list longer than the screen no longer looks complete.
 
 ## [0.9.0] - 2026-09-23
 

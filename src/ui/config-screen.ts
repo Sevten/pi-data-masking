@@ -404,7 +404,10 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             || JSON.stringify(options.allowlist ?? []) !== JSON.stringify(activeOptions.allowlist ?? []))
           ? " · activates next run" : "";
         const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
-        const browseHints = wrappedMaskingText(theme.fg("dim", `Enter edit · F2 JSON · ←/→ or Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
+        // The navigation cluster leads the bar because the list scrolls
+        // silently; it carries no label, which also keeps the narrow-width
+        // wrap of every following pair intact.
+        const browseHints = wrappedMaskingText(theme.fg("dim", `↑↓/PgUp/PgDn · Enter edit · F2 JSON · ←/→ or Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
         const settingsDivider = theme.fg(homeFocus === "settings" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
         const settingRow = (index: number, label: string, value: boolean | string | number, description: string, cell?: string): string => {
           const selected = homeFocus === "settings" && index === settingsIndex;
@@ -476,15 +479,27 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             : ` · ${mutationMessage}`
           : "";
         const headerTitle = theme.fg("accent", theme.bold("Masking configuration")) + headerStatus;
+        // Rules-zone position counter, set just after the zone title: the list
+        // scrolls silently, so the counter is what reveals that rows exist above
+        // and below the viewport. It lives on the zone title rather than the
+        // column header because it describes the region, not a column, and it
+        // stays next to the title instead of the terminal edge so the eye does
+        // not have to travel. The Add row is a list row the cursor can reach, so
+        // it counts.
+        const rulesZoneTitle = homeFocus === "rules"
+          ? theme.fg("accent", theme.bold("RULES · focused"))
+          : theme.fg("muted", "RULES · Tab to focus");
+        const rulesZoneCount = visibleRulesNow.length > 0
+          ? theme.fg("dim", ` (${Math.min(selectedIndex, visibleRulesNow.length) + 1}/${visibleRulesNow.length + 1})`)
+          : "";
+        const rulesZoneLine = truncateToWidth(`${rulesZoneTitle}${rulesZoneCount}`, Math.max(1, width));
         const lines: string[] = [
           truncateToWidth(`${headerTitle}  ${theme.fg("muted", headerSummary)}`, Math.max(1, width)),
           "",
           ...settingsLines,
           ...confirmDisableLines.length ? ["", ...confirmDisableLines] : [],
           "",
-          homeFocus === "rules"
-            ? theme.fg("accent", theme.bold("RULES · focused"))
-            : theme.fg("muted", "RULES · Tab to focus"),
+          rulesZoneLine,
           rulesDivider,
         ];
 
