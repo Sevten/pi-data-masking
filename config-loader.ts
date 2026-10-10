@@ -82,8 +82,6 @@ export interface ConfiguredMaskingRule {
   realFromEnv?: string;
   /** Whether the configured literal replacement is generated or fixed. */
   placeholderMode?: "auto" | "custom";
-  /** Validation warnings specific to this rule (low-entropy, invalid fields, etc.). */
-  warnings?: string[];
 }
 
 export interface RuleEnabledChange {
@@ -1009,10 +1007,9 @@ function buildLoadResult(
       if (rawId) seenIds.add(rawId);
 
       const validated = validateConfig([raw], env);
-      const ruleWarnings = validated.warnings.map(
+      warnings.push(...validated.warnings.map(
         (warning) => `${scope} ${warning}${rawRecord.enabled === false ? " (rule is currently disabled)" : ""}`,
-      );
-      warnings.push(...ruleWarnings);
+      ));
       const presetName = typeof rawRecord.preset === "string" ? rawRecord.preset : undefined;
       const realFromEnv = typeof rawRecord.realFromEnv === "string" ? rawRecord.realFromEnv : undefined;
       let rule = validated.rules[0];
@@ -1044,7 +1041,6 @@ function buildLoadResult(
             ? "custom"
             : "auto"
           : undefined,
-        warnings: ruleWarnings.length > 0 ? ruleWarnings : undefined,
       });
     });
   }
