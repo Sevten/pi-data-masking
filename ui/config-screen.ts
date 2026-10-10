@@ -552,13 +552,11 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         } else if (screenRules.length > 0 && visibleRulesNow.length > 0) {
           // Keep details outside the list dividers and reserve a fixed block
           // so exact/env/regex/preset rows never move the test panel. The
-          // warning row is part of the reservation: always rendered (blank
+          // warning rows are part of the reservation: always rendered (blank
           // when the selected rule has no warnings) so a warning appearing or
-          // disappearing never shifts the layout. One compact row only —
-          // long warning texts are truncated, extras collapse into a count,
-          // so warnings never crowd out the rule list.
+          // disappearing never shifts the layout.
           const detailRowCount = 5;
-          const warnRowCount = 1;
+          const warnRowCount = 3;
           const selected = visibleRulesNow[selectedIndex];
           const details = selected
             ? configuredRuleDetail(selected, showExactValues, bridge.config().options.disclosePlaceholders, (text) => theme.fg("dim", text))
@@ -569,14 +567,13 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
               ? truncateToWidth(homeFocus === "rules" ? detail : theme.fg("dim", detail), Math.max(1, width))
               : "");
           }
-          const warns = selected?.warnings ?? [];
+          // Per-rule warnings: wrapped to the fixed reservation, excess dropped.
+          const warnLines = selected?.warnings?.length
+            ? selected.warnings.flatMap((w) => wrappedMaskingText(theme.fg("warning", `⚠ ${w}`), width))
+            : [];
           for (let index = 0; index < warnRowCount; index++) {
-            if (index < warns.length) {
-              const suffix = warns.length > 1 ? ` (+${warns.length - 1} more)` : "";
-              lines.push(truncateToWidth(theme.fg("warning", `⚠ ${warns[index]}${suffix}`), Math.max(1, width)));
-            } else {
-              lines.push("");
-            }
+            const warn = warnLines[index];
+            lines.push(warn ? truncateToWidth(warn, Math.max(1, width)) : "");
           }
         }
         lines.push("");
