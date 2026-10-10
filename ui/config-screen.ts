@@ -502,7 +502,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         } else {
           const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
           lines.push(theme.fg("dim", truncateToWidth(header, Math.max(1, width))));
-          const reservedRows = 21 + settingsLines.length + confirmDisableLines.length + browseHints.length;
+          const reservedRows = 19 + settingsLines.length + confirmDisableLines.length + browseHints.length;
           const rowCount = visibleRulesNow.length + 1;
           listRendered = true;
           listExtraCap = rowCount - (tui.terminal.rows - reservedRows);
@@ -568,8 +568,14 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
               : "");
           }
           // Per-rule warnings: wrapped to the fixed reservation, excess dropped.
+          // Compact form: the rule identity is already the cursor's selection,
+          // and the silence-instruction is config-authoring detail.
+          const compactRuleWarning = (w: string): string =>
+            w
+              .replace(/^[a-z]+ Rule \[[^\]]+\]\s*/, "")
+              .replace(/;?\s*set "lowEntropy": true to silence\.?/i, "");
           const warnLines = selected?.warnings?.length
-            ? selected.warnings.flatMap((w) => wrappedMaskingText(theme.fg("warning", `⚠ ${w}`), width))
+            ? selected.warnings.flatMap((w) => wrappedMaskingText(theme.fg("warning", `⚠ ${compactRuleWarning(w)}`), width))
             : [];
           for (let index = 0; index < warnRowCount; index++) {
             const warn = warnLines[index];
@@ -586,45 +592,35 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             testEditor.focused = homeFocus === "test";
             testEditor.borderColor = (text) => theme.fg(homeFocus === "test" ? "accent" : "dim", text);
             const preview = previewActiveRules(bridge, testEditor.getExpandedText());
-            // Empty input folds the "enter text" hint into the title line so the
-            // preview rows stay free for actual results.
+            // Empty input folds the "enter text" hint into the title line; the
+            // matched-rule attribution lives on the title too, keeping the
+            // preview row a plain masked-text line aligned with the input.
             const emptyHint = preview.text === testEditor.getExpandedText() && !testEditor.getExpandedText()
               ? " · Enter text to preview locally"
               : "";
+            const attribution = preview.count > 0 ? ` · ${preview.attribution}` : "";
             const testTitle = homeFocus === "test"
-              ? theme.fg("accent", theme.bold(`TEST ACTIVE RULES · focused${emptyHint}${bridge.config().enabled ? "" : " · masking is off; preview only"}`))
-              : theme.fg("muted", `TEST ACTIVE RULES · Tab to focus${emptyHint}${bridge.config().enabled ? "" : " · masking is off; preview only"}`);
+              ? theme.fg("accent", theme.bold(`TEST ACTIVE RULES · focused${emptyHint}${bridge.config().enabled ? "" : " · masking is off; preview only"}${attribution}`))
+              : theme.fg("muted", `TEST ACTIVE RULES · Tab to focus${emptyHint}${bridge.config().enabled ? "" : " · masking is off; preview only"}${attribution}`);
             lines.push(...wrappedMaskingText(testTitle, width));
             lines.push(...testEditor.render(width));
-            // Emit a fixed-height preview block (status + matched rule on one
-            // line, then 1 text line) so hits never grow the panel and shift
-            // the hints below.
-            const status = preview.count > 0 ? `${preview.count} value(s) masked` : preview.attribution;
-            const matched = preview.count > 0 ? `Matched: ${preview.attribution}` : "";
-            const statusLine = `Preview: ${status}`;
+            // Single fixed-height preview row: the masked text itself, aligned
+            // with the input column; hits never grow the panel and shift the
+            // hints below.
+            const firstLine = preview.text.split("\n")[0] ?? "";
             lines.push(testEditor.getExpandedText()
-              ? truncateToWidth(
-                  (testEditor.getExpandedText()
-                    ? theme.fg(preview.count > 0 ? "accent" : "muted", statusLine)
-                    : "") + (matched ? `  ${theme.fg("muted", matched)}` : ""),
-                  Math.max(1, width),
-                )
+              ? truncateToWidth(theme.fg(preview.count > 0 ? "accent" : "muted", firstLine), Math.max(1, width))
               : "");
-            const previewTextLines = preview.text.split("\n").slice(0, 1);
-            for (let index = 0; index < 1; index++) {
-              lines.push(previewTextLines[index] ?? "");
-            }
           } else {
             lines.push(theme.fg("muted", "TEST ACTIVE RULES · Tab to focus"));
           }
-          lines.push("");
           lines.push(...browseHints);
         }
         // Let the rules list absorb any unused rows below the hint bar.
         if (listRendered) {
           const shortfall = tui.terminal.rows - lines.length;
           if (shortfall !== 0) {
-            const reservedRows = 21 + settingsLines.length + confirmDisableLines.length + browseHints.length;
+            const reservedRows = 19 + settingsLines.length + confirmDisableLines.length + browseHints.length;
             const baseHeight = tui.terminal.rows - reservedRows;
             const next = Math.min(Math.max(listExtraRows + shortfall, -(baseHeight + 3)), listExtraCap);
             if (next !== listExtraRows) {
