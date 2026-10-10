@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Configuration warnings (low-entropy values, placeholder collisions, etc.) no longer appear in the main conversation; each rule's warnings are shown inside `/masking`, on the rule's detail area when it is selected or just saved.
+- The `/masking` test area is more compact: match attribution (which rule matched, how many times) moved into the panel title, and the preview line shows only the masked text, aligned with the input.
+
+### Fixed
+
+- Image data (for example base64 image payloads in vision requests) is never masked.
+
 ## [0.9.0] - 2026-09-23
 
 ### Added
