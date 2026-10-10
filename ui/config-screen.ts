@@ -551,8 +551,14 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           lines.push(...wrappedMaskingText(theme.fg("dim", "←→ select · Enter confirm · Esc back to editing"), width));
         } else if (screenRules.length > 0 && visibleRulesNow.length > 0) {
           // Keep details outside the list dividers and reserve a fixed block
-          // so exact/env/regex/preset rows never move the test panel.
+          // so exact/env/regex/preset rows never move the test panel. The
+          // warning row is part of the reservation: always rendered (blank
+          // when the selected rule has no warnings) so a warning appearing or
+          // disappearing never shifts the layout. One compact row only —
+          // long warning texts are truncated, extras collapse into a count,
+          // so warnings never crowd out the rule list.
           const detailRowCount = 5;
+          const warnRowCount = 1;
           const selected = visibleRulesNow[selectedIndex];
           const details = selected
             ? configuredRuleDetail(selected, showExactValues, bridge.config().options.disclosePlaceholders, (text) => theme.fg("dim", text))
@@ -562,6 +568,15 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             lines.push(detail
               ? truncateToWidth(homeFocus === "rules" ? detail : theme.fg("dim", detail), Math.max(1, width))
               : "");
+          }
+          const warns = selected?.warnings ?? [];
+          for (let index = 0; index < warnRowCount; index++) {
+            if (index < warns.length) {
+              const suffix = warns.length > 1 ? ` (+${warns.length - 1} more)` : "";
+              lines.push(truncateToWidth(theme.fg("warning", `⚠ ${warns[index]}${suffix}`), Math.max(1, width)));
+            } else {
+              lines.push("");
+            }
           }
         }
         lines.push("");

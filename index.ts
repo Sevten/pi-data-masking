@@ -208,6 +208,9 @@ export default async function (pi: ExtensionAPI) {
    *  migration deletes the key from the parsed snapshot. */
   let legacyCaseRepairPending = false;
 
+  /** Validation warnings from the last config activation (loader + compile);
+   *  surfaced in the /masking UI after save actions, not in the main chat. */
+
   // Session key: generated on session_start, stays constant for the whole
   // session (including config hot reloads). Pre-initialized to a valid value to
   // avoid a null pointer if another event fires before session_start.
@@ -646,10 +649,7 @@ export default async function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     cfg: MaskingConfig,
     reason: RuleEpochReason,
-    warnings: string[] = [],
   ): "activated" | "queued" {
-    const compileWarnings = buildMasker(cfg).warnings;
-    notifyWarnings(ctx, [...warnings, ...compileWarnings]);
     if (agentRunActive) {
       pendingConfigActivation = { config: cfg, reason };
       updateStatus(ctx);
@@ -711,7 +711,6 @@ export default async function (pi: ExtensionAPI) {
       ctx,
       persisted.config,
       "ui_edit",
-      [...loaded.warnings, ...persisted.warnings],
     );
   }
 
@@ -976,7 +975,6 @@ export default async function (pi: ExtensionAPI) {
     replayBranchMessages(restored.messages);
 
     ensureSessionStatePersisted(ctx);
-    notifyWarnings(ctx, [...loaded.warnings, ...persisted.warnings, ...compileWarnings]);
 
     // One-time upgrade notice: only for existing-config users, only until
     // the marker records this notice version. The actual enablement lives
@@ -1009,7 +1007,6 @@ export default async function (pi: ExtensionAPI) {
         ctx,
         persistedReload.config,
         "file_reload",
-        [...reloaded.warnings, ...persistedReload.warnings],
       );
       if (disposition === "activated") ensureSessionStatePersisted(ctx);
       // Queued reloads are surfaced by the status bar and the /masking UI.

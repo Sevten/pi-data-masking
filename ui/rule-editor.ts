@@ -86,8 +86,7 @@ export async function saveStructuralChanges(
     const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
     const outcome = await bridge.confirmConfigSave(ctx, candidate.config, confirmation);
     if (!outcome.saved) return false;
-    const saved = await saveConfigRuleMutations(mutations);
-    bridge.notifyWarnings(ctx, saved.warnings);
+    await saveConfigRuleMutations(mutations);
     await bridge.reloadConfigNow(ctx);
     return true;
   } catch (err) {
@@ -390,8 +389,7 @@ export async function addConfigRule(
       const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
       const outcome = await bridge.confirmConfigSave(ctx, candidate.config);
       if (!outcome.saved) return;
-      const saved = await saveConfigRuleMutations(mutations);
-      bridge.notifyWarnings(ctx, saved.warnings);
+      await saveConfigRuleMutations(mutations);
       await bridge.reloadConfigNow(ctx);
       ctx.ui.notify(`Added ${rules.length} preset rules to ${source.scope} config`, "info");
       return;
@@ -431,8 +429,7 @@ export async function addConfigRule(
     const candidate = await bridge.candidateConfigFromSources(ctx, preview.sources);
     const outcome = await bridge.confirmConfigSave(ctx, candidate.config);
     if (!outcome.saved) return { saved: false };
-    const saved = await saveConfigRuleMutations(mutations);
-    bridge.notifyWarnings(ctx, saved.warnings);
+    await saveConfigRuleMutations(mutations);
     await bridge.reloadConfigNow(ctx);
     return { saved: true, impact: outcome.impact };
   }
@@ -1260,7 +1257,7 @@ export async function editConfigRule(
 }
 
 export async function deleteConfigRule(bridge: MaskingUIBridge, ctx: ExtensionContext, configured: ConfiguredMaskingRule): Promise<void> {
-  if (await saveStructuralChanges(bridge, ctx, [{
+  const deleted = await saveStructuralChanges(bridge, ctx, [{
     kind: "delete",
     path: configured.path,
     sourceIndex: configured.sourceIndex,
@@ -1269,7 +1266,8 @@ export async function deleteConfigRule(bridge: MaskingUIBridge, ctx: ExtensionCo
     title: "Delete masking rule?",
     force: true,
     warning: `Delete "${configuredRuleDisplayName(configured)}" [${configured.rule.id}] from the ${configured.scope} config?\nThis may expose matching values in future requests and cannot retract earlier model context.`,
-  })) ctx.ui.notify(`Deleted rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}]`, "info");
+  });
+  if (deleted) ctx.ui.notify(`Deleted rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}]`, "info");
 }
 
 export async function showRuleConfigurationHelp(ctx: ExtensionContext): Promise<void> {
@@ -1331,7 +1329,7 @@ export async function moveConfigRule(
     ctx.ui.notify(`Rule is already at the ${direction < 0 ? "top" : "bottom"} of its ${configured.scope} scope`, "info");
     return false;
   }
-  const saved = await saveStructuralChanges(bridge, ctx, [{
+  const moved = await saveStructuralChanges(bridge, ctx, [{
     kind: "move",
     path: configured.path,
     sourceIndex: configured.sourceIndex,
@@ -1339,8 +1337,8 @@ export async function moveConfigRule(
     targetIndex: target.sourceIndex,
     targetId: target.rule.id,
   }]);
-  if (saved && notifySuccess) ctx.ui.notify(`Moved rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}] ${direction < 0 ? "up" : "down"}`, "info");
-  return saved;
+  if (moved && notifySuccess) ctx.ui.notify(`Moved rule "${configuredRuleDisplayName(configured)}" [${configured.rule.id}] ${direction < 0 ? "up" : "down"}`, "info");
+  return moved;
 }
 
 export async function toggleConfigRule(
@@ -1410,11 +1408,12 @@ export async function importConfigRules(bridge: MaskingUIBridge, ctx: ExtensionC
     const literalCount = imported.rules.filter((rule) => typeof rule?.real === "string").length;
     const riskWarnings = imported.rules.flatMap((rule) => validateRawConfigRule(rule));
     const mutations = imported.rules.map((rule) => ({ kind: "append" as const, path: target.path, rule }));
-    if (await saveStructuralChanges(bridge, ctx, mutations, {
+    const importSaved = await saveStructuralChanges(bridge, ctx, mutations, {
       title: "Import masking rules?",
       force: true,
       warning: [`Source: ${importPath}`, `Target: ${target.path}`, `Rules (${ids.length}): ${ids.join(", ")}`, `${literalCount} direct literal value(s) will be copied without being displayed.`, ...riskWarnings.map((warning) => `Warning: ${warning}`)].join("\n"),
-    })) ctx.ui.notify(`Imported ${ids.length} rule(s) into ${target.scope} config`, "info");
+    });
+    if (importSaved) ctx.ui.notify(`Imported ${ids.length} rule(s) into ${target.scope} config`, "info");
   } catch (err) {
     ctx.ui.notify(`Failed to import rules: ${(err as Error).message}`, "error");
   }
@@ -1462,7 +1461,6 @@ export async function saveConfigOptionsUI(
     const outcome = await bridge.confirmConfigSave(ctx, candidate.config);
     if (!outcome.saved) return { saved: false };
     await saveConfigOptionChanges(resolvedTarget.path, options);
-    bridge.notifyWarnings(ctx, candidate.warnings);
     await bridge.reloadConfigNow(ctx);
     return { saved: true, impact: outcome.impact };
   } catch (err) {
