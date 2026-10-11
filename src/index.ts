@@ -1166,6 +1166,10 @@ export default async function (pi: ExtensionAPI) {
   // Per-turn dedup for scope hold/warn notifications; reset in turn_start.
   let scopeNotifiedThisTurn = new Set<string>();
 
+  /** Offending destinations for notices: show at most two, fold the rest. */
+  const capDestinationList = (ds: readonly string[]): string =>
+    ds.length <= 2 ? ds.join(", ") : `${ds[0]}, ${ds[1]} (+${ds.length - 2} more)`;
+
   // Session-scoped file markers: paths that received restored values, plus
   // cp/mv/rsync propagations. Advisory state; persisted to the session so a
   // resume keeps its custody chain.
@@ -1338,6 +1342,35 @@ export default async function (pi: ExtensionAPI) {
     });
     if (decision.count === 0 && decision.held.length === 0 && decision.warned.length === 0) return;
 
+    // Strict scopes block the call outright: a runtime key headed for a
+    // non-allowlisted destination (or one that cannot be verified at all) is
+    // either a misconfigured task or an exfiltration attempt — the command
+    // must not run. Permissive scopes stay soft: the placeholder goes out
+    // instead of the real value and the call continues.
+    const blockedHeld = decision.held.filter((h) => {
+      if (scopes.get(h.ruleId)?.mode !== "strict") return false;
+      return h.reason === "destination" || h.reason === "no-destination";
+    });
+    if (blockedHeld.length > 0) {
+      for (const held of blockedHeld) {
+        recordAudit({
+          at: Date.now(),
+          kind: "blocked",
+          ruleId: held.ruleId,
+          ruleName: held.ruleName,
+          tool: event.toolName,
+          destinations: held.offending.length > 0 ? held.offending : undefined,
+          detail: held.reason === "destination" ? "outside allowed destinations (strict)" : "no destination verifiable (strict)",
+        });
+      }
+      const sentences = blockedHeld.map((held) =>
+        held.reason === "destination"
+          ? `"${held.ruleName}" (strict) may not go to ${capDestinationList(held.offending)}. The real value did not leave. Add it in /masking only if legitimate.`
+          : `"${held.ruleName}" (strict) was not restored — no verifiable destination. Use a literal destination or export it before launch.`,
+      );
+      return { block: true, reason: `Blocked by pi-data-masking: ${sentences.join(" ")}` };
+    }
+
     // Update event.input in place so the tool runs with the (scoped) real
     // arguments; held-back rules keep their placeholders. Held rules whose
     // values arrived pre-restored (stream restore) also need the masked form
@@ -1396,15 +1429,22 @@ export default async function (pi: ExtensionAPI) {
         const key = `hold:${held.ruleId}:${held.reason}`;
         if (scopeNotifiedThisTurn.has(key)) continue;
         scopeNotifiedThisTurn.add(key);
+        const mode = scopes.get(held.ruleId)?.mode === "strict" ? "strict" : "permissive";
         const detail =
           held.reason === "tool"
             ? `tool "${held.offending.join(", ")}" is not in the rule's allowed tools`
             : held.reason === "destination"
-              ? `destination ${held.offending.join(", ")} is outside the rule's allowed destinations`
-              : "no destination could be verified (strict mode)";
+              ? `${capDestinationList(held.offending)} is outside the rule's destinations`
+              : "no verifiable destination for this command";
+        const remedy =
+          held.reason === "destination"
+            ? "Add it in /masking only if legitimate."
+            : held.reason === "no-destination"
+              ? "Use a literal destination or export it before launch."
+              : "";
         ctx.ui.notify(
-          `pi-data-masking: held "${held.ruleName}" — ${detail}; ` +
-            `the placeholder stays in place. Edit the rule in /masking to widen its scope`,
+          `pi-data-masking: sent the placeholder instead of "${held.ruleName}" (${mode}) — ${detail}.` +
+            (remedy ? ` ${remedy}` : ""),
           "warning",
         );
       }
@@ -1413,8 +1453,8 @@ export default async function (pi: ExtensionAPI) {
         if (scopeNotifiedThisTurn.has(key)) continue;
         scopeNotifiedThisTurn.add(key);
         ctx.ui.notify(
-          `pi-data-masking: restored "${warned.ruleName}" — no destination could be verified ` +
-            `(permissive mode). Edit the rule in /masking to tighten its scope`,
+          `pi-data-masking: restored "${warned.ruleName}" (permissive) — no verifiable destination; ` +
+            `the real value was passed to the command. Tighten the rule in /masking if unintended.`,
           "warning",
         );
       }
