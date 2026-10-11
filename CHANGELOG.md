@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Fixed: tool-argument scope checks were silently bypassed whenever stream restore had already swapped placeholders for real values before the `tool_call` hook ran (the normal path in interactive sessions). Every rule appeared to restore unconditionally — no holds, blocks, or audit entries, and off-scope destinations received real values. The hook now re-masks protected real values before the scoped decision and writes the masked form back for held rules, so enforcement no longer depends on the input still being in placeholder form. Found by the real-session egress e2e matrix; covered by a new smoke regression test.
 - Egress smoke tests: a new integration suite drives the real extension entry point end to end over the tool_call pipeline (context mask → scoped restore / hold / strict no-destination hold / marker confirm-decline block), exercising the index.ts wiring the pure-function unit tests cannot see.
 
 ### Added

@@ -1315,7 +1315,21 @@ export default async function (pi: ExtensionAPI) {
       if (fileMarkers.markedPaths().length !== before) persistMarkers();
     }
 
-    const decision = decideToolCallRestore(masker, event.input as unknown, {
+    // Scope decisions must see placeholders no matter who restored the
+    // arguments first. Stream restore deep-unmasks toolCall arguments at
+    // `toolcall_end` (for display), so by the time this hook runs the input
+    // often holds real values and an unmask-probe finds nothing — the e2e
+    // matrix showed every hold/block silently bypassed that way. Re-mask any
+    // protected real values first; the scoped decision below then restores
+    // what the rule's scope allows and keeps placeholders for what does not.
+    let decisionInput: unknown = event.input as unknown;
+    try {
+      const preMasked = masker.maskValue(structuredClone(event.input));
+      if (preMasked.count > 0) decisionInput = preMasked.value;
+    } catch {
+      // Re-masking is best-effort; the placeholder-form path below still runs.
+    }
+    const decision = decideToolCallRestore(masker, decisionInput, {
       toolName: event.toolName,
       scopes,
       ruleName: (ruleId) =>
@@ -1325,8 +1339,10 @@ export default async function (pi: ExtensionAPI) {
     if (decision.count === 0 && decision.held.length === 0 && decision.warned.length === 0) return;
 
     // Update event.input in place so the tool runs with the (scoped) real
-    // arguments; held-back rules keep their placeholders.
-    if (decision.count > 0) {
+    // arguments; held-back rules keep their placeholders. Held rules whose
+    // values arrived pre-restored (stream restore) also need the masked form
+    // written back — otherwise the tool would execute with the real value.
+    if (decision.count > 0 || decision.held.length > 0) {
       const unmasked = decision.value as Record<string, unknown>;
       for (const key of Object.keys(unmasked)) {
         (event.input as Record<string, unknown>)[key] = unmasked[key];
