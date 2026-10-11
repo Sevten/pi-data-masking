@@ -176,7 +176,7 @@ When a scope check fails, the placeholder stays in place and the hold is reporte
 
 Trusted environments that many rules share — an intranet, a company registry mirror — can be declared once instead of per rule: `options.trustedDestinations` (global config) is merged into every rule's destination allowlist. It only widens destination checks: per-rule `tools` restrictions and strict holds on calls with no extractable destination are unaffected, and rules without a scope stay unconditional. This is a user-level trust declaration — one `10.0.*` entry tells the extension your whole intranet is a legitimate destination for every scoped secret.
 
-This is argument-layer enforcement with documented evasion limits (open redirects on allowlisted destinations, crafted staging chains, and /etc/hosts repointing are invisible to it). It complements, and does not replace, host-level tool approval and network egress controls. The full boundary statement lives in the repository's `docs/egress-scoping-design.md`.
+This is argument-layer enforcement with documented evasion limits (open redirects on allowlisted destinations, crafted staging chains, and /etc/hosts repointing are invisible to it). It complements, and does not replace, host-level tool approval and network egress controls. The full boundary statement lives in the design doc (`egress-scoping-design.md`) kept in the project hub at `/opt/workspace/projects/pi-data-masking/docs/` (development design documents live outside this repository).
 
 ### Immutable first-seen classification
 
