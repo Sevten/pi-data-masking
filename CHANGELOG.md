@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Egress smoke tests: a new integration suite drives the real extension entry point end to end over the tool_call pipeline (context mask → scoped restore / hold / strict no-destination hold / marker confirm-decline block), exercising the index.ts wiring the pure-function unit tests cannot see.
 
 ### Added
 
