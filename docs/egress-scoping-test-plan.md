@@ -174,8 +174,3 @@ expected).
   matching keeps false positives down — if one appears, check whether a command
   segment merely starts with `host`.
 
-## 6. Scope of this document
-
-This document describes only the current, executable state: infrastructure,
-test matrix, verdicts, rebuild steps, and known boundaries. Past execution
-records and future automation plans are intentionally not tracked here.
