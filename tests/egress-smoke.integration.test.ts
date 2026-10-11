@@ -97,6 +97,24 @@ async function withProject(rules: unknown[], body: (dir: string, harness: Awaite
 
 const bashCall = (command: string) => ({ toolName: "bash", input: { command } });
 
+test("smoke: strict no-destination does not block local writes — placeholder reaches disk", async () => {
+  await withProject([
+    { id: "collector-key", name: "collector key", real: REAL, restoreScope: { destinations: ["collector.test.internal"], mode: "strict" } },
+  ], async (dir, harness) => {
+    const ph = await placeholderFor(harness);
+    // A local write normally has no destination; strict must hold (keep the
+    // placeholder on disk), not block — the marker flow depends on it.
+    const write = { toolName: "write", input: { path: join(dir, "cfg.txt"), content: `token = ${ph}` } };
+    const result = await harness.emit("tool_call", write);
+    assert.equal(result, undefined, "local write must not be blocked under strict");
+    assert.ok(!(write.input as { content: string }).content.includes(REAL), "real value must not reach disk");
+    // Network-signature command with an unverifiable destination still blocks.
+    const net = bashCall(`curl -d '${ph}' "$UNDEFINED_URL"`);
+    const netResult = (await harness.emit("tool_call", net)) as { block?: boolean } | undefined;
+    assert.ok(netResult?.block === true, "strict network no-destination must block");
+  });
+});
+
 test("smoke: destination match restores the value in place; off-scope destination holds with a notice", async () => {
   await withProject([
     { id: "collector-key", name: "collector key", real: REAL, restoreScope: { destinations: ["collector.test.internal"], mode: "strict" } },

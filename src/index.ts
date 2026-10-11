@@ -1343,13 +1343,18 @@ export default async function (pi: ExtensionAPI) {
     if (decision.count === 0 && decision.held.length === 0 && decision.warned.length === 0) return;
 
     // Strict scopes block the call outright: a runtime key headed for a
-    // non-allowlisted destination (or one that cannot be verified at all) is
-    // either a misconfigured task or an exfiltration attempt — the command
-    // must not run. Permissive scopes stay soft: the placeholder goes out
-    // instead of the real value and the call continues.
+    // non-allowlisted destination (or a network command whose destination
+    // cannot be verified at all) is either a misconfigured task or an
+    // exfiltration attempt — the command must not run. Permissive scopes
+    // stay soft: the placeholder goes out instead of the real value and the
+    // call continues. "No destination" only blocks network-signature
+    // commands — a local write/edit normally has no destination, and
+    // letting the placeholder reach disk is both safe and what the marker
+    // flow builds on.
     const blockedHeld = decision.held.filter((h) => {
       if (scopes.get(h.ruleId)?.mode !== "strict") return false;
-      return h.reason === "destination" || h.reason === "no-destination";
+      if (h.reason === "destination") return true;
+      return h.reason === "no-destination" && hasNetworkSignature(command);
     });
     if (blockedHeld.length > 0) {
       for (const held of blockedHeld) {
