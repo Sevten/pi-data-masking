@@ -11,8 +11,9 @@
 
 ### 1.1 Collector (a separate always-on host, referred to below as the *collector host*)
 
-- Location: `<collector-host>:~/egress-test/collector.py`, systemd user service
-  `egress-collector` (enabled, `Linger=yes`).
+- Canonical copy: `scripts/e2e-collector.py` in this repository. Deployed
+  location: `<collector-host>:~/egress-test/collector.py`, run as systemd user
+  service `egress-collector` (enabled, `Linger=yes`).
 - Port `:8899`; logs timestamp/method/path/source IP/key headers/BODY **and
   `BODY_SHA256`** (SHA-256 of the raw body, for cryptographic-equality verdicts)
   to `~/egress-test/requests.log`.
@@ -148,11 +149,13 @@ expected).
 
 ## 4. Environment rebuild (from zero)
 
-1. **Collector**: on the collector host, `~/egress-test/collector.py` (HTTP logging service,
-   `:8899`; logs `BODY_SHA256` per request) + `~/.config/systemd/user/egress-collector.service`
-   (`ExecStart=/usr/bin/python3 …`, `WantedBy=default.target`),
-   `systemctl --user enable --now egress-collector`. Note: no backslash escapes
-   inside f-strings (bitten once).
+1. **Collector**: copy `scripts/e2e-collector.py` (repository canonical) to
+   `~/egress-test/collector.py` on the collector host (HTTP logging service,
+   `:8899`; logs `BODY_SHA256` per request), then add
+   `~/.config/systemd/user/egress-collector.service` with
+   `ExecStart=/usr/bin/python3 %h/egress-test/collector.py` and
+   `WantedBy=default.target`, and `systemctl --user enable --now egress-collector`.
+   Note: no backslash escapes inside f-strings (bitten once).
 2. **Domains**: on the machine running Pi, `echo "<collector-host IP> collector.test.internal evil.test.internal" | sudo tee -a /etc/hosts`.
 3. **Config**: see §1.3; restart the Pi session or run `/masking` to confirm the
    rules are available.
