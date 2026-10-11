@@ -71,9 +71,10 @@ extension automatically):
 }
 ```
 
-The three values cover strict / permissive / env-bound rules. They can also be
-created via the Rule Builder (which additionally exercises preset prefill,
-comma lists, and the Scope mode selector).
+The three values cover strict / permissive / env-bound rules. These rule names
+("collector key", "loose key", "env key") are referenced throughout the matrix
+below. They can also be created via the Rule Builder (which additionally
+exercises preset prefill, comma lists, and the Scope mode selector).
 
 ### 1.4 Test method
 
@@ -173,8 +174,8 @@ expected).
   matching keeps false positives down — if one appears, check whether a command
   segment merely starts with `host`.
 
-## 6. Execution records and automation plan
+## 6. Scope of this document
 
-Not kept in this repository. Execution records (2026-10-11 / 2026-10-12) and the
-e2e automation plan live in the project hub's Chinese original
-(`egress-scoping-test-plan.zh.md`, outside this repository).
+This document describes only the current, executable state: infrastructure,
+test matrix, verdicts, rebuild steps, and known boundaries. Past execution
+records and future automation plans are intentionally not tracked here.
