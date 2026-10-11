@@ -88,6 +88,24 @@ test("structuredTargetPaths: only write/edit, only string path", () => {
   assert.deepEqual(structuredTargetPaths("write", {}), []);
 });
 
+test("structuredTargetPaths: bash redirect and tee targets are write targets", () => {
+  assert.deepEqual(
+    structuredTargetPaths("bash", { command: "echo secret > /tmp/k.txt" }),
+    ["/tmp/k.txt"],
+  );
+  assert.deepEqual(
+    structuredTargetPaths("bash", { command: "echo a >> '/tmp/app.log' && echo b > /tmp/b.txt" }),
+    ["/tmp/app.log", "/tmp/b.txt"],
+  );
+  assert.deepEqual(
+    structuredTargetPaths("bash", { command: "echo secret | tee /tmp/t1.txt /tmp/t2.txt" }),
+    ["/tmp/t1.txt", "/tmp/t2.txt"],
+  );
+  // FD-prefixed redirects are not file targets.
+  assert.deepEqual(structuredTargetPaths("bash", { command: "ls 2>/dev/null" }), []);
+  assert.deepEqual(structuredTargetPaths("bash", { command: "curl url" }), []);
+});
+
 // ── propagation ─────────────────────────────────────────────────────────────
 
 test("propagateCopies: cp inherits the source's rule set", () => {

@@ -107,11 +107,58 @@ export function referencedMarkedPaths(
 }
 
 /** Structured path arguments of write-like tools (`write`/`edit` put the
- *  target under `path`). */
+ *  target under `path`; bash/powershell redirect targets are extracted so a
+ *  restored value written via `echo … > f` / `tee f` still marks the file). */
 export function structuredTargetPaths(toolName: string, input: unknown): string[] {
-  if (toolName !== "write" && toolName !== "edit") return [];
-  const path = (input as Record<string, unknown> | null)?.path;
-  return typeof path === "string" && path.trim() ? [path] : [];
+  if (toolName === "write" || toolName === "edit") {
+    const path = (input as Record<string, unknown> | null)?.path;
+    return typeof path === "string" && path.trim() ? [path] : [];
+  }
+  if (toolName === "bash" || toolName === "powershell") {
+    const command = (input as Record<string, unknown> | null)?.command;
+    if (typeof command !== "string") return [];
+    return bashRedirectTargets(command);
+  }
+  return [];
+}
+
+/** File targets of shell output redirects (`> f`, `>> f`) and `tee f`. A
+ *  miss only means a missing advisory marker, never a wrong block. FD-prefixed
+ *  redirects (`2>/dev/null`, `1>&2`) and process substitution are ignored. */
+export function bashRedirectTargets(command: string): string[] {
+  const targets: string[] = [];
+  for (const segment of command.split(/(?:;|&&|\|\||\||\n)/)) {
+    const tokens = tokenize(segment);
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i]!;
+      // `>f`, `>>f` as standalone tokens, or fused `>f` when the shell
+      // tokenization kept them together.
+      const m = /^(>>?)([^\s;&|].*)?$/.exec(tok);
+      if (m) {
+        const raw = m[2] ?? tokens[i + 1];
+        if (raw) targets.push(stripQuotes(raw));
+        continue;
+      }
+      if ((tok === "tee" || tok === "!tee") && tokens[i + 1] && !tokens[i + 1]!.startsWith("-")) {
+        // Last non-flag operand of tee is the file (multiple files allowed;
+        // each receives the stream).
+        for (let j = i + 1; j < tokens.length; j++) {
+          const t = tokens[j]!;
+          if (t.startsWith("-")) continue;
+          targets.push(stripQuotes(t));
+        }
+      }
+    }
+  }
+  return [...new Set(targets)];
+}
+
+function stripQuotes(raw: string): string {
+  const t = raw.trim();
+  if (t.length >= 2 && ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))) {
+    return t.slice(1, -1);
+  }
+  return t;
 }
 
 /** `cp`/`mv`/`rsync` propagation: when a copy/move-style command references
