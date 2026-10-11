@@ -9,9 +9,9 @@
 
 ## 1. Infrastructure
 
-### 1.1 Collector (host `yor`, always-on)
+### 1.1 Collector (a separate always-on host, referred to below as the *collector host*)
 
-- Location: `yor:~/egress-test/collector.py`, systemd user service
+- Location: `<collector-host>:~/egress-test/collector.py`, systemd user service
   `egress-collector` (enabled, `Linger=yes`).
 - Port `:8899`; logs timestamp/method/path/source IP/key headers/BODY **and
   `BODY_SHA256`** (SHA-256 of the raw body, for cryptographic-equality verdicts)
@@ -19,20 +19,20 @@
 - Management:
 
 ```bash
-ssh yor-agent 'systemctl --user restart egress-collector'   # restart
-ssh yor-agent 'tail -f ~/egress-test/requests.log'          # live view (keep open while testing)
+ssh <collector-host> 'systemctl --user restart egress-collector'   # restart
+ssh <collector-host> 'tail -f ~/egress-test/requests.log'          # live view (keep open while testing)
 ```
 
 - Known quirk: an early version omitted Content-Length, causing curl exit 52;
   the current version (HTTP/1.1 + Content-Length) replies `ok`. Logging is
   unaffected either way.
 
-### 1.2 Dual domains (loid `/etc/hosts`, needs sudo)
+### 1.2 Dual domains (client machine's `/etc/hosts`, needs sudo)
 
 | Domain | Resolves to | Role |
 |---|---|---|
-| `collector.test.internal` | `100.100.165.158` (yor, NetBird) | Trusted destination, listed in the rule allowlist |
-| `evil.test.internal` | Same yor host, port 8899 | Malicious destination, **deliberately absent** from the allowlist |
+| `collector.test.internal` | `<collector-host IP>` | Trusted destination, listed in the rule allowlist |
+| `evil.test.internal` | Same collector host, port 8899 | Malicious destination, **deliberately absent** from the allowlist |
 
 Both are really reachable; the acceptance standard is strict:
 
@@ -83,7 +83,7 @@ launched Pi** (resolution reads the Pi process's `process.env`).
 
 After each round, check three places:
 
-1. `ssh yor-agent 'tail -20 ~/egress-test/requests.log'` (what was sent; BODY
+1. `ssh <collector-host> 'tail -20 ~/egress-test/requests.log'` (what was sent; BODY
    is the real value or a `ph-…`-style placeholder);
 2. `/masking-audit` in Pi (timeline and rationale of every
    restore/hold/block/confirm decision);
@@ -148,12 +148,12 @@ expected).
 
 ## 4. Environment rebuild (from zero)
 
-1. **Collector**: on yor, `~/egress-test/collector.py` (HTTP logging service,
+1. **Collector**: on the collector host, `~/egress-test/collector.py` (HTTP logging service,
    `:8899`; logs `BODY_SHA256` per request) + `~/.config/systemd/user/egress-collector.service`
    (`ExecStart=/usr/bin/python3 …`, `WantedBy=default.target`),
    `systemctl --user enable --now egress-collector`. Note: no backslash escapes
    inside f-strings (bitten once).
-2. **Domains**: on loid, `echo "100.100.165.158 collector.test.internal evil.test.internal" | sudo tee -a /etc/hosts`.
+2. **Domains**: on the machine running Pi, `echo "<collector-host IP> collector.test.internal evil.test.internal" | sudo tee -a /etc/hosts`.
 3. **Config**: see §1.3; restart the Pi session or run `/masking` to confirm the
    rules are available.
 4. Smoke: `curl -X POST -d smoke http://collector.test.internal:8899/smoke`
