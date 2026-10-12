@@ -62,7 +62,7 @@ test("N/P navigates every masked occurrence, including repeated mappings", () =>
   assert.equal(renderRequests, 0);
 
   const multiple = createHistoryViewer(
-    { terminal: { rows: 8 }, requestRender: () => { renderRequests++; } },
+    { terminal: { rows: 10 }, requestRender: () => { renderRequests++; } },
     theme,
     keybindings,
     [
@@ -279,7 +279,7 @@ test("/ search jumps between text matches incrementally", () => {
     capturedAt: 1,
   });
   const viewer = createHistoryViewer(
-    { terminal: { rows: 10 }, requestRender: () => { renderRequests.push("r"); } },
+    { terminal: { rows: 12 }, requestRender: () => { renderRequests.push("r"); } },
     theme,
     keybindings,
     [entry("user:1", "first needle here"), entry("user:2", "second needle here")],

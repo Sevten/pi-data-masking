@@ -901,6 +901,9 @@ export function createHistoryViewer(
       const subtitleLines = options.subtitle ? wrapStyled(theme.fg("muted", options.subtitle)) : [];
       const inspectorLines = [theme.fg("muted", truncateToWidth(inspector, safeWidth))];
       const legendLines = wrapStyled(theme.fg("dim", legend));
+      // Rules bracket the transcript so the chrome (title, legend, key hints)
+      // reads as a frame around the message area, not as part of it.
+      const ruleLine = theme.fg("muted", "\u2500".repeat(safeWidth));
       const searchPrompt = searchPromptLine();
       const searchLines = searchPrompt === undefined ? [] : wrapStyled(truncateToWidth(searchPrompt, safeWidth));
 
@@ -908,7 +911,7 @@ export function createHistoryViewer(
       // range such as "messages 1–3 of 3" adds no useful information.
       const controlFooterLines = wrapStyled(theme.fg("dim", footerText));
       let footerLines = controlFooterLines;
-      chromeRows = headerLines.length + subtitleLines.length + inspectorLines.length + legendLines.length + footerLines.length + searchLines.length;
+      chromeRows = headerLines.length + subtitleLines.length + inspectorLines.length + legendLines.length + footerLines.length + searchLines.length + 2;
       let page = visiblePage(safeWidth);
       const atLiveEdge = page.cursor.entry === displayEntries.length;
       const allMessagesVisible = displayEntries.length === 0 || (
@@ -919,7 +922,7 @@ export function createHistoryViewer(
         const maximumProgress = `messages ${displayEntries.length}–${displayEntries.length} of ${displayEntries.length}`;
         const maximumProgressLines = wrapStyled(theme.fg("dim", maximumProgress));
         footerLines = [...controlFooterLines, ...maximumProgressLines];
-        chromeRows = headerLines.length + subtitleLines.length + inspectorLines.length + legendLines.length + footerLines.length + searchLines.length;
+        chromeRows = headerLines.length + subtitleLines.length + inspectorLines.length + legendLines.length + footerLines.length + searchLines.length + 2;
         // Adding the progress row shrinks the transcript. Preserve the live-edge
         // anchor instead of dropping the final message from the first render.
         if (atLiveEdge) position = { entry: displayEntries.length, line: 0 };
@@ -943,7 +946,9 @@ export function createHistoryViewer(
         ...subtitleLines,
         ...inspectorLines,
         ...legendLines,
+        ruleLine,
         ...page.visible,
+        ruleLine,
         ...footerLines,
         ...searchLines,
       ];

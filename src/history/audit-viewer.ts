@@ -112,9 +112,10 @@ export function createAuditViewer(
     }
     for (const event of matching) body.push(...eventLines(event, width, theme));
 
-    const bodyRows = Math.max(1, tui.terminal.rows - 5);
+    const bodyRows = Math.max(1, tui.terminal.rows - 7);
     offset = Math.max(0, Math.min(offset, Math.max(0, body.length - bodyRows)));
     const visible = offset === 0 ? body.slice(-bodyRows) : body.slice(offset, offset + bodyRows);
+    const ruleLine = theme.fg("muted", "\u2500".repeat(width));
 
     const header = theme.fg("accent", theme.bold(`Restoration audit · ${matching.length}${filter ? ` of ${events.length}` : ""} events${filter ? ` · filter: ${filter}` : ""}`));
     const legend = theme.fg("dim", "✔ restored · ⏸ held (placeholder kept) · ⚠ warned/confirmed · ✖/⨯ blocked/declined");
@@ -123,7 +124,7 @@ export function createAuditViewer(
       ? [theme.fg("muted", `filter: ${filter}█`)]
       : [theme.fg("dim", "↑↓/PgUp/PgDn scroll · / filter · Esc close"), progress].filter(Boolean);
 
-    return [...wrapTextWithAnsi(header, width), "", legend, ...visible, "", ...footerLines, ...Array(Math.max(0, tui.terminal.rows - (6 + visible.length))).fill("")];
+    return [...wrapTextWithAnsi(header, width), "", legend, ruleLine, ...visible, ruleLine, "", ...footerLines, ...Array(Math.max(0, tui.terminal.rows - (8 + visible.length))).fill("")];
   };
 
   const scroll = (delta: number): void => {
