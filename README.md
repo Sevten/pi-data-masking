@@ -60,7 +60,7 @@ The model plans tool calls using placeholders. Immediately before a tool runs, m
 
 ### Inspectable model view
 
-`/masking-history` has two tabs (`Tab` switches). The Masked views tab shows only representations that actually reached the model, grouped into consecutive rule versions; it supports local original, exact model-facing, and comparison views, each version lists the rules that produced it, and unused intermediate edits are omitted. The Restoration audit tab lists every restore, hold, warn, block, and confirm decision (time, outcome, tool, rule, destinations) with a text filter, answering "where has this value been restored to" and "why was that command blocked"; selecting an event and pressing `Enter` jumps to the transcript message carrying that tool call.
+`/masking-history` has two tabs (`Tab` switches). The Masked views tab shows only representations that actually reached the model, grouped into consecutive rule versions; it supports local original, exact model-facing, and comparison views, each version lists the rules that produced it, and unused intermediate edits are omitted. The Restoration audit tab lists every restore, hold, unverified release, block, and confirm decision (time, outcome, tool, rule, destinations) with a text filter, answering "where has this value been restored to" and "why was that command blocked"; selecting an event and pressing `Enter` jumps to the transcript message carrying that tool call.
 
 ## Rules and configuration
 

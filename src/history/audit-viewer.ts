@@ -54,7 +54,7 @@ const KIND_COLOR: Record<AuditEventKind, string> = {
 const KIND_LABEL: Record<AuditEventKind, string> = {
   restored: "RESTORED",
   held: "HELD",
-  warned: "WARNED",
+  warned: "UNVERIFIED",
   blocked: "BLOCKED",
   confirmed: "CONFIRMED",
   declined: "DECLINED",
@@ -68,10 +68,10 @@ function formatTime(at: number): string {
 
 function eventLines(event: AuditEvent, width: number, theme: AuditTheme, selected = false): string[] {
   const symbol = theme.fg(KIND_COLOR[event.kind], KIND_SYMBOL[event.kind]);
-  const label = theme.fg(KIND_COLOR[event.kind], KIND_LABEL[event.kind].padEnd(9));
+  const label = theme.fg(KIND_COLOR[event.kind], KIND_LABEL[event.kind].padEnd(10));
   const time = theme.fg("dim", formatTime(event.at));
   const tool = theme.fg("muted", event.tool);
-  const head = `${selected ? theme.fg("accent", "> ") : "  "}${symbol} ${label.padEnd(9)} ${time}  ${tool}`;
+  const head = `${selected ? theme.fg("accent", "> ") : "  "}${symbol} ${label.padEnd(10)} ${time}  ${tool}`;
   const lines = [truncateToWidth(head, width)];
 
   const detailParts = [`"${event.ruleName}"`];
@@ -79,7 +79,7 @@ function eventLines(event: AuditEvent, width: number, theme: AuditTheme, selecte
     detailParts.push(`→ ${event.destinations.join(", ")}`);
   }
   if (event.detail) detailParts.push(event.detail);
-  const detail = `               ${detailParts.join("  ")}`;
+  const detail = `                ${detailParts.join("  ")}`;
   for (const wrapped of wrapTextWithAnsi(theme.fg("muted", detail), width)) {
     lines.push(truncateToWidth(wrapped, width));
   }
@@ -128,7 +128,7 @@ export function createAuditViewer(
       for (const block of blocks) body.push(...block);
     }
 
-    const bodyRows = Math.max(1, tui.terminal.rows - 7);
+    const bodyRows = Math.max(1, tui.terminal.rows - 9);
     // Keep the selected block inside the window, then clamp.
     if (blocks.length > 0 && blocks[cursor]) {
       const starts: number[] = [];
@@ -149,7 +149,13 @@ export function createAuditViewer(
     const ruleLine = theme.fg("muted", "\u2500".repeat(width));
 
     const header = theme.fg("accent", theme.bold(`Restoration audit · ${matching.length}${filter ? ` of ${events.length}` : ""} events${filter ? ` · filter: ${filter}` : ""}`));
-    const legend = theme.fg("dim", "✅ restored · 🔒 held (placeholder kept) · ⚠️ warned · ☑️ confirmed · ❌ blocked · 🚫 declined");
+    // Outcome semantics live below the bottom rule so the event list itself
+    // stays scannable; the symbols in each line match the list column.
+    const explain = [
+      "✅ restored: real value sent, destination verified · 🔒 held: call ran, placeholder sent",
+      "⚠️ unverified: real value sent, destination unchecked · ☑️ confirmed: you approved",
+      "❌ blocked: call refused · 🚫 declined: you refused",
+    ].flatMap((line) => wrapTextWithAnsi(theme.fg("dim", line), width));
     const progress = status
       ? theme.fg("warning", status)
       : offset > 0
@@ -159,7 +165,7 @@ export function createAuditViewer(
       ? [theme.fg("muted", `filter: ${filter}█`)]
       : [theme.fg("dim", "↑↓ select · Enter jump to message · PgUp/PgDn page · / filter · Esc close"), progress].filter(Boolean);
 
-    return [...wrapTextWithAnsi(header, width), "", legend, ruleLine, ...visible, ruleLine, "", ...footerLines, ...Array(Math.max(0, tui.terminal.rows - (8 + visible.length))).fill("")];
+    return [...wrapTextWithAnsi(header, width), "", ruleLine, ...visible, ruleLine, "", ...explain, ...footerLines, ...Array(Math.max(0, tui.terminal.rows - (10 + explain.length + visible.length))).fill("")];
   };
 
   const setCursor = (index: number): void => {
