@@ -21,16 +21,23 @@ export interface RestoreScope {
   /** Environment variable names bound to this rule (Phase 2: env-reference
    *  path). Defaults to the rule's `realFromEnv` name. */
   envNames?: string[];
-  /** What to do when the scope cannot be verified:
-   *  - strict: hold the restoration (placeholder stays) and notify;
-   *  - permissive: restore and notify when no destination was extracted,
-   *    hold only on a destination present but unmatched.
-   *  Default: "strict" for preset rules with default destinations,
-   *  "permissive" otherwise. */
-  mode?: "strict" | "permissive";
+  /** What to do when the scope cannot be verified (design notes:
+ *  docs/egress-mode-redesign-notes.zh.md — three-mode ladder):
+ *  - strict: fail closed — block on confirmed violations, on outbound
+ *    calls whose destination cannot be verified, and on local use
+ *    (use-not-copy: the value only flows to allowlisted destinations);
+ *  - guarded: block confirmed violations and local use, but tolerate
+ *    detection gaps (outbound + unverifiable destination restores with a
+ *    warning);
+ *  - permissive: block confirmed violations only; local materialization
+ *    restores (marker chain covers later egress), gaps restore with a
+ *    warning.
+ *  Default: "strict" for preset rules with default destinations,
+ *  "permissive" otherwise. */
+  mode?: "strict" | "guarded" | "permissive";
 }
 
-export type ScopeMode = "strict" | "permissive";
+export type ScopeMode = "strict" | "guarded" | "permissive";
 
 /** Materialized scope used by the tool_call decision flow. Null = the rule
  *  carries no tool-call constraints (today's unconditional restoration). */

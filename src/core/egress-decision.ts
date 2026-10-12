@@ -1,15 +1,25 @@
 /**
  * The scoped-restoration decision flow for tool calls (design:
- * docs/egress-scoping-design.md, "Decision flow on each tool call").
+ * docs/egress-scoping-design.md + the three-mode ladder in
+ * docs/egress-mode-redesign-notes.zh.md).
  *
  * Pure over its inputs: given the tool name, the raw arguments, and the
  * effective scopes of the active rules, it produces the arguments with only
- * the restorations that passed their rule's scope applied — held-back rules
- * keep their placeholders — plus the per-rule hold/warn records for the
- * caller to report. No placeholders in the input means zero scope work.
+ * the restorations that passed their rule's scope applied — violating rules
+ * block the call outright — plus the per-rule violation/warn records for
+ * the caller to report. No placeholders in the input means zero scope work.
  *
- * Failure is safe by construction: anything uncertain stays a placeholder,
- * and the attacker is left holding at most a placeholder.
+ * The matrix (mode × situation):
+ *
+ * | situation                        | strict | guarded   | permissive      |
+ * |----------------------------------|--------|-----------|-----------------|
+ * | destination verified             | restore| restore   | restore         |
+ * | destination outside allowlist    | block  | block     | block           |
+ * | outbound (signature), unverifiable| block  | warn      | warn            |
+ * | local (no signature, no dest.)   | block  | block     | restore (+mark)|
+ *
+ * Failure is safe by construction: a violation blocks the call, so the
+ * attacker is left holding at most a placeholder.
  */
 
 import { extractDestinations } from "./destination-extract.ts";
@@ -20,19 +30,23 @@ import type { Masker } from "./masker.ts";import {
   type EffectiveScope,
 } from "./restore-scope.ts";
 
-export interface HeldRestore {
+export interface ScopeViolation {
   ruleId: string;
   ruleName: string;
   /** tool: the rule's `tools` list excludes the current tool.
    *  destination: an extracted destination is not allowlisted.
-   *  no-destination: strict mode and no destination could be extracted. */
+   *  no-destination: no destination could be extracted — an outbound
+   *  (network-signature) call under strict, or any local use under
+   *  strict/guarded (use-not-copy). */
   reason: "tool" | "destination" | "no-destination";
   /** The disallowed tool name (reason=tool) or offending destinations
    *  (reason=destination); empty otherwise. */
   offending: string[];
 }
 
-/** Permissive-mode notice: restored, but no destination could be checked. */
+/** Guarded/permissive notice: restored, but no destination could be checked
+ *  (outbound call with a hidden destination — a detection gap, not a
+ *  confirmed violation). */
 export interface ScopeWarning {
   ruleId: string;
   ruleName: string;
@@ -45,9 +59,10 @@ export interface ToolCallDecision {
   value: unknown;
   /** Number of restored occurrences (0 = nothing restored). */
   count: number;
-  held: HeldRestore[];
+  /** Rules whose scope the call violates — the caller must block the call. */
+  violations: ScopeViolation[];
   warned: ScopeWarning[];
-  /** Rule ids whose values were restored (hit minus held) — the caller uses
+  /** Rule ids whose values were restored (hit minus violated) — the caller uses
    *  this to mark write targets (file markers). */
   restoredRuleIds: string[];
 }
@@ -61,10 +76,11 @@ export interface DecisionOptions {
   ruleName: (ruleId: string) => string;
   /** True when the call runs a known outbound tool at command position
    *  (computed for bash-like tools only — write/edit contents must not
-   *  count). With a signature and no extractable destination, permissive
-   *  rules hold too: outbound intent is present, the destination is just
-   *  hidden (`curl … "$URL"`), so permissive stays loose only for calls
-   *  with no outbound form at all. */
+   *  count). With a signature and no extractable destination the call sits
+   *  in the detection-gap cell: strict blocks, guarded/permissive restore
+   *  with a warning. Without a signature the call is local: permissive
+   *  restores (the marker chain covers materialized values), strict and
+   *  guarded block (use-not-copy). */
   commandSignature?: boolean;
 }
 
@@ -87,7 +103,7 @@ export function decideToolCallRestore(
 ): ToolCallDecision {
   const probe = masker.unmaskValue(input);
   if (probe.count === 0) {
-    return { value: probe.value, count: 0, held: [], warned: [], restoredRuleIds: [] };
+    return { value: probe.value, count: 0, violations: [], warned: [], restoredRuleIds: [] };
   }
 
   const hitRuleIds = new Set(probe.details.map((d) => d.ruleId));
@@ -96,7 +112,7 @@ export function decideToolCallRestore(
     return {
       value: probe.value,
       count: probe.count,
-      held: [],
+      violations: [],
       warned: [],
       restoredRuleIds: [...hitRuleIds],
     };
@@ -119,17 +135,17 @@ export function decideToolCallRestore(
       if (!destinations.includes(hint)) destinations.push(hint);
     }
   }
-  const held = new Map<string, HeldRestore>();
+  const violations = new Map<string, ScopeViolation>();
   const warned = new Map<string, ScopeWarning>();
 
-  const setHold = (ruleId: string, reason: HeldRestore["reason"], offending: string[]): void => {
-    const existing = held.get(ruleId);
+  const setViolation = (ruleId: string, reason: ScopeViolation["reason"], offending: string[]): void => {
+    const existing = violations.get(ruleId);
     if (existing) {
       const merged = new Set([...existing.offending, ...offending]);
       existing.offending = [...merged];
       return;
     }
-    held.set(ruleId, { ruleId, ruleName: opts.ruleName(ruleId), reason, offending });
+    violations.set(ruleId, { ruleId, ruleName: opts.ruleName(ruleId), reason, offending });
   };
 
   const allow = (ruleId: string): boolean => {
@@ -138,28 +154,37 @@ export function decideToolCallRestore(
     const name = opts.ruleName(ruleId);
 
     if (scope.tools && !scope.tools.includes(opts.toolName)) {
-      setHold(ruleId, "tool", [opts.toolName]);
+      setViolation(ruleId, "tool", [opts.toolName]);
       return false;
     }
 
     if (scope.destinations) {
       if (destinations.length === 0) {
-        // Design (2026-10-09): a network signature with no extractable
-        // destination is treated as destination-present-but-unmatched —
-        // held in both modes. Permissive stays loose only for calls with
-        // no outbound form at all (`echo`, local writes, computation).
-        if (scope.mode === "strict" || opts.commandSignature) {
-          setHold(ruleId, "no-destination", []);
-          return false;
+        if (opts.commandSignature) {
+          // Detection-gap cell: outbound intent, destination hidden
+          // (`curl … "$URL"`). strict fails closed; guarded and
+          // permissive restore with a warning.
+          if (scope.mode === "strict") {
+            setViolation(ruleId, "no-destination", []);
+            return false;
+          }
+          if (!warned.has(ruleId)) {
+            warned.set(ruleId, { ruleId, ruleName: name, kind: "no-destination" });
+          }
+          return true;
         }
-        if (!warned.has(ruleId)) {
-          warned.set(ruleId, { ruleId, ruleName: name, kind: "no-destination" });
-        }
-        return true;
+        // Local cell: no outbound form at all. permissive restores — the
+        // marker chain covers materialized values. strict and guarded
+        // enforce use-not-copy: the value only flows to allowlisted
+        // destinations, and a local file or indirect process is not one.
+        if (scope.mode === "permissive") return true;
+        setViolation(ruleId, "no-destination", []);
+        return false;
       }
       const offending = unmatchedDestinations(destinations, matchersFor(scope));
       if (offending.length > 0) {
-        setHold(ruleId, "destination", offending);
+        // Confirmed violation: block in every mode.
+        setViolation(ruleId, "destination", offending);
         return false;
       }
       return true;
@@ -171,9 +196,9 @@ export function decideToolCallRestore(
   return {
     value: result.value,
     count: result.count,
-    held: [...held.values()],
+    violations: [...violations.values()],
     warned: [...warned.values()],
-    restoredRuleIds: [...hitRuleIds].filter((id) => !held.has(id)),
+    restoredRuleIds: [...hitRuleIds].filter((id) => !violations.has(id)),
   };
 }
 
@@ -274,9 +299,12 @@ function envNameReferenced(command: string, name: string): boolean {
 
 /**
  * Decision for a call whose arguments reference a marked path (design:
- * "File markers" + "Hold vs block"). The real value lives on disk — if the
- * call runs, the leak is already complete — so violations block (strict) or
- * confirm (permissive) instead of holding a placeholder.
+ * "File markers" + the three-mode ladder). The real value lives on disk —
+ * if the call runs, the leak is already complete — so a confirmed
+ * violation (destination outside the allowlist) blocks in every mode, and
+ * the detection-gap form (network signature, no verifiable destination)
+ * blocks under strict while guarded/permissive allow the call with a
+ * warning. There is nothing to hold back here: no placeholder is involved.
  *
  * Triggered only by egress intent: an extractable destination or a network
  * signature. Calls with neither are never checked here (local reads, diffs
@@ -293,10 +321,11 @@ export interface MarkedPathViolation {
 }
 
 export interface MarkedPathDecision {
-  /** Rule ids of the governing scopes that fired a violation. */
+  /** Rule ids of the governing scopes that fired a blocking violation. */
   blocked: MarkedPathViolation[];
-  /** Permissive violations the user should confirm. */
-  confirm: MarkedPathViolation[];
+  /** Detection-gap violations the guarded/permissive modes allow with a
+   *  warning. */
+  warned: MarkedPathViolation[];
 }
 
 export interface MarkedPathOptions {
@@ -317,7 +346,7 @@ export function decideMarkedPaths(
   opts: MarkedPathOptions,
 ): MarkedPathDecision {
   const blocked: MarkedPathViolation[] = [];
-  const confirm: MarkedPathViolation[] = [];
+  const warned: MarkedPathViolation[] = [];
 
   for (const ruleId of referencedRuleIds) {
     const scope = opts.scopes.get(ruleId);
@@ -328,20 +357,17 @@ export function decideMarkedPaths(
     if (opts.destinations.length > 0) {
       offending = unmatchedDestinations(opts.destinations, matchersFor(scope));
       if (offending.length === 0) continue; // all destinations allowlisted
-    } else if (!opts.signatureOnly) {
-      continue; // no egress intent at all — advisory state never blocks
+      // Confirmed violation: block in every mode.
+      blocked.push({ ruleId, ruleName: opts.ruleName(ruleId), offending });
+    } else if (opts.signatureOnly) {
+      // Detection gap: intent, no verified destination. strict fails
+      // closed; guarded and permissive tolerate it with a warning.
+      const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending };
+      if (scope.mode === "strict") blocked.push(violation);
+      else warned.push(violation);
     }
-    // signatureOnly with zero destinations lands here: intent, no verified
-    // destination — the tightened form of decision-flow step 5.
-
-    const violation: MarkedPathViolation = {
-      ruleId,
-      ruleName: opts.ruleName(ruleId),
-      offending,
-    };
-    if (scope.mode === "strict") blocked.push(violation);
-    else confirm.push(violation);
+    // no egress intent at all — advisory state never blocks
   }
 
-  return { blocked, confirm };
+  return { blocked, warned };
 }

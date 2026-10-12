@@ -547,17 +547,17 @@ export async function addConfigRule(
     // strict for preset-backed rules, permissive otherwise. Until the user
     // toggles the selector the mode is not written to the rule — it keeps
     // inheriting the effective default.
-    const initialScopeMode: { value: "strict" | "permissive"; explicit: boolean } = (() => {
+    const initialScopeMode: { value: "strict" | "guarded" | "permissive"; explicit: boolean } = (() => {
       const declared = editing?.initial.restoreScope;
       if (declared && typeof declared === "object" && !Array.isArray(declared)) {
         const mode = (declared as { mode?: unknown }).mode;
-        if (mode === "strict" || mode === "permissive") return { value: mode, explicit: true };
+        if (mode === "strict" || mode === "guarded" || mode === "permissive") return { value: mode, explicit: true };
       }
       const presetBacked = editing?.configured.sourceKind === "preset" ||
         (currentType() === "Built-in preset template" && !!selectedPreset?.destinations?.length);
       return { value: presetBacked ? "strict" as const : "permissive" as const, explicit: false };
     })();
-    let scopeMode: "strict" | "permissive" = initialScopeMode.value;
+    let scopeMode: "strict" | "guarded" | "permissive" = initialScopeMode.value;
     let scopeModeExplicit = initialScopeMode.explicit;
     /** A scope is in play: the field has content, or the rule is preset-
      *  backed with default destinations (visible or inherited). */
@@ -1177,10 +1177,10 @@ export async function addConfigRule(
           // Scope mode selector: only meaningful when a scope is in play.
           if (scopePresent()) {
             renderSelector(lines, "scopeMode", "Scope mode",
-              scopeMode === "strict" ? "Strict" : "Permissive",
+              scopeMode === "strict" ? "Strict" : scopeMode === "guarded" ? "Guarded" : "Permissive",
               width,
               scopeModeExplicit
-                ? "Strict holds the restoration when the destination cannot be verified · Permissive restores with a notice"
+                ? "Strict blocks unverifiable outbound and local use · Guarded blocks violations and local use, warns on unverifiable outbound · Permissive blocks violations only"
                 : `Default (strict for preset keys with destinations, permissive otherwise) · ←/→ or Space to override`,
               scopeModeExplicit ? undefined : "(default)");
           }
@@ -1299,7 +1299,8 @@ export async function addConfigRule(
             const modes: Array<"off" | "first" | "custom"> = ["off", "first", "custom"];
             preserveMode = modes[(((modes.indexOf(preserveMode) + selectorDirection) % modes.length) + modes.length) % modes.length]!;
           } else if (field === "scopeMode") {
-            scopeMode = scopeMode === "strict" ? "permissive" : "strict";
+            const modes: Array<"strict" | "guarded" | "permissive"> = ["strict", "guarded", "permissive"];
+            scopeMode = modes[(((modes.indexOf(scopeMode) + selectorDirection) % modes.length) + modes.length) % modes.length]!;
             scopeModeExplicit = true;
             // Keep full-JSON text in sync so the saved rule matches what
             // the selector shows.

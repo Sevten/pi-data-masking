@@ -24,7 +24,7 @@ import { generateSessionKey } from "../src/core/placeholder-gen.ts";
 
 const CWD = "/srv/app";
 
-const scope = (mode: "strict" | "permissive", destinations: string[]): EffectiveScope => ({
+const scope = (mode: "strict" | "guarded" | "permissive", destinations: string[]): EffectiveScope => ({
   destinations,
   tools: undefined,
   envNames: undefined,
@@ -191,19 +191,20 @@ test("marker decision: strict + unmatched destination → block", () => {
   });
   assert.equal(d.blocked.length, 1);
   assert.deepEqual(d.blocked[0].offending, ["evil.com"]);
-  assert.equal(d.confirm.length, 0);
+  assert.equal(d.warned.length, 0);
 });
 
-test("marker decision: permissive + unmatched destination → confirm", () => {
-  const d = decideMarkedPaths(new Set(["r"]), {
-    scopes: new Map([["r", scope("permissive", ["stripe.com"])]]),
-    ruleName: (id) => id,
-    destinations: ["evil.com", "stripe.com"],
-    signatureOnly: false,
-  });
-  assert.equal(d.blocked.length, 0);
-  assert.equal(d.confirm.length, 1);
-  assert.deepEqual(d.confirm[0].offending, ["evil.com"]);
+test("marker decision: guarded/permissive + unmatched destination → block (confirmed violation, every mode)", () => {
+  for (const mode of ["strict", "guarded", "permissive"] as const) {
+    const d = decideMarkedPaths(new Set(["r"]), {
+      scopes: new Map([["r", scope(mode, ["stripe.com"])]]),
+      ruleName: (id) => id,
+      destinations: ["evil.com", "stripe.com"],
+      signatureOnly: false,
+    });
+    assert.equal(d.blocked.length, 1, mode);
+    assert.deepEqual(d.blocked[0].offending, ["evil.com"]);
+  }
 });
 
 test("marker decision: all destinations allowlisted → pass", () => {
@@ -213,18 +214,19 @@ test("marker decision: all destinations allowlisted → pass", () => {
     destinations: ["api.stripe.com"],
     signatureOnly: false,
   });
-  assert.equal(d.blocked.length + d.confirm.length, 0);
+  assert.equal(d.blocked.length + d.warned.length, 0);
 });
 
-test("marker decision: signature without destination → blocked in both modes", () => {
-  for (const mode of ["strict", "permissive"] as const) {
+test("marker decision: signature without destination → strict blocks, guarded/permissive warn", () => {
+  for (const mode of ["strict", "guarded", "permissive"] as const) {
     const d = decideMarkedPaths(new Set(["r"]), {
       scopes: new Map([["r", scope(mode, ["stripe.com"])]]),
       ruleName: (id) => id,
       destinations: [],
       signatureOnly: true,
     });
-    assert.equal(d.blocked.length + d.confirm.length, 1, mode);
+    if (mode === "strict") assert.equal(d.blocked.length, 1, mode);
+    else assert.equal(d.warned.length, 1, mode);
   }
 });
 
@@ -235,7 +237,7 @@ test("marker decision: no intent (no destination, no signature) → pass", () =>
     destinations: [],
     signatureOnly: false,
   });
-  assert.equal(d.blocked.length + d.confirm.length, 0);
+  assert.equal(d.blocked.length + d.warned.length, 0);
 });
 
 test("marker decision: rules without a destination allowlist are not governed", () => {
@@ -245,10 +247,10 @@ test("marker decision: rules without a destination allowlist are not governed", 
     destinations: ["evil.com"],
     signatureOnly: false,
   });
-  assert.equal(d.blocked.length + d.confirm.length, 0);
+  assert.equal(d.blocked.length + d.warned.length, 0);
 });
 
-test("marker decision: multiple rules, mixed modes", () => {
+test("marker decision: multiple rules, mixed modes — confirmed violation blocks every mode", () => {
   const d = decideMarkedPaths(new Set(["strictR", "permR", "scopeless"]), {
     scopes: new Map([
       ["strictR", scope("strict", ["stripe.com"])],
@@ -258,6 +260,6 @@ test("marker decision: multiple rules, mixed modes", () => {
     destinations: ["evil.com"],
     signatureOnly: false,
   });
-  assert.deepEqual(d.blocked.map((v) => v.ruleId), ["strictR"]);
-  assert.deepEqual(d.confirm.map((v) => v.ruleId), ["permR"]);
+  assert.deepEqual(d.blocked.map((v) => v.ruleId), ["strictR", "permR"]);
+  assert.deepEqual(d.warned, []);
 });

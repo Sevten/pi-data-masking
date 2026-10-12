@@ -1215,9 +1215,10 @@ export default async function (pi: ExtensionAPI) {
     }
 
     // ── Marker dimension: paths that hold our restored values ──────────
-    // The real value is on disk; if the call runs, the leak is complete —
-    // so violations block (strict) or confirm (permissive), unlike the
-    // placeholder flows below which hold-and-notify.
+    // The real value is on disk; if the call runs, the leak is already
+    // complete — confirmed violations block in every mode, the detection-
+    // gap form (signature, no verifiable destination) blocks under strict
+    // and warns under guarded/permissive.
     const markedRefs = referencedMarkedPaths(fileMarkers, event.input, cwd);
     const referencedRuleIds = new Set(markedRefs.flatMap((ref) => ref.ruleIds));
     // $NAME references govern like marked paths: the real value lives in
@@ -1270,42 +1271,34 @@ export default async function (pi: ExtensionAPI) {
           }
         }
         if (markerDecision.blocked.length > 0) {
+          const offenders = [...new Set(markerDecision.blocked.flatMap((v) => v.offending))];
           return {
             block: true,
             reason:
               "Blocked by pi-data-masking: this command sends a file that contains restored secret values " +
-              `(${markerDecision.blocked.map((v) => `"${v.ruleName}"`).join(", ")}) to a destination outside those rules' scope. ` +
-              "Do not exfiltrate these files; ask the user how to proceed.",
+              `(${markerDecision.blocked.map((v) => `"${v.ruleName}"`).join(", ")}) to a destination outside those rules' scope` +
+              (offenders.length > 0 ? ` (${offenders.join(", ")})` : "") +
+              ". Do not exfiltrate these files; ask the user how to proceed.",
           };
         }
-        for (const v of markerDecision.confirm) {
-          const allowed = ctx.ui
-            ? await ctx.ui.confirm(
-                "pi-data-masking: outbound file with secret values",
-                `"${v.ruleName}" values were written to ${markedRefs.map((r) => r.path).join(", ")}. ` +
-                  (v.offending.length > 0
-                    ? `The command sends it to ${v.offending.join(", ")}, outside the rule's allowed destinations.`
-                    : "The command is an outbound operation with no verifiable destination.") +
-                    "\nAllow this call?",
-              )
-            : false;
+        for (const v of markerDecision.warned) {
+          const key = `markerwarn:${v.ruleId}`;
           recordAudit({
             at: Date.now(),
-            kind: allowed ? "confirmed" : "declined",
+            kind: "warned",
             ruleId: v.ruleId,
             ruleName: v.ruleName,
             tool: event.toolName,
             callId: event.toolCallId,
-            destinations: v.offending.length > 0 ? v.offending : undefined,
-            detail: `paths: ${markedRefs.map((r) => r.path).join(", ")}`,
+            detail: `marked path outbound without verifiable destination (${scopes.get(v.ruleId)?.mode ?? "permissive"})`,
           });
-          if (!allowed) {
-            return {
-              block: true,
-              reason:
-                "Blocked by pi-data-masking: the user declined to send this file " +
-                `(it contains values of "${v.ruleName}") outside its allowed destinations.`,
-            };
+          if (!scopeNotifiedThisTurn.has(key)) {
+            scopeNotifiedThisTurn.add(key);
+            ctx.ui?.notify(
+              `pi-data-masking: allowed an outbound command on ${markedRefs.map((r) => r.path).join(", ")}` +
+                ` — it holds "${v.ruleName}" values and no destination could be verified. Tighten the rule in /masking if unintended.`,
+              "warning",
+            );
           }
         }
       }
@@ -1340,48 +1333,51 @@ export default async function (pi: ExtensionAPI) {
         config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
       commandSignature: command !== "" && hasNetworkSignature(command),
     });
-    if (decision.count === 0 && decision.held.length === 0 && decision.warned.length === 0) return;
+    if (decision.count === 0 && decision.violations.length === 0 && decision.warned.length === 0) return;
 
-    // Strict scopes block the call outright: a runtime key headed for a
-    // non-allowlisted destination (or a network command whose destination
-    // cannot be verified at all) is either a misconfigured task or an
-    // exfiltration attempt — the command must not run. Permissive scopes
-    // stay soft: the placeholder goes out instead of the real value and the
-    // call continues. "No destination" only blocks network-signature
-    // commands — a local write/edit normally has no destination, and
-    // letting the placeholder reach disk is both safe and what the marker
-    // flow builds on.
-    const blockedHeld = decision.held.filter((h) => {
-      if (scopes.get(h.ruleId)?.mode !== "strict") return false;
-      if (h.reason === "destination") return true;
-      return h.reason === "no-destination" && hasNetworkSignature(command);
-    });
-    if (blockedHeld.length > 0) {
-      for (const held of blockedHeld) {
+    // Scope violations block the call outright: a confirmed destination
+    // violation (any mode), an outbound call with unverifiable destination
+    // under strict, or local use of a strict/guarded value (use-not-copy)
+    // is either a misconfigured task or an exfiltration attempt — the
+    // command must not run.
+    if (decision.violations.length > 0) {
+      for (const v of decision.violations) {
         recordAudit({
           at: Date.now(),
           kind: "blocked",
-          ruleId: held.ruleId,
-          ruleName: held.ruleName,
+          ruleId: v.ruleId,
+          ruleName: v.ruleName,
           tool: event.toolName,
           callId: event.toolCallId,
-          destinations: held.offending.length > 0 ? held.offending : undefined,
-          detail: held.reason === "destination" ? "outside allowed destinations (strict)" : "no destination verifiable (strict)",
+          destinations: v.offending.length > 0 ? v.offending : undefined,
+          detail:
+            v.reason === "destination"
+              ? "outside allowed destinations"
+              : v.reason === "tool"
+                ? `tool not in allowlist: ${v.offending.join(", ")}`
+                : hasNetworkSignature(command)
+                  ? "outbound call with no verifiable destination"
+                  : "local use blocked (use-not-copy)",
         });
       }
-      const sentences = blockedHeld.map((held) =>
-        held.reason === "destination"
-          ? `"${held.ruleName}" (strict) may not go to ${capDestinationList(held.offending)}. The real value did not leave. Add it in /masking only if legitimate.`
-          : `"${held.ruleName}" (strict) was not restored — no verifiable destination. Use a literal destination or export it before launch.`,
-      );
+      const sentences = decision.violations.map((v) => {
+        const mode = scopes.get(v.ruleId)?.mode ?? "strict";
+        if (v.reason === "destination") {
+          return `"${v.ruleName}" may not go to ${capDestinationList(v.offending)}. The real value did not leave. Add the destination in /masking only if legitimate.`;
+        }
+        if (v.reason === "tool") {
+          return `"${v.ruleName}" restores only for its allowed tools; this call used "${v.offending.join(", ")}".`;
+        }
+        return hasNetworkSignature(command)
+          ? `"${v.ruleName}" (${mode}) blocks outbound calls with no verifiable destination. Use a literal destination or export it before launch.`
+          : `"${v.ruleName}" (${mode}) may not be written to local files or used by local processes — its value only flows to its allowed destinations. Write the file yourself, or switch the rule to permissive in /masking.`;
+      });
       return { block: true, reason: `Blocked by pi-data-masking: ${sentences.join(" ")}` };
     }
 
     // Update event.input in place so the tool runs with the (scoped) real
-    // arguments; held-back rules keep their placeholders. Held rules whose
-    // values arrived pre-restored (stream restore) also need the masked form
-    // written back — otherwise the tool would execute with the real value.
-    if (decision.count > 0 || decision.held.length > 0) {
+    // arguments.
+    if (decision.count > 0) {
       const unmasked = decision.value as Record<string, unknown>;
       for (const key of Object.keys(unmasked)) {
         (event.input as Record<string, unknown>)[key] = unmasked[key];
@@ -1408,18 +1404,6 @@ export default async function (pi: ExtensionAPI) {
         destinations: auditDestinations.length > 0 ? auditDestinations : undefined,
       });
     }
-    for (const held of decision.held) {
-      recordAudit({
-        at: Date.now(),
-        kind: "held",
-        ruleId: held.ruleId,
-        ruleName: held.ruleName,
-        tool: event.toolName,
-        callId: event.toolCallId,
-        destinations: held.offending.length > 0 ? held.offending : undefined,
-        detail: held.reason === "tool" ? `tool not in allowlist: ${held.offending.join(", ")}` : held.reason === "no-destination" ? "no destination verifiable (strict)" : undefined,
-      });
-    }
     for (const warned of decision.warned) {
       recordAudit({
         at: Date.now(),
@@ -1428,41 +1412,18 @@ export default async function (pi: ExtensionAPI) {
         ruleName: warned.ruleName,
         tool: event.toolName,
         callId: event.toolCallId,
-        detail: "restored unchecked — no destination verifiable (permissive)",
+        detail: `restored unchecked — no destination verifiable (${scopes.get(warned.ruleId)?.mode ?? "permissive"})`,
       });
     }
 
-    // Hold-back and permissive notices, once per turn per (rule, reason).
-    if (ctx.ui && (decision.held.length > 0 || decision.warned.length > 0)) {
-      for (const held of decision.held) {
-        const key = `hold:${held.ruleId}:${held.reason}`;
-        if (scopeNotifiedThisTurn.has(key)) continue;
-        scopeNotifiedThisTurn.add(key);
-        const mode = scopes.get(held.ruleId)?.mode === "strict" ? "strict" : "permissive";
-        const detail =
-          held.reason === "tool"
-            ? `tool "${held.offending.join(", ")}" is not in the rule's allowed tools`
-            : held.reason === "destination"
-              ? `${capDestinationList(held.offending)} is outside the rule's destinations`
-              : "no verifiable destination for this command";
-        const remedy =
-          held.reason === "destination"
-            ? "Add it in /masking only if legitimate."
-            : held.reason === "no-destination"
-              ? "Use a literal destination or export it before launch."
-              : "";
-        ctx.ui.notify(
-          `pi-data-masking: sent the placeholder instead of "${held.ruleName}" (${mode}) — ${detail}.` +
-            (remedy ? ` ${remedy}` : ""),
-          "warning",
-        );
-      }
+    // Detection-gap notices, once per turn per (rule, kind).
+    if (ctx.ui && decision.warned.length > 0) {
       for (const warned of decision.warned) {
         const key = `warn:${warned.ruleId}:${warned.kind}`;
         if (scopeNotifiedThisTurn.has(key)) continue;
         scopeNotifiedThisTurn.add(key);
         ctx.ui.notify(
-          `pi-data-masking: restored "${warned.ruleName}" (permissive) — no verifiable destination; ` +
+          `pi-data-masking: restored "${warned.ruleName}" (${scopes.get(warned.ruleId)?.mode ?? "permissive"}) — no verifiable destination; ` +
             `the real value was passed to the command. Tighten the rule in /masking if unintended.`,
           "warning",
         );

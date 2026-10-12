@@ -14,7 +14,7 @@ user/tool data → mask → LLM → restore tool arguments → tool uses real da
 - **Efficient long conversations** — with stable rules, cached masking results avoid repeated regex scans of unchanged history as the conversation grows.
 - **Model guidance for placeholders** — an opt-in system-prompt note teaches the model to compare placeholders as exact full strings, pass them verbatim into tools, and route transformations through tools instead of slicing or hashing them.
 - **Placeholder disclosure** — optionally list the session's actual placeholder strings in the model guidance, so the model can tell which values are substitutes instead of guessing. Disclosure is a three-position switch (on, off, or per-rule) with a plain on/off toggle per literal rule.
-- **Auditable model view** — `/masking-history` lets you verify the exact local and model-facing representations, together with the rule versions that produced them, and replay every restoration decision (restored, held, warned, blocked) in its audit tab.
+- **Auditable model view** — `/masking-history` lets you verify the exact local and model-facing representations, together with the rule versions that produced them, and replay every restoration decision (restored, unverified, blocked) in its audit tab.
 
 ## Use cases
 
@@ -60,7 +60,7 @@ The model plans tool calls using placeholders. Immediately before a tool runs, m
 
 ### Inspectable model view
 
-`/masking-history` has two tabs (`Tab` switches). The Masked views tab shows only representations that actually reached the model, grouped into consecutive rule versions; it supports local original, exact model-facing, and comparison views, each version lists the rules that produced it, and unused intermediate edits are omitted. The Restoration audit tab lists every restore, hold, unverified release, block, and confirm decision (time, outcome, tool, rule, destinations) with a text filter, answering "where has this value been restored to" and "why was that command blocked"; selecting an event and pressing `Enter` jumps to the transcript message carrying that tool call.
+`/masking-history` has two tabs (`Tab` switches). The Masked views tab shows only representations that actually reached the model, grouped into consecutive rule versions; it supports local original, exact model-facing, and comparison views, each version lists the rules that produced it, and unused intermediate edits are omitted. The Restoration audit tab lists every restore, unverified release, and block decision (time, outcome, tool, rule, destinations) with a text filter, answering "where has this value been restored to" and "why was that command blocked"; selecting an event and pressing `Enter` jumps to the transcript message carrying that tool call, and the line under the list explains the selected outcome.
 
 ## Rules and configuration
 
@@ -173,9 +173,18 @@ The opt-in `systemPromptGuidance` note mitigates both: its escape hatch (report 
 
 ### Scoped restoration (restoreScope)
 
-Rules may declare a `restoreScope` restricting where their real values may flow once restored into tool arguments: `destinations` (a dot-anchored host allowlist — `stripe.com` covers `api.stripe.com`, not `api.stripe.com.evil.com`; IP literals and intranet wildcards like `10.0.*` are supported), `tools` (tool names allowed to receive the value), and `mode` (`strict` holds the restoration whenever the destination cannot be verified; `permissive` restores with a notice when no destination can be extracted). Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
+Rules may declare a `restoreScope` restricting where their real values may flow once restored into tool arguments: `destinations` (a dot-anchored host allowlist — `stripe.com` covers `api.stripe.com`, not `api.stripe.com.evil.com`; IP literals and intranet wildcards like `10.0.*` are supported), `tools` (tool names allowed to receive the value), and `mode` — a three-step ladder deciding what happens when the destination cannot be verified:
 
-When a scope check fails, the placeholder stays in place and the hold is reported with the rule name and the offending destination or tool; the real value never reaches an unverified destination. Holds and notices are reported at most once per turn; edit the rule in `/masking` to widen or tighten its scope.
+| situation | `strict` | `guarded` | `permissive` |
+|---|---|---|---|
+| destination verified | restore | restore | restore |
+| destination outside the allowlist | block | block | block |
+| outbound call, destination unverifiable (`curl "$URL"`) | block | restore + warning | restore + warning |
+| local use (write a file, run a local command) | block | block | restore (later egress stays tracked) |
+
+`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `permissive` accepts the exposure risk of unverifiable calls to keep the task working; `guarded` sits between: it blocks violations and local copies but tolerates detection gaps. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
+
+Blocked calls return the reason to the model (offending destination, rule name, and the way out), so it can adapt instead of retrying blindly; notices for unverified restores appear at most once per turn. Edit the rule in `/masking` to widen or tighten its scope.
 
 Trusted environments that many rules share — an intranet, a company registry mirror — can be declared once instead of per rule: `options.trustedDestinations` (global config) is merged into every rule's destination allowlist. It only widens destination checks: per-rule `tools` restrictions and strict holds on calls with no extractable destination are unaffected, and rules without a scope stay unconditional. This is a user-level trust declaration — one `10.0.*` entry tells the extension your whole intranet is a legitimate destination for every scoped secret.
 

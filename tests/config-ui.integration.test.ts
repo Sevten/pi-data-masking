@@ -641,7 +641,10 @@ test("Restore scope accepts a comma list and Scope mode toggles permissive", asy
       assert.ok(/Scope mode.*Strict/.test(toggled), "right arrow toggles away from the permissive default");
       component.handleInput(INPUT.right);
       const toggledTwice = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
-      assert.ok(/Scope mode.*Permissive/.test(toggledTwice), "second toggle returns to Permissive");
+      assert.ok(/Scope mode.*Guarded/.test(toggledTwice), "second toggle reaches Guarded");
+      component.handleInput(INPUT.right);
+      const toggledThrice = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
+      assert.ok(/Scope mode.*Permissive/.test(toggledThrice), "third toggle returns to Permissive");
       assert.equal(toggled.includes("(default)"), false, "the default marker clears after an explicit choice");
       component.handleInput(INPUT.enter);
       await waitFor(() => configRules(projectPath).length === 1);
