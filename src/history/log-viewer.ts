@@ -40,6 +40,7 @@ interface LogKeybindings {
 /** A subview that reports when a text prompt owns the keyboard. */
 interface SearchAwareComponent extends Component {
   isSearchActive?(): boolean;
+  revealToolCall?(callId: string): boolean;
 }
 
 export interface MaskingLogViews {
@@ -73,14 +74,27 @@ export function createMaskingLogViewer(
   let viewsComponent: SearchAwareComponent | undefined;
   let auditComponent: SearchAwareComponent | undefined;
 
-  const activeComponent = (): SearchAwareComponent => {
-    if (active === "views") {
-      return (viewsComponent ??= views.epochViews.length > 0
-        ? createEpochHistoryViewer(shellTui, theme, keybindings, views.epochViews, done)
-        : createHistoryViewer(shellTui, theme, keybindings, views.transcript, done));
-    }
-    return (auditComponent ??= createAuditViewer(shellTui, theme, keybindings, views.auditEvents, done));
-  };
+  const ensureViews = (): SearchAwareComponent =>
+    (viewsComponent ??= views.epochViews.length > 0
+      ? createEpochHistoryViewer(shellTui, theme, keybindings, views.epochViews, done)
+      : createHistoryViewer(shellTui, theme, keybindings, views.transcript, done));
+
+  const activeComponent = (): SearchAwareComponent =>
+    active === "views" ? ensureViews() : (auditComponent ??= createAuditViewer(
+      shellTui,
+      theme,
+      keybindings,
+      views.auditEvents,
+      done,
+      // Audit → transcript jump: reveal the call in the views tab. False
+      // leaves the user on the audit tab with a status line from the viewer.
+      (event) => {
+        if (!event.callId) return false;
+        const ok = ensureViews().revealToolCall?.(event.callId) ?? false;
+        if (ok) active = "views";
+        return ok;
+      },
+    ));
 
   const tabCount = (tab: MaskingLogTab): string => {
     if (tab === "audit") return `(${views.auditEvents.length})`;

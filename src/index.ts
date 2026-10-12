@@ -1254,6 +1254,7 @@ export default async function (pi: ExtensionAPI) {
             ruleId: v.ruleId,
             ruleName: v.ruleName,
             tool: event.toolName,
+            callId: event.toolCallId,
             destinations: v.offending.length > 0 ? v.offending : undefined,
             detail: `paths: ${markedRefs.map((r) => r.path).join(", ")}`,
           });
@@ -1294,6 +1295,7 @@ export default async function (pi: ExtensionAPI) {
             ruleId: v.ruleId,
             ruleName: v.ruleName,
             tool: event.toolName,
+            callId: event.toolCallId,
             destinations: v.offending.length > 0 ? v.offending : undefined,
             detail: `paths: ${markedRefs.map((r) => r.path).join(", ")}`,
           });
@@ -1362,6 +1364,7 @@ export default async function (pi: ExtensionAPI) {
           ruleId: held.ruleId,
           ruleName: held.ruleName,
           tool: event.toolName,
+          callId: event.toolCallId,
           destinations: held.offending.length > 0 ? held.offending : undefined,
           detail: held.reason === "destination" ? "outside allowed destinations (strict)" : "no destination verifiable (strict)",
         });
@@ -1401,6 +1404,7 @@ export default async function (pi: ExtensionAPI) {
         ruleId,
         ruleName: config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
         tool: event.toolName,
+        callId: event.toolCallId,
         destinations: auditDestinations.length > 0 ? auditDestinations : undefined,
       });
     }
@@ -1411,6 +1415,7 @@ export default async function (pi: ExtensionAPI) {
         ruleId: held.ruleId,
         ruleName: held.ruleName,
         tool: event.toolName,
+        callId: event.toolCallId,
         destinations: held.offending.length > 0 ? held.offending : undefined,
         detail: held.reason === "tool" ? `tool not in allowlist: ${held.offending.join(", ")}` : held.reason === "no-destination" ? "no destination verifiable (strict)" : undefined,
       });
@@ -1422,6 +1427,7 @@ export default async function (pi: ExtensionAPI) {
         ruleId: warned.ruleId,
         ruleName: warned.ruleName,
         tool: event.toolName,
+        callId: event.toolCallId,
         detail: "restored unchecked — no destination verifiable (permissive)",
       });
     }

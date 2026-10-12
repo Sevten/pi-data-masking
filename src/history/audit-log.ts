@@ -42,6 +42,11 @@ export interface AuditEvent {
   destinations?: string[];
   /** Free-form context: marked path(s), reason summary. */
   detail?: string;
+  /** The tool call this decision fired on. Lets the audit view jump to the
+   *  matching transcript entry (`tool:<callId>`). Absent on events recorded
+   *  before this field existed, and for nested calls whose ids never
+   *  appear in the transcript. */
+  callId?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -71,7 +76,7 @@ export function parseAuditEvent(value: unknown): AuditEvent | undefined {
   const destinations = value.destinations === undefined ? undefined : asStringArray(value.destinations);
   if (value.destinations !== undefined && destinations === undefined) return undefined;
   if (value.detail !== undefined && typeof value.detail !== "string") return undefined;
-  return {
+  const parsed: AuditEvent = {
     at: value.at,
     kind: value.kind as AuditEventKind,
     ruleId: value.ruleId,
@@ -80,6 +85,9 @@ export function parseAuditEvent(value: unknown): AuditEvent | undefined {
     destinations,
     detail: value.detail as string | undefined,
   };
+  // Omit the key entirely when absent so pre-callId entries round-trip.
+  if (typeof value.callId === "string") parsed.callId = value.callId;
+  return parsed;
 }
 
 /** Replay audit entries from a session branch, in order. */

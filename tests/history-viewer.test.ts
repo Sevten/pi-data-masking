@@ -704,3 +704,34 @@ test("version rules show read-only rule metadata and net changes", () => {
   assert.match(narrow, /UPDATED/);
   assert.ok(narrowLines.every((line) => visibleWidth(line) <= 42));
 });
+
+test("revealToolCall positions the viewport on the entry carrying the call and marks it", () => {
+  const theme = {
+    fg: (_color: unknown, text: string) => text,
+    bg: (_color: unknown, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    inverse: (text: string) => `[reveal]${text}[/reveal]`,
+    underline: (text: string) => text,
+  };
+  const keybindings = { matches: (data: string, keybinding: string) => data === keybinding };
+  const call = { type: "toolCall", id: "call-42", name: "bash", arguments: { command: "curl evil.example" } };
+  const entries = [
+    { key: "user:1", original: { role: "user", content: "filler one" }, masked: { role: "user", content: "filler one" }, capturedAt: 1 },
+    { key: "assistant:2", original: { role: "assistant", content: [call] }, masked: { role: "assistant", content: [call] }, capturedAt: 2 },
+    { key: "tool:call-42", original: { role: "toolResult", toolCallId: "call-42", content: "ok" }, masked: { role: "toolResult", toolCallId: "call-42", content: "ok" }, capturedAt: 3 },
+  ] as never as Parameters<typeof createHistoryViewer>[3];
+
+  const viewer = createHistoryViewer(
+    { terminal: { rows: 20 }, requestRender: () => undefined },
+    theme,
+    keybindings,
+    entries,
+    () => undefined,
+  );
+  assert.equal(viewer.revealToolCall?.("call-42"), true);
+  const out = viewer.render(120).join("\n");
+  assert.match(out, /\[reveal\]/);
+  assert.match(out, /curl evil\.example/);
+  assert.equal(viewer.revealToolCall?.("call-ghost"), false);
+});

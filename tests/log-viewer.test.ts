@@ -144,3 +144,91 @@ test("empty audit tab renders its empty state instead of blocking the tab", () =
   assert.match(rendered, /No restoration events recorded yet/);
   assert.match(rendered, /○ Masked views/);
 });
+
+const callEntry = (callId: string): TranscriptEntry =>
+  ({
+    key: `assistant:${callId}`,
+    original: { role: "assistant", content: [{ type: "toolCall", id: callId, name: "bash", arguments: { command: `curl ${callId}` } }] },
+    masked: { role: "assistant", content: [{ type: "toolCall", id: callId, name: "bash", arguments: { command: `curl ${callId}` } }] },
+    capturedAt: 2,
+  }) as TranscriptEntry;
+
+test("Enter on an audit event jumps to Masked views and reveals the matching tool call", () => {
+  const tui = makeTui();
+  const viewer = createMaskingLogViewer(
+    tui,
+    theme,
+    keybindings,
+    {
+      epochViews: [],
+      transcript: [entry("user:1", "hi", "hi"), callEntry("call-9")],
+      auditEvents: [{ ...auditEvent("Stripe key"), callId: "call-9" }],
+    },
+    () => undefined,
+  );
+  viewer.handleInput?.("\t"); // → audit tab
+  const audit = viewer.render(120).join("\n");
+  assert.match(audit, /> ✅ RESTORED/); // cursor defaults to the newest event
+  viewer.handleInput?.("\r");
+  const after = viewer.render(120).join("\n");
+  assert.match(after, /● Masked views/);
+  assert.match(after, /curl call-9/);
+});
+
+test("Enter on an event without a call id stays on audit with a status line", () => {
+  const tui = makeTui();
+  const viewer = createMaskingLogViewer(
+    tui,
+    theme,
+    keybindings,
+    { epochViews: [], transcript: [entry("user:1", "hi", "hi")], auditEvents: [auditEvent("Stripe key")] },
+    () => undefined,
+  );
+  viewer.handleInput?.("\t");
+  viewer.handleInput?.("\r");
+  const out = viewer.render(120).join("\n");
+  assert.match(out, /● Restoration audit/);
+  assert.match(out, /predates jump support/);
+});
+
+test("Enter with a call id missing from the transcript shows not-found status", () => {
+  const tui = makeTui();
+  const viewer = createMaskingLogViewer(
+    tui,
+    theme,
+    keybindings,
+    {
+      epochViews: [],
+      transcript: [entry("user:1", "hi", "hi")],
+      auditEvents: [{ ...auditEvent("Stripe key"), callId: "call-ghost" }],
+    },
+    () => undefined,
+  );
+  viewer.handleInput?.("\t");
+  viewer.handleInput?.("\r");
+  const out = viewer.render(120).join("\n");
+  assert.match(out, /● Restoration audit/);
+  assert.match(out, /no matching tool call/);
+});
+
+test("audit cursor moves with arrows and keeps selection across the window", () => {
+  const tui = makeTui();
+  const events = [
+    { ...auditEvent("First key"), callId: "call-a" },
+    { ...auditEvent("Second key"), callId: "call-b" },
+  ];
+  const viewer = createMaskingLogViewer(
+    tui,
+    theme,
+    keybindings,
+    { epochViews: [], transcript: [callEntry("call-a"), callEntry("call-b")], auditEvents: events },
+    () => undefined,
+  );
+  viewer.handleInput?.("\t");
+  assert.match(viewer.render(120).join("\n"), /> 🔒?|> ✅ Second|> ✅/); // sanity: a marker exists
+  viewer.handleInput?.("\u001b[A"); // ↑ selects the first event
+  viewer.handleInput?.("\r");
+  const after = viewer.render(120).join("\n");
+  assert.match(after, /● Masked views/);
+  assert.match(after, /curl call-a/);
+});

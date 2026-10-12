@@ -544,6 +544,16 @@ export interface HistoryViewerComponent extends Component {
   /** True while the transcript search prompt is open; wrappers must then hand
    *  every keystroke straight to this component instead of acting on shortcuts. */
   isSearchActive?(): boolean;
+  /** Scroll the viewport to the message containing this tool call and mark
+   *  it. Returns false when no displayed entry carries the call. */
+  revealToolCall?(callId: string): boolean;
+}
+
+function entryHasToolCall(entry: TranscriptEntry, callId: string): boolean {
+  const content = entry.original.content;
+  return Array.isArray(content) && content.some(
+    (block) => isRecord(block) && block.type === "toolCall" && block.id === callId,
+  );
 }
 
 function activeRuleCount(view: EpochHistoryView): number {
@@ -570,6 +580,9 @@ export function createHistoryViewer(
   let revealSelectedOccurrence = false;
   let searchMode = false;
   let searchQuery = "";
+  // Entry marked by a jump from the audit tab; cleared when another reveal
+  // replaces it. The marker is the inverse-video entry header.
+  let revealEntry: number | undefined;
   interface SearchHit { entry: number; line: number; col: number }
   let searchMatches: SearchHit[] = [];
   let searchCursor: SearchHit = { entry: 0, line: 0, col: -1 };
@@ -853,12 +866,22 @@ export function createHistoryViewer(
       }
       const visible: string[] = [];
       let cursor = { ...position };
+      let revealMarked = false;
       while (visible.length < pageSize() && cursor.entry < displayEntries.length) {
         const lines = entryLines(cursor.entry, width);
         const take = Math.min(pageSize() - visible.length, Math.max(0, lines.length - cursor.line));
         visible.push(...lines
           .slice(cursor.line, cursor.line + take)
-          .map((line, offset) => highlightSearchHits(cursor.entry, cursor.line + offset, line)));
+          .map((line, offset) => {
+            const styled = highlightSearchHits(cursor.entry, cursor.line + offset, line);
+            // Mark the first visible content line of the revealed entry —
+            // entries start with a blank separator that inverse would eat.
+            if (cursor.entry === revealEntry && !revealMarked && stripAnsi(line).trim() !== "") {
+              revealMarked = true;
+              return theme.inverse ? theme.inverse(styled) : theme.fg("accent", styled);
+            }
+            return styled;
+          }));
         cursor.line += take;
         if (cursor.line >= lines.length) cursor = { entry: cursor.entry + 1, line: 0 };
       }
@@ -1022,6 +1045,14 @@ export function createHistoryViewer(
       tui.requestRender();
     },
     isSearchActive: () => searchMode,
+    revealToolCall: (callId: string): boolean => {
+      const index = displayEntries.findIndex((entry) => entryHasToolCall(entry, callId));
+      if (index < 0) return false;
+      revealEntry = index;
+      position = { entry: index, line: 0 };
+      tui.requestRender();
+      return true;
+    },
   };
 }
 
@@ -1185,7 +1216,7 @@ export function createEpochHistoryViewer(
   keybindings: HistoryKeybindings,
   epochViews: readonly EpochHistoryView[],
   done: () => void,
-): Component {
+): HistoryViewerComponent {
   const views = epochViews.filter((view) => view.entries.length > 0);
   let selectedIndex = Math.max(0, views.length - 1);
   let screen: "history" | "rules" = "history";
@@ -1234,6 +1265,18 @@ export function createEpochHistoryViewer(
   return {
     invalidate: () => selected.invalidate?.(),
     render: (width) => selected.render(width),
+    revealToolCall: (callId: string): boolean => {
+      if (screen === "history" && selected.revealToolCall?.(callId)) return true;
+      // The call lives in another rule version: switch to it, then reveal.
+      const index = views.findIndex((view) => view.entries.some((entry) => entryHasToolCall(entry, callId)));
+      if (index < 0) return false;
+      selectedIndex = index;
+      screen = "history";
+      selected = createSelected();
+      const ok = selected.revealToolCall?.(callId) ?? false;
+      if (ok) tui.requestRender();
+      return ok;
+    },
     handleInput: (data) => {
       // While the transcript search prompt is open, every keystroke belongs to
       // the query — never let version/rules shortcuts (", ], r) steal it.
