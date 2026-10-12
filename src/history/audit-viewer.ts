@@ -26,6 +26,13 @@ interface AuditKeybindings {
   matches(data: string, keybinding: any): boolean;
 }
 
+/**
+ * Outcome symbols must be Emoji_Presentation=Yes glyphs: terminals paint
+ * them two cells and pi-tui's width table counts two, so the column stays
+ * aligned by construction. East Asian Ambiguous glyphs (✓ ✖ ⚠ …) vary per
+ * font fallback and break the layout. Pad labels before coloring — padEnd
+ * on an ANSI-colored string counts the escapes and never pads.
+ */
 const KIND_SYMBOL: Record<AuditEventKind, string> = {
   restored: "✅",
   held: "🔒",
