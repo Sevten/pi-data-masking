@@ -128,7 +128,7 @@ export function createAuditViewer(
       for (const block of blocks) body.push(...block);
     }
 
-    const bodyRows = Math.max(1, tui.terminal.rows - 9);
+    const bodyRows = Math.max(1, tui.terminal.rows - 7);
     // Keep the selected block inside the window, then clamp.
     if (blocks.length > 0 && blocks[cursor]) {
       const starts: number[] = [];
@@ -149,13 +149,7 @@ export function createAuditViewer(
     const ruleLine = theme.fg("muted", "\u2500".repeat(width));
 
     const header = theme.fg("accent", theme.bold(`Restoration audit · ${matching.length}${filter ? ` of ${events.length}` : ""} events${filter ? ` · filter: ${filter}` : ""}`));
-    // Outcome semantics live below the bottom rule so the event list itself
-    // stays scannable; the symbols in each line match the list column.
-    const explain = [
-      "✅ restored: real value sent, destination verified · 🔒 held: call ran, placeholder sent",
-      "⚠️ unverified: real value sent, destination unchecked · ☑️ confirmed: you approved",
-      "❌ blocked: call refused · 🚫 declined: you refused",
-    ].flatMap((line) => wrapTextWithAnsi(theme.fg("dim", line), width));
+    const legend = theme.fg("dim", "✅ restored · 🔒 held (placeholder kept) · ⚠️ unverified · ☑️ confirmed · ❌ blocked · 🚫 declined");
     const progress = status
       ? theme.fg("warning", status)
       : offset > 0
@@ -165,7 +159,7 @@ export function createAuditViewer(
       ? [theme.fg("muted", `filter: ${filter}█`)]
       : [theme.fg("dim", "↑↓ select · Enter jump to message · PgUp/PgDn page · / filter · Esc close"), progress].filter(Boolean);
 
-    return [...wrapTextWithAnsi(header, width), "", ruleLine, ...visible, ruleLine, "", ...explain, ...footerLines, ...Array(Math.max(0, tui.terminal.rows - (10 + explain.length + visible.length))).fill("")];
+    return [...wrapTextWithAnsi(header, width), "", legend, ruleLine, ...visible, ruleLine, "", ...footerLines, ...Array(Math.max(0, tui.terminal.rows - (8 + visible.length))).fill("")];
   };
 
   const setCursor = (index: number): void => {
