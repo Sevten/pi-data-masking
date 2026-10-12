@@ -1,6 +1,7 @@
 /**
  * audit-viewer.ts
- * Full-screen audit view for restoration decisions (/masking-audit):
+ * Full-screen audit view for restoration decisions (the Restoration audit
+ * tab of /masking-history):
  * one line per event — time, outcome symbol, tool, rule, destinations —
  * with a text filter and scrolling. Same visual language as the history
  * viewer: accent header, muted inspector, dim legend/footer, scrollable
@@ -84,7 +85,7 @@ export function createAuditViewer(
   keybindings: AuditKeybindings,
   events: readonly AuditEvent[],
   done: () => void,
-): Component {
+): Component & { isSearchActive(): boolean } {
   let filter = "";
   let filterMode = false;
   // Bottom-anchored: newest events are the interesting ones.
@@ -132,6 +133,7 @@ export function createAuditViewer(
 
   return {
     invalidate: () => {},
+    isSearchActive: () => filterMode,
     render: (width) => render(Math.max(1, width)),
     handleInput: (data: string) => {
       if (filterMode) {

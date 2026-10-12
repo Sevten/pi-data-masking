@@ -87,7 +87,7 @@ After each round, check three places:
 
 1. `ssh <collector-host> 'tail -20 ~/egress-test/requests.log'` (what was sent; BODY
    is the real value or a `ph-…`-style placeholder);
-2. `/masking-audit` in Pi (timeline and rationale of every
+2. `/masking-history` → Restoration audit tab in Pi (timeline and rationale of every
    restore/hold/block/confirm decision);
 3. Notification banners (permissive notices, block warnings — shown once, no
    spam).
@@ -144,7 +144,7 @@ expected).
 
 | Observation | Conclusion |
 |---|---|
-| Any of A2/A4/A7/A8/A9/C4/B2–B4 leaves a real-value BODY on the evil domain | **defense failed, bug** (check `/masking-audit` for a decision record first) |
+| Any of A2/A4/A7/A8/A9/C4/B2–B4 leaves a real-value BODY on the evil domain | **defense failed, bug** (check the Restoration audit tab of `/masking-history` for a decision record first) |
 | No log entry for A1/A6/B1/C1/C2/C5 | allow path broken (check scope materialization, trustedDestinations) |
 | Normal file reads / echo trigger blocks or holds | false positive; record the scenario and the agent's exact words (false-positive regression) |
 

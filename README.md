@@ -14,7 +14,7 @@ user/tool data → mask → LLM → restore tool arguments → tool uses real da
 - **Efficient long conversations** — with stable rules, cached masking results avoid repeated regex scans of unchanged history as the conversation grows.
 - **Model guidance for placeholders** — an opt-in system-prompt note teaches the model to compare placeholders as exact full strings, pass them verbatim into tools, and route transformations through tools instead of slicing or hashing them.
 - **Placeholder disclosure** — optionally list the session's actual placeholder strings in the model guidance, so the model can tell which values are substitutes instead of guessing. Disclosure is a three-position switch (on, off, or per-rule) with a plain on/off toggle per literal rule.
-- **Auditable model view** — `/masking-history` lets you verify the exact local and model-facing representations, together with the rule versions that produced them.
+- **Auditable model view** — `/masking-history` lets you verify the exact local and model-facing representations, together with the rule versions that produced them, and replay every restoration decision (restored, held, warned, blocked) in its audit tab.
 
 ## Use cases
 
@@ -60,7 +60,7 @@ The model plans tool calls using placeholders. Immediately before a tool runs, m
 
 ### Inspectable model view
 
-`/masking-history` shows only representations that actually reached the model, grouped into consecutive rule versions. It supports local original, exact model-facing, and comparison views; each version lists the rules that produced it, and unused intermediate edits are omitted.
+`/masking-history` has two tabs (`Tab` switches). The Masked views tab shows only representations that actually reached the model, grouped into consecutive rule versions; it supports local original, exact model-facing, and comparison views, each version lists the rules that produced it, and unused intermediate edits are omitted. The Restoration audit tab lists every restore, hold, warn, block, and confirm decision (time, outcome, tool, rule, destinations) with a text filter, answering "where has this value been restored to" and "why was that command blocked".
 
 ## Rules and configuration
 
@@ -123,7 +123,7 @@ Regex diagnostics are advisory. Keep patterns narrow and test representative pos
 | `/masking` | Manage and locally test project/global rules and the global masking state |
 | `/masking test <text>` | Run the effective rules over the text and preview the masked output |
 | `/masking on` / `off` | Toggle the global masking switch |
-| `/masking-history` | Audit exact local/model views by rule version |
+| `/masking-history` | Replay masked model views by rule version and the restoration audit trail |
 
 ### `/masking`
 
@@ -145,10 +145,11 @@ Regex diagnostics are advisory. Keep patterns narrow and test representative pos
 
 | Key | Action |
 |---|---|
+| `Tab` | Switch between Masked views and Restoration audit |
 | `[` / `]` | Switch rule version |
 | `R` | Inspect the selected version's rules and net changes |
 | `N` / `P` | Navigate masked occurrences |
-| `/` | Search the transcript; `Enter`/`Ctrl+R` cycle matches, `Esc` closes |
+| `/` | Search the transcript (Masked views) or filter events by rule, tool, destination (Restoration audit); `Enter`/`Ctrl+R` cycle matches, `Esc` closes |
 | `M` | Switch between local original and model-facing views |
 | `C` | Toggle comparison view |
 | `Ctrl+O` / `Ctrl+T` | Toggle tool and thinking content |

@@ -78,7 +78,7 @@ import {
   type AuditEvent,
   type AuditEventKind,
 } from "./history/audit-log.ts";
-import { createAuditViewer } from "./history/audit-viewer.ts";
+import { createMaskingLogViewer } from "./history/log-viewer.ts";
 import type { EffectiveScope } from "./core/restore-scope.ts";
 import {
   armStreamRestore,
@@ -116,8 +116,6 @@ import {
   writeMigrationState,
 } from "./config/migration.ts";
 import {
-  createEpochHistoryViewer,
-  createHistoryViewer,
   mergePendingAssistant,
   mergeTranscript,
   transcriptKey,
@@ -1741,7 +1739,7 @@ export default async function (pi: ExtensionAPI) {
   // ── Command: /masking-history ────────────────────────────────────────────
 
   pi.registerCommand("masking-history", {
-    description: "Replay factual masking results by rule version",
+    description: "Replay masking results and restoration decisions (Tab switches tabs)",
     handler: async (_args, ctx) => {
       const epochViews = [...epochTranscripts.values()]
         .filter((state) => state.entries.length > 0)
@@ -1750,31 +1748,23 @@ export default async function (pi: ExtensionAPI) {
           epoch: state.epoch,
           entries: state.entries,
         }));
-      if (epochViews.length === 0 && transcript.length === 0) {
-        ctx.ui.notify("No conversation has reached the masking boundary yet", "info");
-        return;
-      }
-      await ctx.ui.custom<void>((tui, theme, keybindings, done) => epochViews.length > 0
-        ? createEpochHistoryViewer(tui, theme, keybindings, epochViews, done)
-        : createHistoryViewer(tui, theme, keybindings, transcript, done),
-      {
-        overlay: true,
-        overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
-      });
-    },
-  });
-
-  // ── Command: /masking-audit ───────────────────────────────────────────────
-
-  pi.registerCommand("masking-audit", {
-    description: "Replay restoration/hold/block decisions by rule",
-    handler: async (_args, ctx) => {
-      if (auditEvents.length === 0) {
-        ctx.ui.notify("No restoration events recorded in this session yet", "info");
+      if (epochViews.length === 0 && transcript.length === 0 && auditEvents.length === 0) {
+        ctx.ui.notify("Nothing has crossed the masking boundary yet — no masked views or restoration events", "info");
         return;
       }
       await ctx.ui.custom<void>((tui, theme, keybindings, done) =>
-        createAuditViewer(tui, theme, keybindings, auditEvents, done),
+        createMaskingLogViewer(
+          tui,
+          theme,
+          keybindings,
+          {
+            epochViews,
+            transcript,
+            auditEvents,
+            defaultTab: epochViews.length > 0 || transcript.length > 0 ? "views" : "audit",
+          },
+          done,
+        ),
       {
         overlay: true,
         overlayOptions: { width: "100%", maxHeight: "100%", row: 0, col: 0, margin: 0 },
