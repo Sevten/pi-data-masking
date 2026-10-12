@@ -232,3 +232,26 @@ test("audit cursor moves with arrows and keeps selection across the window", () 
   assert.match(after, /● Masked views/);
   assert.match(after, /curl call-a/);
 });
+
+test("audit selection shows the outcome semantics line below the bottom rule", () => {
+  const tui = makeTui();
+  const viewer = createMaskingLogViewer(
+    tui,
+    theme,
+    keybindings,
+    {
+      epochViews: [],
+      transcript: [entry("user:1", "hi", "hi")],
+      auditEvents: [
+        { ...auditEvent("Stripe key", "restored"), callId: "call-a" },
+        { ...auditEvent("evil key", "held"), callId: "call-b" },
+      ],
+    },
+    () => undefined,
+  );
+  viewer.handleInput?.("\t");
+  // Cursor defaults to the newest event (held).
+  assert.match(viewer.render(120).join("\n"), /🔒 held — legacy: the call ran with the placeholder/);
+  viewer.handleInput?.("\u001b[A"); // ↑ now the restored event
+  assert.match(viewer.render(120).join("\n"), /✅ restored — the real value was restored into this call/);
+});

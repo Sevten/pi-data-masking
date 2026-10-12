@@ -60,6 +60,18 @@ const KIND_LABEL: Record<AuditEventKind, string> = {
   declined: "DECLINED",
 };
 
+// One-line semantics shown below the bottom rule for the selected event.
+// `held`/`confirmed`/`declined` are legacy kinds (older sessions) — kept
+// for replay.
+const KIND_EXPLAIN: Record<AuditEventKind, string> = {
+  restored: "the real value was restored into this call, destination verified against the rule's scope",
+  held: "legacy: the call ran with the placeholder; the real value stayed behind",
+  warned: "the real value went out without destination verification (guarded/permissive tolerate this gap)",
+  blocked: "the call was refused outright; the real value never left (scope violation, blocked in every mode)",
+  confirmed: "legacy: the call ran with the real value because you approved the confirm prompt",
+  declined: "legacy: you refused the call at the confirm prompt; the real value never left",
+};
+
 function formatTime(at: number): string {
   const date = new Date(at);
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -128,7 +140,7 @@ export function createAuditViewer(
       for (const block of blocks) body.push(...block);
     }
 
-    const bodyRows = Math.max(1, tui.terminal.rows - 7);
+    const bodyRows = Math.max(1, tui.terminal.rows - 8);
     // Keep the selected block inside the window, then clamp.
     if (blocks.length > 0 && blocks[cursor]) {
       const starts: number[] = [];
@@ -159,7 +171,18 @@ export function createAuditViewer(
       ? [theme.fg("muted", `filter: ${filter}█`)]
       : [theme.fg("dim", "↑↓ select · Enter jump to message · PgUp/PgDn page · / filter · Esc close"), progress].filter(Boolean);
 
-    return [...wrapTextWithAnsi(header, width), "", legend, ruleLine, ...visible, ruleLine, "", ...footerLines, ...Array(Math.max(0, tui.terminal.rows - (8 + visible.length))).fill("")];
+    // Contextual semantics for the selected event, between the bottom rule
+    // and the key hints; the transient status line keeps its own slot.
+    const selectedEvent = cursor >= 0 && cursor < matching.length ? matching[cursor] : undefined;
+    const context = selectedEvent
+      ? wrapTextWithAnsi(
+          theme.fg("dim", `${KIND_SYMBOL[selectedEvent.kind]} ${KIND_LABEL[selectedEvent.kind].toLowerCase()} — ${KIND_EXPLAIN[selectedEvent.kind]}`),
+          width,
+        )
+      : [];
+    const lines = [...wrapTextWithAnsi(header, width), "", legend, ruleLine, ...visible, ruleLine, ...context, "", ...footerLines];
+
+    return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
   };
 
   const setCursor = (index: number): void => {
