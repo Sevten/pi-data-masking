@@ -27,12 +27,12 @@ interface AuditKeybindings {
 }
 
 const KIND_SYMBOL: Record<AuditEventKind, string> = {
-  restored: "✔",
-  held: "⏸",
-  warned: "⚠",
-  blocked: "✖",
-  confirmed: "☑",
-  declined: "⨯",
+  restored: "✅",
+  held: "🔒",
+  warned: "⚠\uFE0F",
+  blocked: "❌",
+  confirmed: "☑\uFE0F",
+  declined: "🚫",
 };
 
 const KIND_COLOR: Record<AuditEventKind, string> = {
@@ -61,7 +61,7 @@ function formatTime(at: number): string {
 
 function eventLines(event: AuditEvent, width: number, theme: AuditTheme): string[] {
   const symbol = theme.fg(KIND_COLOR[event.kind], KIND_SYMBOL[event.kind]);
-  const label = theme.fg(KIND_COLOR[event.kind], KIND_LABEL[event.kind]);
+  const label = theme.fg(KIND_COLOR[event.kind], KIND_LABEL[event.kind].padEnd(9));
   const time = theme.fg("dim", formatTime(event.at));
   const tool = theme.fg("muted", event.tool);
   const head = `  ${symbol} ${label.padEnd(9)} ${time}  ${tool}`;
@@ -72,7 +72,7 @@ function eventLines(event: AuditEvent, width: number, theme: AuditTheme): string
     detailParts.push(`→ ${event.destinations.join(", ")}`);
   }
   if (event.detail) detailParts.push(event.detail);
-  const detail = `             ${detailParts.join("  ")}`;
+  const detail = `               ${detailParts.join("  ")}`;
   for (const wrapped of wrapTextWithAnsi(theme.fg("muted", detail), width)) {
     lines.push(truncateToWidth(wrapped, width));
   }
@@ -118,7 +118,7 @@ export function createAuditViewer(
     const ruleLine = theme.fg("muted", "\u2500".repeat(width));
 
     const header = theme.fg("accent", theme.bold(`Restoration audit · ${matching.length}${filter ? ` of ${events.length}` : ""} events${filter ? ` · filter: ${filter}` : ""}`));
-    const legend = theme.fg("dim", "✔ restored · ⏸ held (placeholder kept) · ⚠ warned/confirmed · ✖/⨯ blocked/declined");
+    const legend = theme.fg("dim", "✅ restored · 🔒 held (placeholder kept) · ⚠️ warned · ☑️ confirmed · ❌ blocked · 🚫 declined");
     const progress = offset > 0 ? theme.fg("dim", `scrolled up ${offset} lines`) : "";
     const footerLines = filterMode
       ? [theme.fg("muted", `filter: ${filter}█`)]
