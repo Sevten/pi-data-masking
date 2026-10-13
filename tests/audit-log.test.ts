@@ -26,6 +26,7 @@ const event = (overrides: Partial<AuditEvent> = {}): AuditEvent => ({
   ruleId: "stripe-key",
   ruleName: "Stripe key",
   tool: "bash",
+  callId: "call-1",
   ...overrides,
 });
 
@@ -52,7 +53,7 @@ test("parseAuditEvent: rejects wrong shapes", () => {
 
 test("loadAuditEvents: replays in order, skips foreign/broken entries", () => {
   const good1 = event({ kind: "restored" });
-  const good2 = event({ kind: "held", destinations: ["evil.com"] });
+  const good2 = event({ kind: "unverified", destinations: ["evil.com"] });
   const events = loadAuditEvents([
     entry("other.extension", {}),
     entry(AUDIT_ENTRY, good1),

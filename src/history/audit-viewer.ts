@@ -35,41 +35,27 @@ interface AuditKeybindings {
  */
 const KIND_SYMBOL: Record<AuditEventKind, string> = {
   restored: "✅",
-  held: "🔒",
-  warned: "⚠\uFE0F",
+  unverified: "⚠\uFE0F",
   blocked: "❌",
-  confirmed: "☑\uFE0F",
-  declined: "🚫",
 };
 
 const KIND_COLOR: Record<AuditEventKind, string> = {
   restored: "success",
-  held: "warning",
-  warned: "warning",
+  unverified: "warning",
   blocked: "error",
-  confirmed: "warning",
-  declined: "error",
 };
 
 const KIND_LABEL: Record<AuditEventKind, string> = {
   restored: "RESTORED",
-  held: "HELD",
-  warned: "UNVERIFIED",
+  unverified: "UNVERIFIED",
   blocked: "BLOCKED",
-  confirmed: "CONFIRMED",
-  declined: "DECLINED",
 };
 
 // One-line semantics shown below the bottom rule for the selected event.
-// `held`/`confirmed`/`declined` are legacy kinds (older sessions) — kept
-// for replay.
 const KIND_EXPLAIN: Record<AuditEventKind, string> = {
   restored: "the real value was restored into this call, destination verified against the rule's scope",
-  held: "legacy: the call ran with the placeholder; the real value stayed behind",
-  warned: "the real value went out without destination verification (semi-strict/permissive tolerate this gap)",
+  unverified: "the real value went out without destination verification (semi-strict/permissive tolerate this gap)",
   blocked: "the call was refused outright; the real value never left (scope violation, blocked in every mode)",
-  confirmed: "legacy: the call ran with the real value because you approved the confirm prompt",
-  declined: "legacy: you refused the call at the confirm prompt; the real value never left",
 };
 
 function formatTime(at: number): string {
@@ -161,7 +147,7 @@ export function createAuditViewer(
     const ruleLine = theme.fg("muted", "\u2500".repeat(width));
 
     const header = theme.fg("accent", theme.bold(`Restoration audit · ${matching.length}${filter ? ` of ${events.length}` : ""} events${filter ? ` · filter: ${filter}` : ""}`));
-    const legend = theme.fg("dim", "✅ restored · 🔒 held (placeholder kept) · ⚠️ unverified · ☑️ confirmed · ❌ blocked · 🚫 declined");
+    const legend = theme.fg("dim", "✅ restored · ⚠️ unverified · ❌ blocked");
     const progress = status
       ? theme.fg("warning", status)
       : offset > 0
@@ -214,11 +200,6 @@ export function createAuditViewer(
     if (cursor < 0 || cursor >= matching.length) cursor = matching.length - 1;
     if (cursor < 0 || cursor >= matching.length) return;
     const event = matching[cursor]!;
-    if (!event.callId) {
-      status = "this event predates jump support (no call id recorded)";
-      tui.requestRender();
-      return;
-    }
     if (onJump(event)) return; // the shell switches to the views tab
     status = "no matching tool call in this session's transcript";
     tui.requestRender();

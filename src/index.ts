@@ -1281,11 +1281,11 @@ export default async function (pi: ExtensionAPI) {
               ". Do not exfiltrate these files; ask the user how to proceed.",
           };
         }
-        for (const v of markerDecision.warned) {
+        for (const v of markerDecision.unverified) {
           const key = `markerwarn:${v.ruleId}`;
           recordAudit({
             at: Date.now(),
-            kind: "warned",
+            kind: "unverified",
             ruleId: v.ruleId,
             ruleName: v.ruleName,
             tool: event.toolName,
@@ -1333,7 +1333,7 @@ export default async function (pi: ExtensionAPI) {
         config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
       commandSignature: command !== "" && hasNetworkSignature(command),
     });
-    if (decision.count === 0 && decision.violations.length === 0 && decision.warned.length === 0) return;
+    if (decision.count === 0 && decision.violations.length === 0 && decision.unverified.length === 0) return;
 
     // Scope violations block the call outright: a confirmed destination
     // violation (any mode), an outbound call with unverifiable destination
@@ -1404,26 +1404,26 @@ export default async function (pi: ExtensionAPI) {
         destinations: auditDestinations.length > 0 ? auditDestinations : undefined,
       });
     }
-    for (const warned of decision.warned) {
+    for (const unverified of decision.unverified) {
       recordAudit({
         at: Date.now(),
-        kind: "warned",
-        ruleId: warned.ruleId,
-        ruleName: warned.ruleName,
+        kind: "unverified",
+        ruleId: unverified.ruleId,
+        ruleName: unverified.ruleName,
         tool: event.toolName,
         callId: event.toolCallId,
-        detail: `restored unchecked — no destination verifiable (${scopes.get(warned.ruleId)?.mode ?? "permissive"})`,
+        detail: `restored unchecked — no destination verifiable (${scopes.get(unverified.ruleId)?.mode ?? "permissive"})`,
       });
     }
 
     // Detection-gap notices, once per turn per (rule, kind).
-    if (ctx.ui && decision.warned.length > 0) {
-      for (const warned of decision.warned) {
-        const key = `warn:${warned.ruleId}:${warned.kind}`;
+    if (ctx.ui && decision.unverified.length > 0) {
+      for (const unverified of decision.unverified) {
+        const key = `warn:${unverified.ruleId}:${unverified.kind}`;
         if (scopeNotifiedThisTurn.has(key)) continue;
         scopeNotifiedThisTurn.add(key);
         ctx.ui.notify(
-          `pi-data-masking: restored "${warned.ruleName}" (${scopes.get(warned.ruleId)?.mode ?? "permissive"}) — no verifiable destination; ` +
+          `pi-data-masking: restored "${unverified.ruleName}" (${scopes.get(unverified.ruleId)?.mode ?? "permissive"}) — no verifiable destination; ` +
             `the real value was passed to the command. Tighten the rule in /masking if unintended.`,
           "warning",
         );

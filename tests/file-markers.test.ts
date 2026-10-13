@@ -191,7 +191,7 @@ test("marker decision: strict + unmatched destination → block", () => {
   });
   assert.equal(d.blocked.length, 1);
   assert.deepEqual(d.blocked[0].offending, ["evil.com"]);
-  assert.equal(d.warned.length, 0);
+  assert.equal(d.unverified.length, 0);
 });
 
 test("marker decision: semi-strict/permissive + unmatched destination → block (confirmed violation, every mode)", () => {
@@ -214,7 +214,7 @@ test("marker decision: all destinations allowlisted → pass", () => {
     destinations: ["api.stripe.com"],
     signatureOnly: false,
   });
-  assert.equal(d.blocked.length + d.warned.length, 0);
+  assert.equal(d.blocked.length + d.unverified.length, 0);
 });
 
 test("marker decision: signature without destination → strict blocks, semi-strict/permissive warn", () => {
@@ -226,7 +226,7 @@ test("marker decision: signature without destination → strict blocks, semi-str
       signatureOnly: true,
     });
     if (mode === "strict") assert.equal(d.blocked.length, 1, mode);
-    else assert.equal(d.warned.length, 1, mode);
+    else assert.equal(d.unverified.length, 1, mode);
   }
 });
 
@@ -237,7 +237,7 @@ test("marker decision: no intent (no destination, no signature) → pass", () =>
     destinations: [],
     signatureOnly: false,
   });
-  assert.equal(d.blocked.length + d.warned.length, 0);
+  assert.equal(d.blocked.length + d.unverified.length, 0);
 });
 
 test("marker decision: rules without a destination allowlist are not governed", () => {
@@ -247,7 +247,7 @@ test("marker decision: rules without a destination allowlist are not governed", 
     destinations: ["evil.com"],
     signatureOnly: false,
   });
-  assert.equal(d.blocked.length + d.warned.length, 0);
+  assert.equal(d.blocked.length + d.unverified.length, 0);
 });
 
 test("marker decision: multiple rules, mixed modes — confirmed violation blocks every mode", () => {
@@ -261,5 +261,5 @@ test("marker decision: multiple rules, mixed modes — confirmed violation block
     signatureOnly: false,
   });
   assert.deepEqual(d.blocked.map((v) => v.ruleId), ["strictR", "permR"]);
-  assert.deepEqual(d.warned, []);
+  assert.deepEqual(d.unverified, []);
 });

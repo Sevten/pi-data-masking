@@ -84,7 +84,7 @@ test("semi-strict: network signature with no destination restores with a warning
   const d = decide(f, "bash", input, true);
   assert.equal(d.count, 1);
   assert.deepEqual(d.violations, []);
-  assert.equal(d.warned[0]?.kind, "no-destination");
+  assert.equal(d.unverified[0]?.kind, "no-destination");
 });
 
 test("permissive: network signature with no destination restores with a warning", () => {
@@ -93,7 +93,7 @@ test("permissive: network signature with no destination restores with a warning"
   const d = decide(f, "bash", input, true);
   assert.equal(d.count, 1);
   assert.deepEqual(d.violations, []);
-  assert.equal(d.warned[0]?.kind, "no-destination");
+  assert.equal(d.unverified[0]?.kind, "no-destination");
 });
 
 // ── Local cell: no signature, no destination ─────────────────────────
@@ -117,7 +117,7 @@ test("permissive: local materialization restores (marker chain covers it)", () =
   const d = decide(f, "write", { content: `token=${f.placeholder}` }, false);
   assert.equal(d.count, 1);
   assert.deepEqual(d.violations, []);
-  assert.deepEqual(d.warned, []);
+  assert.deepEqual(d.unverified, []);
   assert.deepEqual(d.restoredRuleIds, ["stripe-key"]);
 });
 
@@ -255,7 +255,7 @@ test("rules without a scope restore unconditionally (backward compatible)", () =
   const d = decide(f, "bash", input);
   assert.equal(d.count, 1);
   assert.deepEqual(d.violations, []);
-  assert.deepEqual(d.warned, []);
+  assert.deepEqual(d.unverified, []);
 });
 
 test("one call mixes outcomes across rules", () => {
@@ -294,5 +294,5 @@ test("no placeholders: zero scope work and untouched input", () => {
   const d = decide(f, "bash", input);
   assert.equal(d.count, 0);
   assert.deepEqual(d.violations, []);
-  assert.deepEqual(d.warned, []);
+  assert.deepEqual(d.unverified, []);
 });

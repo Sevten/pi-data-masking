@@ -19,16 +19,10 @@ export const MARKERS_ENTRY = "pi-data-masking.markers.v1";
 export type AuditEventKind =
   /** Placeholder-flow scope decision: value restored into args. */
   | "restored"
-  /** strict hold: placeholder stayed in place. */
-  | "held"
-  /** permissive no-destination warning: restored unchecked. */
-  | "warned"
-  /** marker/env dimension: command blocked. */
-  | "blocked"
-  /** marker/env dimension: user allowed via confirm dialog. */
-  | "confirmed"
-  /** marker/env dimension: user declined via confirm dialog. */
-  | "declined";
+  /** Outbound with unverifiable destination: restored unchecked (guarded/permissive gap cell). */
+  | "unverified"
+  /** Call refused outright: confirmed violation, strict gap cell, or blocked local use. */
+  | "blocked";
 
 export interface AuditEvent {
   /** Date.now() at the decision. */
@@ -37,16 +31,15 @@ export interface AuditEvent {
   ruleId: string;
   ruleName: string;
   tool: string;
-  /** Destinations involved: offending (held/blocked) or matched
+  /** Destinations involved: offending (blocked) or matched
    *  (restored); empty when the trigger was destination-less intent. */
   destinations?: string[];
   /** Free-form context: marked path(s), reason summary. */
   detail?: string;
   /** The tool call this decision fired on. Lets the audit view jump to the
-   *  matching transcript entry (`tool:<callId>`). Absent on events recorded
-   *  before this field existed, and for nested calls whose ids never
-   *  appear in the transcript. */
-  callId?: string;
+   *  matching transcript entry (`tool:<callId>`). Nested sub-tool calls carry
+   *  an id that never appears in the transcript; the jump reports that. */
+  callId: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -55,11 +48,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const KINDS: readonly AuditEventKind[] = [
   "restored",
-  "held",
-  "warned",
+  "unverified",
   "blocked",
-  "confirmed",
-  "declined",
 ];
 
 function asStringArray(value: unknown): string[] | undefined {
@@ -73,6 +63,7 @@ export function parseAuditEvent(value: unknown): AuditEvent | undefined {
   if (typeof value.kind !== "string" || !KINDS.includes(value.kind as AuditEventKind)) return undefined;
   if (typeof value.ruleId !== "string" || typeof value.ruleName !== "string") return undefined;
   if (typeof value.tool !== "string") return undefined;
+  if (typeof value.callId !== "string") return undefined;
   const destinations = value.destinations === undefined ? undefined : asStringArray(value.destinations);
   if (value.destinations !== undefined && destinations === undefined) return undefined;
   if (value.detail !== undefined && typeof value.detail !== "string") return undefined;
@@ -84,9 +75,8 @@ export function parseAuditEvent(value: unknown): AuditEvent | undefined {
     tool: value.tool,
     destinations,
     detail: value.detail as string | undefined,
+    callId: value.callId,
   };
-  // Omit the key entirely when absent so pre-callId entries round-trip.
-  if (typeof value.callId === "string") parsed.callId = value.callId;
   return parsed;
 }
 

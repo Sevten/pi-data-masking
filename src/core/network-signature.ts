@@ -3,8 +3,9 @@
  * even when no destination can be extracted from it (URL behind a variable,
  * config-driven upload)? One shared signal for both enforcement dimensions:
  *
- *  - rule scope (egress-decision): "signature but no destination" is treated
- *    as destination-present-but-unmatched — held in both modes;
+ *  - rule scope (egress-decision): "signature but no destination" is the
+ *    detection-gap cell — blocked under strict, restored with a warning
+ *    under semi-strict/permissive;
  *  - file markers (Phase 2): signature + referenced marked path triggers the
  *    marked rules' scope check.
  *

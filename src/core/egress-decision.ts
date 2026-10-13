@@ -47,7 +47,7 @@ export interface ScopeViolation {
 /** Semi-strict/permissive notice: restored, but no destination could be checked
  *  (outbound call with a hidden destination — a detection gap, not a
  *  confirmed violation). */
-export interface ScopeWarning {
+export interface UnverifiedRestore {
   ruleId: string;
   ruleName: string;
   kind: "no-destination";
@@ -61,7 +61,7 @@ export interface ToolCallDecision {
   count: number;
   /** Rules whose scope the call violates — the caller must block the call. */
   violations: ScopeViolation[];
-  warned: ScopeWarning[];
+  unverified: UnverifiedRestore[];
   /** Rule ids whose values were restored (hit minus violated) — the caller uses
    *  this to mark write targets (file markers). */
   restoredRuleIds: string[];
@@ -103,7 +103,7 @@ export function decideToolCallRestore(
 ): ToolCallDecision {
   const probe = masker.unmaskValue(input);
   if (probe.count === 0) {
-    return { value: probe.value, count: 0, violations: [], warned: [], restoredRuleIds: [] };
+    return { value: probe.value, count: 0, violations: [], unverified: [], restoredRuleIds: [] };
   }
 
   const hitRuleIds = new Set(probe.details.map((d) => d.ruleId));
@@ -113,7 +113,7 @@ export function decideToolCallRestore(
       value: probe.value,
       count: probe.count,
       violations: [],
-      warned: [],
+      unverified: [],
       restoredRuleIds: [...hitRuleIds],
     };
   }
@@ -136,7 +136,7 @@ export function decideToolCallRestore(
     }
   }
   const violations = new Map<string, ScopeViolation>();
-  const warned = new Map<string, ScopeWarning>();
+  const unverified = new Map<string, UnverifiedRestore>();
 
   const setViolation = (ruleId: string, reason: ScopeViolation["reason"], offending: string[]): void => {
     const existing = violations.get(ruleId);
@@ -168,8 +168,8 @@ export function decideToolCallRestore(
             setViolation(ruleId, "no-destination", []);
             return false;
           }
-          if (!warned.has(ruleId)) {
-            warned.set(ruleId, { ruleId, ruleName: name, kind: "no-destination" });
+          if (!unverified.has(ruleId)) {
+            unverified.set(ruleId, { ruleId, ruleName: name, kind: "no-destination" });
           }
           return true;
         }
@@ -197,7 +197,7 @@ export function decideToolCallRestore(
     value: result.value,
     count: result.count,
     violations: [...violations.values()],
-    warned: [...warned.values()],
+    unverified: [...unverified.values()],
     restoredRuleIds: [...hitRuleIds].filter((id) => !violations.has(id)),
   };
 }
@@ -325,7 +325,7 @@ export interface MarkedPathDecision {
   blocked: MarkedPathViolation[];
   /** Detection-gap violations the semi-strict/permissive modes allow with a
    *  warning. */
-  warned: MarkedPathViolation[];
+  unverified: MarkedPathViolation[];
 }
 
 export interface MarkedPathOptions {
@@ -346,7 +346,7 @@ export function decideMarkedPaths(
   opts: MarkedPathOptions,
 ): MarkedPathDecision {
   const blocked: MarkedPathViolation[] = [];
-  const warned: MarkedPathViolation[] = [];
+  const unverified: MarkedPathViolation[] = [];
 
   for (const ruleId of referencedRuleIds) {
     const scope = opts.scopes.get(ruleId);
@@ -364,10 +364,10 @@ export function decideMarkedPaths(
       // closed; semi-strict and permissive tolerate it with a warning.
       const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending };
       if (scope.mode === "strict") blocked.push(violation);
-      else warned.push(violation);
+      else unverified.push(violation);
     }
     // no egress intent at all — advisory state never blocks
   }
 
-  return { blocked, warned };
+  return { blocked, unverified };
 }

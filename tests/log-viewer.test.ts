@@ -28,6 +28,7 @@ const auditEvent = (ruleName: string, kind: AuditEvent["kind"] = "restored"): Au
   ruleName,
   tool: "bash",
   destinations: ["api.stripe.com"],
+  callId: `call-${ruleName}`,
 });
 
 const makeTui = () => {
@@ -175,22 +176,6 @@ test("Enter on an audit event jumps to Masked views and reveals the matching too
   assert.match(after, /curl call-9/);
 });
 
-test("Enter on an event without a call id stays on audit with a status line", () => {
-  const tui = makeTui();
-  const viewer = createMaskingLogViewer(
-    tui,
-    theme,
-    keybindings,
-    { epochViews: [], transcript: [entry("user:1", "hi", "hi")], auditEvents: [auditEvent("Stripe key")] },
-    () => undefined,
-  );
-  viewer.handleInput?.("\t");
-  viewer.handleInput?.("\r");
-  const out = viewer.render(120).join("\n");
-  assert.match(out, /● Restoration audit/);
-  assert.match(out, /predates jump support/);
-});
-
 test("Enter with a call id missing from the transcript shows not-found status", () => {
   const tui = makeTui();
   const viewer = createMaskingLogViewer(
@@ -244,14 +229,14 @@ test("audit selection shows the outcome semantics line below the bottom rule", (
       transcript: [entry("user:1", "hi", "hi")],
       auditEvents: [
         { ...auditEvent("Stripe key", "restored"), callId: "call-a" },
-        { ...auditEvent("evil key", "held"), callId: "call-b" },
+        { ...auditEvent("evil key", "blocked"), callId: "call-b" },
       ],
     },
     () => undefined,
   );
   viewer.handleInput?.("\t");
-  // Cursor defaults to the newest event (held).
-  assert.match(viewer.render(120).join("\n"), /🔒 held — legacy: the call ran with the placeholder/);
+  // Cursor defaults to the newest event (blocked).
+  assert.match(viewer.render(120).join("\n"), /❌ blocked — the call was refused outright/);
   viewer.handleInput?.("\u001b[A"); // ↑ now the restored event
   assert.match(viewer.render(120).join("\n"), /✅ restored — the real value was restored into this call/);
 });

@@ -89,7 +89,6 @@ export function createMaskingLogViewer(
       // Audit → transcript jump: reveal the call in the views tab. False
       // leaves the user on the audit tab with a status line from the viewer.
       (event) => {
-        if (!event.callId) return false;
         const ok = ensureViews().revealToolCall?.(event.callId) ?? false;
         if (ok) active = "views";
         return ok;
