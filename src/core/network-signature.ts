@@ -66,3 +66,40 @@ function commandWords(command: string): string[] {
 export function hasNetworkSignature(command: string): boolean {
   return commandWords(command).some((word) => SIGNATURES.has(word));
 }
+
+/**
+ * Consumer table: commands that can execute code or load the environment,
+ * whose own network behavior is not observable from the arguments
+ * (`python x.py` reading a marked file, `source .env` pulling values into
+ * the process environment). This is NOT an outbound signature — it never
+ * blocks. It marks the point where the marker chain's observability ends:
+ * a marked path (or restored placeholder) handed to one of these gets a
+ * one-time warning, nothing more.
+ *
+ * Deliberately excluded: pure text tools (cat/sed/awk — no network
+ * behavior to hide), outbound tools (curl/ssh — the signature table wins),
+ * and context consumers (git/docker — they swallow marked files via
+ * directories, and matching that would require directory-containment
+ * checks whose noise explodes; documented residual risk).
+ */
+const CONSUMERS = new Set([
+  "python",
+  "python3",
+  "node",
+  "nodejs",
+  "bash",
+  "sh",
+  "zsh",
+  "perl",
+  "ruby",
+  "php",
+  "java",
+  "source",
+  ".",
+  "envsubst",
+]);
+
+/** The consumer command word found at command position, if any. */
+export function consumerSignatureWord(command: string): string | undefined {
+  return commandWords(command).find((word) => CONSUMERS.has(word));
+}

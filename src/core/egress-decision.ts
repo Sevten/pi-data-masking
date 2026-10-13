@@ -11,12 +11,12 @@
  *
  * The matrix (mode × situation):
  *
- * | situation                        | strict | semi-strict   | permissive      |
- * |----------------------------------|--------|-----------|-----------------|
- * | destination verified             | restore| restore   | restore         |
- * | destination outside allowlist    | block  | block     | block           |
- * | outbound (signature), unverifiable| block  | warn      | warn            |
- * | local (no signature, no dest.)   | block  | block     | restore (+mark)|
+ * | situation                        | strict      | semi-strict   | permissive      |
+ * |----------------------------------|-------------|---------------|-----------------|
+ * | destination verified             | restore     | restore       | restore         |
+ * | destination outside allowlist    | block       | block         | ask the user    |
+ * | outbound (signature), unverifiable| block      | block         | warn            |
+ * | local (no signature, no dest.)   | block       | restore(+mark)| restore (+mark) |
  *
  * Failure is safe by construction: a violation blocks the call, so the
  * attacker is left holding at most a placeholder.
@@ -36,15 +36,15 @@ export interface ScopeViolation {
   /** tool: the rule's `tools` list excludes the current tool.
    *  destination: an extracted destination is not allowlisted.
    *  no-destination: no destination could be extracted — an outbound
-   *  (network-signature) call under strict, or any local use under
-   *  strict/semi-strict (use-not-copy). */
+   *  (network-signature) call under strict/semi-strict, or any local use
+   *  under strict (use-not-copy). */
   reason: "tool" | "destination" | "no-destination";
   /** The disallowed tool name (reason=tool) or offending destinations
    *  (reason=destination); empty otherwise. */
   offending: string[];
 }
 
-/** Semi-strict/permissive notice: restored, but no destination could be checked
+/** Permissive notice: restored, but no destination could be checked
  *  (outbound call with a hidden destination — a detection gap, not a
  *  confirmed violation). */
 export interface UnverifiedRestore {
@@ -65,6 +65,10 @@ export interface ToolCallDecision {
    *  must ask the user before the call runs (decline → block). */
   confirm: ScopeViolation[];
   unverified: UnverifiedRestore[];
+  /** Rules whose restored value is handed to an unobservable process
+   *  (consumer command word, local cell) — the caller warns once, never
+   *  blocks. */
+  consumed: { ruleId: string; ruleName: string }[];
   /** Rule ids whose values were restored (hit minus violated) — the caller uses
    *  this to mark write targets (file markers). */
   restoredRuleIds: string[];
@@ -80,11 +84,16 @@ export interface DecisionOptions {
   /** True when the call runs a known outbound tool at command position
    *  (computed for bash-like tools only — write/edit contents must not
    *  count). With a signature and no extractable destination the call sits
-   *  in the detection-gap cell: strict blocks, semi-strict/permissive restore
-   *  with a warning. Without a signature the call is local: permissive
-   *  restores (the marker chain covers materialized values), strict and
-   *  semi-strict block (use-not-copy). */
+   *  in the detection-gap cell: strict/semi-strict block, permissive
+   *  restores with a warning. Without a signature the call is local:
+   *  semi-strict/permissive restore (the marker chain covers materialized
+   *  values), strict blocks (use-not-copy). */
   commandSignature?: boolean;
+  /** True when a command-position word can execute code or load the
+   *  environment (python/node/bash/source/…) — with a local-cell restore
+   *  the value crosses the marker chain's observability boundary; the
+   *  caller warns. Never blocks. */
+  consumerSignature?: boolean;
 }
 
 /** Compiled allowlists live as long as the scope object they belong to. */
@@ -106,7 +115,7 @@ export function decideToolCallRestore(
 ): ToolCallDecision {
   const probe = masker.unmaskValue(input);
   if (probe.count === 0) {
-    return { value: probe.value, count: 0, violations: [], confirm: [], unverified: [], restoredRuleIds: [] };
+    return { value: probe.value, count: 0, violations: [], confirm: [], unverified: [], consumed: [], restoredRuleIds: [] };
   }
 
   const hitRuleIds = new Set(probe.details.map((d) => d.ruleId));
@@ -118,6 +127,7 @@ export function decideToolCallRestore(
       violations: [],
       confirm: [],
       unverified: [],
+      consumed: [],
       restoredRuleIds: [...hitRuleIds],
     };
   }
@@ -142,6 +152,7 @@ export function decideToolCallRestore(
   const violations = new Map<string, ScopeViolation>();
   const confirm = new Map<string, ScopeViolation>();
   const unverified = new Map<string, UnverifiedRestore>();
+  const consumed = new Map<string, { ruleId: string; ruleName: string }>();
 
   const setViolation = (map: Map<string, ScopeViolation>, ruleId: string, reason: ScopeViolation["reason"], offending: string[]): void => {
     const existing = map.get(ruleId);
@@ -173,9 +184,11 @@ export function decideToolCallRestore(
       if (destinations.length === 0) {
         if (opts.commandSignature) {
           // Detection-gap cell: outbound intent, destination hidden
-          // (`curl … "$URL"`). strict fails closed; semi-strict and
-          // permissive restore with a warning.
-          if (scope.mode === "strict") {
+          // (`curl … "$URL"`). strict and semi-strict fail closed — the
+          // value may only go where the destination is verifiable; the
+          // model can retry with a literal destination. permissive
+          // restores with a warning.
+          if (scope.mode !== "permissive") {
             setViolation(violations, ruleId, "no-destination", []);
             return false;
           }
@@ -184,13 +197,20 @@ export function decideToolCallRestore(
           }
           return true;
         }
-        // Local cell: no outbound form at all. permissive restores — the
-        // marker chain covers materialized values. strict and semi-strict
-        // enforce use-not-copy: the value only flows to allowlisted
-        // destinations, and a local file or indirect process is not one.
-        if (scope.mode === "permissive") return true;
-        setViolation(violations, ruleId, "no-destination", []);
-        return false;
+        // Local cell: no outbound form at all. semi-strict and permissive
+        // restore — the value may flow locally, and the marker chain
+        // covers materialized values (a later blind egress hits the gap
+        // cell and blocks under semi-strict). strict enforces
+        // use-not-copy: the value only flows to allowlisted destinations,
+        // and a local file or indirect process is not one.
+        if (scope.mode === "strict") {
+          setViolation(violations, ruleId, "no-destination", []);
+          return false;
+        }
+        if (opts.consumerSignature) {
+          consumed.set(ruleId, { ruleId, ruleName: name });
+        }
+        return true;
       }
       const offending = unmatchedDestinations(destinations, matchersFor(scope));
       if (offending.length > 0) {
@@ -215,6 +235,7 @@ export function decideToolCallRestore(
     violations: [...violations.values()],
     confirm: [...confirm.values()],
     unverified: [...unverified.values()],
+    consumed: [...consumed.values()],
     restoredRuleIds: [...hitRuleIds].filter((id) => !violations.has(id)),
   };
 }
@@ -286,7 +307,7 @@ export function ruleIdsInText(masker: Masker, text: string): Set<string> {
  * `$NAME`, `${NAME}`, or Windows `$env:NAME` (design: "Env-name binding").
  * The real value lives in the environment, so a referencing command is
  * governed like a marked path: egress intent + unverifiable destination →
- * block (strict) or confirm (permissive). Same word-boundary rule as the
+ * block (strict/semi-strict) or confirm (permissive). Same word-boundary rule as the
  * shell: `$STRIPE_KEY` does not match inside `$STRIPE_KEY_FULL`.
  */
 export function referencedEnvRuleIds(
@@ -320,9 +341,9 @@ function envNameReferenced(command: string, name: string): boolean {
  * if the call runs, the leak is already complete — so a confirmed
  * violation (destination outside the allowlist) blocks under strict/
  * semi-strict and asks the user under permissive, and the detection-gap
- * form (network signature, no verifiable destination) blocks under strict
- * while semi-strict/permissive allow the call with a warning. There is
- * nothing to hold back here: no placeholder is involved.
+ * form (network signature, no verifiable destination) blocks under
+ * strict/semi-strict while permissive allows the call with a warning.
+ * There is nothing to hold back here: no placeholder is involved.
  *
  * Triggered only by egress intent: an extractable destination or a network
  * signature. Calls with neither are never checked here (local reads, diffs
@@ -384,11 +405,11 @@ export function decideMarkedPaths(
       if (scope.mode === "permissive") confirm.push(violation);
       else blocked.push(violation);
     } else if (opts.signatureOnly) {
-      // Detection gap: intent, no verified destination. strict fails
-      // closed; semi-strict and permissive tolerate it with a warning.
+      // Detection gap: intent, no verified destination. strict and
+      // semi-strict fail closed; permissive tolerates it with a warning.
       const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending };
-      if (scope.mode === "strict") blocked.push(violation);
-      else unverified.push(violation);
+      if (scope.mode === "permissive") unverified.push(violation);
+      else blocked.push(violation);
     }
     // no egress intent at all — advisory state never blocks
   }

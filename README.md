@@ -179,10 +179,10 @@ Rules may declare a `restoreScope` restricting where their real values may flow 
 |---|---|---|---|
 | destination verified | restore | restore | restore |
 | destination outside the allowlist | block | block | **ask you** (approve once, or block) |
-| outbound call, destination unverifiable (`curl "$URL"`) | block | restore + warning | restore + warning |
-| local use (write a file, run a local command) | block | block | restore (later egress stays tracked) |
+| outbound call, destination unverifiable (`curl "$URL"`) | block | block | restore + warning |
+| local use (write a file, run a local command) | block | restore (later egress stays tracked) | restore (later egress stays tracked) |
 
-`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `permissive` accepts the exposure risk of unverifiable calls to keep the task working, but a confirmed violation pauses for your approval — the prompt names the value, the destination, and the rule; approving releases this one call, declining blocks it. `semi-strict` sits between: it blocks violations and local copies but tolerates detection gaps. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
+`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `semi-strict` lets the value flow freely through local files and processes, but any command with outbound intent must name a verifiable destination — a blind `curl "$URL"` blocks even when the value reached it via a marked file. `permissive` accepts the exposure risk of unverifiable calls to keep the task working, but a confirmed violation pauses for your approval — the prompt names the value, the destination, and the rule; approving releases this one call, declining blocks it. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
 
 Blocked calls return the reason to the model (offending destination, rule name, and the way out), so it can adapt instead of retrying blindly; notices for unverified restores appear at most once per turn. Edit the rule in `/masking` to widen or tighten its scope.
 

@@ -68,7 +68,7 @@ import {
   structuredTargetPaths,
 } from "./core/file-markers.ts";
 import { extractDestinations } from "./core/destination-extract.ts";
-import { hasNetworkSignature } from "./core/network-signature.ts";
+import { consumerSignatureWord, hasNetworkSignature } from "./core/network-signature.ts";
 import {
   AUDIT_ENTRY,
   MARKERS_ENTRY,
@@ -1164,6 +1164,11 @@ export default async function (pi: ExtensionAPI) {
   // Per-turn dedup for scope hold/warn notifications; reset in turn_start.
   let scopeNotifiedThisTurn = new Set<string>();
 
+  // Session-lifetime dedup for consumer warnings (once per rule+path/inline):
+  // the warning states a structural fact (the marker chain stops being
+  // observable here), which does not change between turns.
+  const consumerNotified = new Set<string>();
+
   /** Offending destinations for notices: show at most two, fold the rest. */
   const capDestinationList = (ds: readonly string[]): string =>
     ds.length <= 2 ? ds.join(", ") : `${ds[0]}, ${ds[1]} (+${ds.length - 2} more)`;
@@ -1240,6 +1245,37 @@ export default async function (pi: ExtensionAPI) {
       }
       const destinations = extractDestinations(event.input);
       const signature = command !== "" && hasNetworkSignature(command);
+      const consumerWord = command !== "" ? consumerSignatureWord(command) : undefined;
+      if (markedScopes.size > 0 && destinations.length === 0 && !signature && consumerWord) {
+        // Consumer signal: a marked path (or env reference) is handed to a
+        // process whose network behavior is not observable (python x.py,
+        // source .env). Never blocks — one warning per rule+target per
+        // session marks the point where the marker chain stops seeing.
+        for (const ruleId of markedScopes.keys()) {
+          const ruleName =
+            config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId;
+          const paths = markedRefs.map((r) => r.path).join(", ");
+          recordAudit({
+            at: Date.now(),
+            kind: "unverified",
+            ruleId,
+            ruleName,
+            tool: event.toolName,
+            callId: event.toolCallId,
+            detail: `marked value consumed by "${consumerWord}" — process network behavior not observable`,
+          });
+          const key = `consumer:${ruleId}:${paths}`;
+          if (!consumerNotified.has(key)) {
+            consumerNotified.add(key);
+            ctx.ui?.notify(
+              `pi-data-masking: "${ruleName}" values in ${paths} are consumed by "${consumerWord}" — ` +
+                `that process's network behavior is not observable, so the marker chain stops here. ` +
+                `Outbound commands that name these paths are still checked.`,
+              "warning",
+            );
+          }
+        }
+      }
       if (markedScopes.size > 0 && (destinations.length > 0 || signature)) {
         const markerDecision = decideMarkedPaths(referencedRuleIds, {
           scopes: markedScopes,
@@ -1361,6 +1397,7 @@ export default async function (pi: ExtensionAPI) {
       ruleName: (ruleId) =>
         config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
       commandSignature: command !== "" && hasNetworkSignature(command),
+      consumerSignature: consumerSignatureWord(command) !== undefined,
     });
     if (
       decision.count === 0 &&
@@ -1372,7 +1409,7 @@ export default async function (pi: ExtensionAPI) {
 
     // Scope violations block the call outright: a confirmed destination/tool
     // violation under strict/semi-strict, an outbound call with unverifiable
-    // destination under strict, or local use of a strict/semi-strict value
+    // destination under strict/semi-strict, or local use of a strict value
     // (use-not-copy) — the command must not run. Permissive confirmed
     // violations are not here: they ask the user below.
     if (decision.violations.length > 0) {
@@ -1405,7 +1442,7 @@ export default async function (pi: ExtensionAPI) {
         }
         return hasNetworkSignature(command)
           ? `"${v.ruleName}" (${mode}) blocks outbound calls with no verifiable destination. Use a literal destination or export it before launch.`
-          : `"${v.ruleName}" (${mode}) may not be written to local files or used by local processes — its value only flows to its allowed destinations. Write the file yourself, or switch the rule to permissive in /masking.`;
+          : `"${v.ruleName}" (${mode}) may not be written to local files or used by local processes — its value only flows to its allowed destinations. Write the file yourself, or switch the rule to semi-strict/permissive in /masking.`;
       });
       return { block: true, reason: `Blocked by pi-data-masking: ${sentences.join(" ")}` };
     }
@@ -1483,6 +1520,27 @@ export default async function (pi: ExtensionAPI) {
         callId: event.toolCallId,
         detail: `restored unchecked — no destination verifiable (${scopes.get(unverified.ruleId)?.mode ?? "permissive"})`,
       });
+    }
+    for (const consumed of decision.consumed) {
+      recordAudit({
+        at: Date.now(),
+        kind: "unverified",
+        ruleId: consumed.ruleId,
+        ruleName: consumed.ruleName,
+        tool: event.toolName,
+        callId: event.toolCallId,
+        detail: `restored value handed to an unobservable process (consumer command word)`,
+      });
+      const key = `consumer:${consumed.ruleId}:inline`;
+      if (!consumerNotified.has(key)) {
+        consumerNotified.add(key);
+        ctx.ui?.notify(
+          `pi-data-masking: "${consumed.ruleName}" is passed to a code-executing command — ` +
+            `that process's network behavior is not observable, so scope checks stop here. ` +
+            `Use a literal destination or an allowlisted tool if this value must leave.`,
+          "warning",
+        );
+      }
     }
 
     // Detection-gap notices, once per turn per (rule, kind).

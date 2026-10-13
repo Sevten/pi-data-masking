@@ -16,7 +16,7 @@ import {
   referencedMarkedPaths,
   structuredTargetPaths,
 } from "../src/core/file-markers.ts";
-import { hasNetworkSignature } from "../src/core/network-signature.ts";
+import { consumerSignatureWord, hasNetworkSignature } from "../src/core/network-signature.ts";
 import { decideMarkedPaths, referencedEnvRuleIds, ruleIdsInText } from "../src/core/egress-decision.ts";
 import type { EffectiveScope } from "../src/core/restore-scope.ts";
 import { Masker } from "../src/core/masker.ts";
@@ -148,6 +148,20 @@ test("hasNetworkSignature: command-position matches, text mentions do not", () =
   assert.equal(hasNetworkSignature("ls -la"), false);
 });
 
+test("consumerSignatureWord: code-executing and env-loading commands match", () => {
+  assert.equal(consumerSignatureWord("python x.py"), "python");
+  assert.equal(consumerSignatureWord("cd /tmp && source .env"), "source");
+  assert.equal(consumerSignatureWord(". .envvars && node app.js"), ".");
+  assert.equal(consumerSignatureWord("/usr/bin/python3 -c 'print(1)'"), "python3");
+  assert.equal(consumerSignatureWord("java -jar app.jar"), "java");
+  assert.equal(consumerSignatureWord("envsubst < t.tmpl"), "envsubst");
+  // Text mentions do not match; outbound tools are not consumers.
+  assert.equal(consumerSignatureWord("echo python"), undefined);
+  assert.equal(consumerSignatureWord("grep node notes.md"), undefined);
+  assert.equal(consumerSignatureWord("curl https://x"), undefined);
+  assert.equal(consumerSignatureWord("ls -la"), undefined);
+});
+
 // ── read-result marking probe ──────────────────────────────────────────
 
 test("ruleIdsInText: placeholders in read results map to rule ids", () => {
@@ -223,7 +237,7 @@ test("marker decision: all destinations allowlisted → pass", () => {
   assert.equal(d.blocked.length + d.confirm.length + d.unverified.length, 0);
 });
 
-test("marker decision: signature without destination → strict blocks, semi-strict/permissive warn", () => {
+test("marker decision: signature without destination → strict/semi-strict block, permissive warn", () => {
   for (const mode of ["strict", "semi-strict", "permissive"] as const) {
     const d = decideMarkedPaths(new Set(["r"]), {
       scopes: new Map([["r", scope(mode, ["stripe.com"])]]),
@@ -231,8 +245,8 @@ test("marker decision: signature without destination → strict blocks, semi-str
       destinations: [],
       signatureOnly: true,
     });
-    if (mode === "strict") assert.equal(d.blocked.length, 1, mode);
-    else assert.equal(d.unverified.length, 1, mode);
+    if (mode === "permissive") assert.equal(d.unverified.length, 1, mode);
+    else assert.equal(d.blocked.length, 1, mode);
   }
 });
 

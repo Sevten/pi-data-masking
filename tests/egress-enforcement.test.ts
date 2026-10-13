@@ -79,13 +79,12 @@ test("strict: network signature with no destination is a violation", () => {
   assert.equal(d.violations[0].reason, "no-destination");
 });
 
-test("semi-strict: network signature with no destination restores with a warning", () => {
+test("semi-strict: network signature with no destination is a violation (fail closed)", () => {
   const f = fixture({ scope: { destinations: ["stripe.com"], mode: "semi-strict" } });
   const input = { command: `curl -H "Auth: Bearer ${f.placeholder}" "$DEPLOY_URL"` };
   const d = decide(f, "bash", input, true);
-  assert.equal(d.count, 1);
-  assert.deepEqual(d.violations, []);
-  assert.equal(d.unverified[0]?.kind, "no-destination");
+  assert.equal(d.count, 0);
+  assert.equal(d.violations[0]?.reason, "no-destination");
 });
 
 test("permissive: network signature with no destination restores with a warning", () => {
@@ -106,11 +105,13 @@ test("strict: local use of a scoped value is a violation (use-not-copy)", () => 
   assert.equal(d.violations[0].reason, "no-destination");
 });
 
-test("semi-strict: local use of a scoped value is a violation (use-not-copy)", () => {
+test("semi-strict: local materialization restores (marker chain covers it)", () => {
   const f = fixture({ scope: { destinations: ["stripe.com"], mode: "semi-strict" } });
   const d = decide(f, "write", { content: `token=${f.placeholder}` }, false);
-  assert.equal(d.count, 0);
-  assert.equal(d.violations[0].reason, "no-destination");
+  assert.equal(d.count, 1);
+  assert.deepEqual(d.violations, []);
+  assert.deepEqual(d.unverified, []);
+  assert.deepEqual(d.restoredRuleIds, ["stripe-key"]);
 });
 
 test("permissive: local materialization restores (marker chain covers it)", () => {

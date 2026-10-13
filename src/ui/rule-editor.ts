@@ -1180,7 +1180,7 @@ export async function addConfigRule(
               scopeMode === "strict" ? "Strict" : scopeMode === "semi-strict" ? "Semi-strict" : "Permissive",
               width,
               scopeModeExplicit
-                ? "Strict blocks unverifiable outbound and local use · Semi-strict blocks violations and local use, warns on unverifiable outbound · Permissive asks on violations, warns on unverifiable outbound, allows local use"
+                ? "Strict blocks unverifiable outbound and local use · Semi-strict blocks violations and unverifiable outbound, allows local use · Permissive asks on violations, warns on unverifiable outbound, allows local use"
                 : `Default (strict for preset keys with destinations, permissive otherwise) · ←/→ or Space to override`,
               scopeModeExplicit ? undefined : "(default)");
           }
