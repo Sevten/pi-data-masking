@@ -1189,21 +1189,21 @@ export async function addConfigRule(
             }
           }
           // Scope mode selector: only meaningful when a scope is in play.
+          // No "(default)" marker: the selector already starts at the
+          // effective default, and the marker would flicker on toggle.
           if (scopePresent()) {
             renderSelector(lines, "scopeMode", "Scope mode",
               scopeMode === "strict" ? "Strict" : scopeMode === "semi-strict" ? "Semi-strict" : "Permissive",
               width,
               scopeModeExplicit
                 ? "Strict restores only verified destinations · Semi-strict also allows local use · Permissive also restores unverifiable outbound (warned)"
-                : `Default (strict for preset keys with destinations, permissive otherwise) · ←/→ or Space to override`,
-              scopeModeExplicit ? undefined : "(default)");
+                : `Default: strict for preset keys with destinations, permissive otherwise · ←/→ or Space to override`);
             renderSelector(lines, "scopeRefuse", "On refusal",
               scopeRefuse === "block" ? "Block" : "Ask",
               width,
               scopeRefuseExplicit
                 ? "Block refuses the call and tells the model why · Ask pauses for your approval (approve releases this call, decline blocks it)"
-                : `Preset by the mode (block for strict/semi-strict, ask for permissive) · ←/→ or Space to override`,
-              scopeRefuseExplicit ? undefined : "(default)");
+                : `Preset by the mode: block for strict/semi-strict, ask for permissive · ←/→ or Space to override`);
           }
           const fixedFieldRowCount = 10;
           while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");

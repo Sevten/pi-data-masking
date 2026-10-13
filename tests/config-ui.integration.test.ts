@@ -635,7 +635,7 @@ test("Restore scope accepts a comma list and Scope mode toggles permissive", asy
       // Scope mode row appears once a scope is present.
       assert.ok(component.render(100).some((line) => line.includes("Scope mode")), "Scope mode selector should appear");
       component.handleInput(INPUT.down);
-      assert.ok(component.render(100).some((line) => /Scope mode.*\(default\)/.test(line.replace(/\x1b\[[0-9;]*m/g, ""))), "unmodified mode shows the default marker");
+      assert.ok(component.render(100).some((line) => /Scope mode.*Permissive/.test(line.replace(/\x1b\[[0-9;]*m/g, ""))), "the selector starts at the effective default");
       component.handleInput(INPUT.right);
       const toggled = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
       assert.ok(/Scope mode.*Strict/.test(toggled), "right arrow toggles away from the permissive default");
@@ -645,15 +645,13 @@ test("Restore scope accepts a comma list and Scope mode toggles permissive", asy
       component.handleInput(INPUT.right);
       const toggledThrice = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
       assert.ok(/Scope mode.*Permissive/.test(toggledThrice), "third toggle returns to Permissive");
-      const modeLine = toggled.split("\n").find((line) => line.includes("Scope mode")) ?? "";
-      assert.equal(modeLine.includes("(default)"), false, "the mode default marker clears after an explicit choice");
-      // On refusal row: present with its mode-preset marker; toggling it
-      // writes an explicit onRefuse.
-      assert.ok(/On refusal.*Ask.*\(default\)/.test(toggledThrice), "permissive re-presets On refusal: Ask (default marker)");
+      // On refusal row: present, preset by the mode; toggling it writes an
+      // explicit onRefuse.
+      assert.ok(/On refusal.*Ask/.test(toggledThrice), "permissive presets On refusal: Ask");
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.right);
       const refusalToggled = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
-      assert.ok(/On refusal.*Block/.test(refusalToggled) && !/(On refusal[^\n]*\(default\))/.test(refusalToggled), "toggling On refusal sets it explicitly");
+      assert.ok(/On refusal.*Block/.test(refusalToggled), "toggling On refusal sets it explicitly");
       component.handleInput(INPUT.enter);
       await waitFor(() => configRules(projectPath).length === 1);
     },
