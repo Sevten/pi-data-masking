@@ -140,10 +140,10 @@ expected).
 
 | # | Action | Expected |
 |---|---|---|
-| D1 | create a rule from a preset template (e.g. stripe) | form prefilled (pattern, description, Restore scope with the issuer's destinations); saved rule is an ordinary regex rule with a full `restoreScope` (`mode: "strict"`, `onRefuse: "block"`) — no `preset` reference in the config |
-| D2 | enter `collector.test.internal, evil.test.internal` in Restore scope | destinations listed on save (shorthand comma list works) |
+| D1 | create a rule from a preset template (e.g. stripe) | form prefilled (pattern, description, Destinations prefilled with the issuer's destinations); saved rule is an ordinary regex rule with a full `restoreScope` (`mode: "strict"`, `onRefuse: "block"`) — no `preset` reference in the config |
+| D2 | enter `collector.test.internal, evil.test.internal` in Destinations | destinations listed on save (shorthand comma list works) |
 | D3 | enter an invalid entry (e.g. `a*b.com`) | save blocked, naming the invalid entry and the correct syntax |
-| D4 | Scope mode / On refusal rows | shown whenever the Restore scope field has content; a new scope starts at `Semi-strict` / `Block` (issuer templates start `Strict`); mode ←/→ re-presets On refusal; both values are always written to the config in full |
+| D4 | Scope mode / On refusal rows | shown whenever the Destinations field has content; a new scope starts at `Semi-strict` / `Block` (issuer templates start `Strict`); mode ←/→ re-presets On refusal; both values are always written to the config in full |
 
 ## 3. Verdict quick reference
 

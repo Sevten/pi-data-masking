@@ -528,8 +528,12 @@ export async function addConfigRule(
         if (!updatingAutoTest) testAutoManaged = false;
       }),
       restoreScope: makeEditor(
+        // Destination list is the normal form: mode/onRefuse live in their
+        // own selectors and load from the rule's scope directly, so the
+        // field only needs to carry destinations. A scope with `tools` (or
+        // any other field the list cannot express) keeps the JSON form.
         editing?.initial.restoreScope !== undefined && editing.initial.restoreScope !== null
-          ? JSON.stringify(editing.initial.restoreScope)
+          ? scopeFieldText(editing.initial.restoreScope)
           // Prefill the preset's default destinations so they are visible
           // and directly editable (same prefill pattern as name/description).
           : selectedPreset?.destinations && selectedPreset.destinations.length > 0
@@ -586,7 +590,7 @@ export async function addConfigRule(
       }
       return scopeMode === "permissive" ? "ask" as const : "block" as const;
     })();
-    /** A scope is in play: the Restore scope field has content. */
+    /** A scope is in play: the Destinations field has content. */
     function scopePresent(): boolean {
       return editors.restoreScope.getExpandedText().trim().length > 0;
     }
@@ -685,9 +689,22 @@ export async function addConfigRule(
       if (presetDefaults && presetDefaults.length > 0) {
         return `Comma-separated destinations (wildcards like *.corp.internal, 10.0.*) or JSON {"destinations":[...],"tools":[...],"mode":"strict"} · preset default: ${presetDefaults.join(", ")}`;
       }
-      return 'Comma-separated destinations (wildcards like *.corp.internal, 10.0.*), or full JSON: {"destinations":["stripe.com"],"tools":["write"],"mode":"strict"} · empty = restore everywhere';
+      return 'Comma-separated allowed destinations (wildcards like *.corp.internal, 10.0.*), or full JSON: {"destinations":["stripe.com"],"tools":["write"],"mode":"strict"} · empty = restore everywhere';
     };
-    /** Restore scope text: `{`-prefixed text is full JSON (kept raw on
+    /** Field text for a rule's scope: the destination list when the list
+     *  can express it, full JSON when it cannot (tools/advanced fields). */
+    function scopeFieldText(scope: unknown): string {
+      if (scope && typeof scope === "object" && !Array.isArray(scope)) {
+        const record = scope as Record<string, unknown>;
+        const keys = Object.keys(record).filter((k) => k !== "destinations" && k !== "mode" && k !== "onRefuse");
+        const destinations = Array.isArray(record.destinations) && record.destinations.every((d) => typeof d === "string")
+          ? (record.destinations as string[])
+          : [];
+        if (keys.length === 0 && destinations.length > 0) return destinations.join(", ");
+      }
+      return JSON.stringify(scope);
+    }
+    /** Destinations field text: `{`-prefixed text is full JSON (kept raw on
      *  parse error so the save path can block); anything else is a
      *  comma-separated destination list — each entry validated with the
      *  same compileDestination the enforcement matcher uses (so wildcards
@@ -720,7 +737,7 @@ export async function addConfigRule(
       const id = generatedId();
       if (id) base.id = id;
       else delete base.id;
-      // Restore scope: `{`-prefixed text is full JSON; anything else is a
+      // Destinations field: `{`-prefixed text is full JSON; anything else is a
       // comma-separated destination list (parseRestoreScopeText). Parse
       // errors are kept raw so the save path can block with a clear message.
       {
@@ -1064,7 +1081,7 @@ export async function addConfigRule(
       if (mode === "form" && editors.restoreScope.getExpandedText().trim()) {
         const parsed = parseRestoreScopeText(editors.restoreScope.getExpandedText());
         if ("error" in parsed) {
-          saveMessage = `Cannot save: Restore scope ${parsed.error}`;
+          saveMessage = `Cannot save: Destinations ${parsed.error}`;
           focusFormField("restoreScope");
           tui.requestRender();
           return;
@@ -1183,17 +1200,17 @@ export async function addConfigRule(
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
               "←/→ or Space toggles case-sensitive matching for this rule");
           }
-          // Restore scope shows the effective value when empty: a preset
+          // Destinations shows the effective value when empty: a preset
           // with default destinations inherits them; anything else means
           // unrestricted restore. Same dim-derived pattern as Keep prefix.
           {
             const scopeText = editors.restoreScope.getExpandedText().trim();
             const presetDefaults = currentType() === "Built-in preset template" ? selectedPreset?.destinations : undefined;
             if (scopeText) {
-              renderSingleLineField(lines, "restoreScope", "Restore scope", editors.restoreScope, width, restoreScopeDescription());
+              renderSingleLineField(lines, "restoreScope", "Destinations", editors.restoreScope, width, restoreScopeDescription());
             } else {
               editors.restoreScope.focused = focusedField() === "restoreScope";
-              renderFieldRow(lines, "restoreScope", "Restore scope",
+              renderFieldRow(lines, "restoreScope", "Destinations",
                 presetDefaults && presetDefaults.length > 0 ? `preset default: ${presetDefaults.join(", ")}` : "(empty = restore everywhere)",
                 width, restoreScopeDescription(), { dim: true, cursorEditor: editors.restoreScope });
             }

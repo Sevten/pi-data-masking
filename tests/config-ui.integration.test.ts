@@ -630,7 +630,7 @@ test("Restore scope accepts a comma list and Scope mode toggles permissive", asy
       for (const character of "sk_live_scopedvalue1234567890") component.handleInput(character);
       // value → replacement → preserve → disclose → case → restore scope
       for (let i = 0; i < 6; i++) component.handleInput(INPUT.down);
-      assert.ok(component.render(100).some((line) => line.includes("▶ Restore scope")), "Restore scope should be focused");
+      assert.ok(component.render(100).some((line) => line.includes("▶ Destinations")), "Destinations field should be focused");
       for (const character of "api.stripe.com, *.internal.example.com, api.stripe.com") component.handleInput(character);
       // Scope mode row appears once a scope is present.
       assert.ok(component.render(100).some((line) => line.includes("Scope mode")), "Scope mode selector should appear");
