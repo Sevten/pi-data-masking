@@ -23,6 +23,7 @@ const CWD = "/srv/app";
 const event = (overrides: Partial<AuditEvent> = {}): AuditEvent => ({
   at: 1760000000000,
   kind: "blocked",
+  basis: "violation",
   ruleId: "stripe-key",
   ruleName: "Stripe key",
   tool: "bash",
@@ -45,6 +46,8 @@ test("parseAuditEvent: rejects wrong shapes", () => {
   assert.equal(parseAuditEvent({}), undefined);
   assert.equal(parseAuditEvent(event({ at: "x" as never })), undefined);
   assert.equal(parseAuditEvent(event({ kind: "nope" as never })), undefined);
+  assert.equal(parseAuditEvent(event({ basis: "nope" as never })), undefined);
+  assert.equal(parseAuditEvent({ ...event(), basis: undefined } as never), undefined);
   assert.equal(parseAuditEvent(event({ destinations: ["ok", 3] as never })), undefined);
   assert.equal(parseAuditEvent(event({ detail: 5 as never })), undefined);
   assert.equal(parseAuditEvent(null), undefined);
@@ -52,8 +55,8 @@ test("parseAuditEvent: rejects wrong shapes", () => {
 });
 
 test("loadAuditEvents: replays in order, skips foreign/broken entries", () => {
-  const good1 = event({ kind: "restored" });
-  const good2 = event({ kind: "unverified", destinations: ["evil.com"] });
+  const good1 = event({ kind: "restored", basis: "verified" });
+  const good2 = event({ kind: "warning", basis: "consumer", destinations: ["evil.com"] });
   const events = loadAuditEvents([
     entry("other.extension", {}),
     entry(AUDIT_ENTRY, good1),

@@ -9,7 +9,7 @@
  */
 
 import { type Component, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { AuditEvent, AuditEventKind } from "./audit-log.ts";
+import type { AuditBasis, AuditEvent, AuditEventKind } from "./audit-log.ts";
 
 interface AuditTheme {
   fg(color: any, text: string): string;
@@ -35,36 +35,49 @@ interface AuditKeybindings {
  */
 const KIND_SYMBOL: Record<AuditEventKind, string> = {
   restored: "✅",
-  unverified: "⚠\uFE0F",
   blocked: "❌",
-  confirmed: "☑\uFE0F",
-  declined: "🚫",
+  warning: "⚠\uFE0F",
 };
 
 const KIND_COLOR: Record<AuditEventKind, string> = {
   restored: "success",
-  unverified: "warning",
   blocked: "error",
-  confirmed: "warning",
-  declined: "error",
+  warning: "warning",
 };
 
 const KIND_LABEL: Record<AuditEventKind, string> = {
   restored: "RESTORED",
-  unverified: "UNVERIFIED",
   blocked: "BLOCKED",
-  confirmed: "CONFIRMED",
-  declined: "DECLINED",
+  warning: "WARNING",
 };
 
-// One-line semantics shown below the bottom rule for the selected event.
-const KIND_EXPLAIN: Record<AuditEventKind, string> = {
-  restored: "the real value was restored into this call, destination verified against the rule's scope",
-  unverified: "the real value went out without destination verification (semi-strict/permissive tolerate this gap)",
-  blocked: "the call was refused outright; the real value never left (scope violation, blocked by strict/semi-strict)",
-  confirmed: "a confirmed violation was released because you approved it at the prompt (permissive asks; the value then left)",
-  declined: "a confirmed violation was refused at the prompt; the call was blocked and the value never left",
+// One-line semantics shown below the bottom rule for the selected event:
+// the outcome phrase (kind) plus the situation phrase (basis). The kind
+// answers "did the value leave"; the basis answers "why this decision".
+const OUTCOME_EXPLAIN: Record<AuditEventKind, string> = {
+  restored: "the real value was released into this call",
+  blocked: "the call was refused; the real value did not leave",
+  warning: "the call ran and nothing new was released — this entry marks a boundary, not a decision",
 };
+
+const BASIS_EXPLAIN: Record<AuditBasis, string> = {
+  verified: "destination verified against the rule's allowlist",
+  unverifiable: "outbound intent with no verifiable destination (e.g. curl \"$URL\") — the mode chose to " /* completed per kind below */,
+  violation: "destination or tool outside the rule's allowlist",
+  local: "local use: a file write or local process, no outbound intent",
+  consumer: "a marked or inline value was handed to an interpreter — that process's network behavior is not observable",
+  "user-approved": "you approved a confirmed violation at the prompt",
+  "user-declined": "you declined at the prompt; the reason was returned to the model",
+};
+
+function explain(event: AuditEvent): string {
+  const outcome = OUTCOME_EXPLAIN[event.kind];
+  let basis = BASIS_EXPLAIN[event.basis];
+  if (event.basis === "unverifiable") {
+    basis += event.kind === "restored" ? "let it through" : "fail closed";
+  }
+  return `${outcome} — ${basis}`;
+}
 
 function formatTime(at: number): string {
   const date = new Date(at);
@@ -155,7 +168,7 @@ export function createAuditViewer(
     const ruleLine = theme.fg("muted", "\u2500".repeat(width));
 
     const header = theme.fg("accent", theme.bold(`Restoration audit · ${matching.length}${filter ? ` of ${events.length}` : ""} events${filter ? ` · filter: ${filter}` : ""}`));
-    const legend = theme.fg("dim", "✅ restored · ⚠️ unverified · ❌ blocked · ☑️ confirmed · 🚫 declined");
+    const legend = theme.fg("dim", "✅ restored · ❌ blocked · ⚠️ warning");
     const progress = status
       ? theme.fg("warning", status)
       : offset > 0
@@ -170,7 +183,7 @@ export function createAuditViewer(
     const selectedEvent = cursor >= 0 && cursor < matching.length ? matching[cursor] : undefined;
     const context = selectedEvent
       ? wrapTextWithAnsi(
-          theme.fg("dim", `${KIND_SYMBOL[selectedEvent.kind]} ${KIND_LABEL[selectedEvent.kind].toLowerCase()} — ${KIND_EXPLAIN[selectedEvent.kind]}`),
+          theme.fg("dim", `${KIND_SYMBOL[selectedEvent.kind]} ${KIND_LABEL[selectedEvent.kind].toLowerCase()} · ${selectedEvent.basis} — ${explain(selectedEvent)}`),
           width,
         )
       : [];

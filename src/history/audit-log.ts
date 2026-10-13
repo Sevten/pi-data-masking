@@ -17,21 +17,32 @@ export const AUDIT_ENTRY = "pi-data-masking.audit.v1";
 export const MARKERS_ENTRY = "pi-data-masking.markers.v1";
 
 export type AuditEventKind =
-  /** Placeholder-flow scope decision: value restored into args. */
+  /** The real value was released into the call. */
   | "restored"
-  /** Outbound with unverifiable destination: restored unchecked (semi-strict/permissive gap cell). */
-  | "unverified"
-  /** Call refused outright: confirmed violation (strict/semi-strict), strict gap cell, or blocked local use. */
+  /** The call was refused; the real value did not leave. */
   | "blocked"
-  /** Permissive confirmed violation released because the user approved the prompt. */
-  | "confirmed"
-  /** Permissive confirmed violation refused at the prompt; the call was blocked. */
-  | "declined";
+  /** Annotation, not a decision: the call ran, nothing new was released —
+   *  the entry marks where the marker chain's observability ends. */
+  | "warning";
+
+/** Why the decision was what it was — the matrix row the call fell in.
+ *  Orthogonal to the kind (the outcome); the explanation line renders it. */
+export type AuditBasis =
+  | "verified"
+  | "unverifiable"
+  | "violation"
+  | "local"
+  | "consumer"
+  | "user-approved"
+  | "user-declined";
 
 export interface AuditEvent {
   /** Date.now() at the decision. */
   at: number;
+  /** Outcome: what happened to the value. */
   kind: AuditEventKind;
+  /** Reason: which situation the call fell in (matrix row). */
+  basis: AuditBasis;
   ruleId: string;
   ruleName: string;
   tool: string;
@@ -52,10 +63,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const KINDS: readonly AuditEventKind[] = [
   "restored",
-  "unverified",
   "blocked",
-  "confirmed",
-  "declined",
+  "warning",
+];
+
+const BASES: readonly AuditBasis[] = [
+  "verified",
+  "unverifiable",
+  "violation",
+  "local",
+  "consumer",
+  "user-approved",
+  "user-declined",
 ];
 
 function asStringArray(value: unknown): string[] | undefined {
@@ -67,6 +86,7 @@ export function parseAuditEvent(value: unknown): AuditEvent | undefined {
   if (!isRecord(value)) return undefined;
   if (typeof value.at !== "number") return undefined;
   if (typeof value.kind !== "string" || !KINDS.includes(value.kind as AuditEventKind)) return undefined;
+  if (typeof value.basis !== "string" || !BASES.includes(value.basis as AuditBasis)) return undefined;
   if (typeof value.ruleId !== "string" || typeof value.ruleName !== "string") return undefined;
   if (typeof value.tool !== "string") return undefined;
   if (typeof value.callId !== "string") return undefined;
@@ -76,6 +96,7 @@ export function parseAuditEvent(value: unknown): AuditEvent | undefined {
   const parsed: AuditEvent = {
     at: value.at,
     kind: value.kind as AuditEventKind,
+    basis: value.basis as AuditBasis,
     ruleId: value.ruleId,
     ruleName: value.ruleName,
     tool: value.tool,

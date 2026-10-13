@@ -24,6 +24,7 @@ const entry = (key: string, original: string, masked: string): TranscriptEntry =
 const auditEvent = (ruleName: string, kind: AuditEvent["kind"] = "restored"): AuditEvent => ({
   at: 1700000000000,
   kind,
+  basis: kind === "restored" ? "verified" : "violation",
   ruleId: `rule-${ruleName}`,
   ruleName,
   tool: "bash",
@@ -235,8 +236,15 @@ test("audit selection shows the outcome semantics line below the bottom rule", (
     () => undefined,
   );
   viewer.handleInput?.("\t");
-  // Cursor defaults to the newest event (blocked).
-  assert.match(viewer.render(120).join("\n"), /❌ blocked — the call was refused outright/);
+  // Cursor defaults to the newest event (blocked, basis violation). The
+  // explanation wraps at narrow widths, so match the unwrapped prefix.
+  assert.match(
+    viewer.render(120).join("\n"),
+    /❌ blocked · violation — the call was refused; the real value did not leave/,
+  );
   viewer.handleInput?.("\u001b[A"); // ↑ now the restored event
-  assert.match(viewer.render(120).join("\n"), /✅ restored — the real value was restored into this call/);
+  assert.match(
+    viewer.render(120).join("\n"),
+    /✅ restored · verified — the real value was released into this call/,
+  );
 });

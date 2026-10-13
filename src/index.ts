@@ -1257,7 +1257,8 @@ export default async function (pi: ExtensionAPI) {
           const paths = markedRefs.map((r) => r.path).join(", ");
           recordAudit({
             at: Date.now(),
-            kind: "unverified",
+            kind: "warning",
+            basis: "consumer",
             ruleId,
             ruleName,
             tool: event.toolName,
@@ -1289,6 +1290,7 @@ export default async function (pi: ExtensionAPI) {
           recordAudit({
             at: Date.now(),
             kind: "blocked",
+            basis: v.offending.length > 0 ? "violation" : "unverifiable",
             ruleId: v.ruleId,
             ruleName: v.ruleName,
             tool: event.toolName,
@@ -1332,7 +1334,8 @@ export default async function (pi: ExtensionAPI) {
             : false;
           recordAudit({
             at: Date.now(),
-            kind: allowed ? "confirmed" : "declined",
+            kind: allowed ? "restored" : "blocked",
+            basis: allowed ? "user-approved" : "user-declined",
             ruleId: v.ruleId,
             ruleName: v.ruleName,
             tool: event.toolName,
@@ -1356,7 +1359,8 @@ export default async function (pi: ExtensionAPI) {
           const key = `markerwarn:${v.ruleId}`;
           recordAudit({
             at: Date.now(),
-            kind: "unverified",
+            kind: "restored",
+            basis: "unverifiable",
             ruleId: v.ruleId,
             ruleName: v.ruleName,
             tool: event.toolName,
@@ -1423,6 +1427,12 @@ export default async function (pi: ExtensionAPI) {
         recordAudit({
           at: Date.now(),
           kind: "blocked",
+          basis:
+            v.reason === "destination" || v.reason === "tool"
+              ? "violation"
+              : hasNetworkSignature(command)
+                ? "unverifiable"
+                : "local",
           ruleId: v.ruleId,
           ruleName: v.ruleName,
           tool: event.toolName,
@@ -1471,7 +1481,8 @@ export default async function (pi: ExtensionAPI) {
       const allowed = ctx.ui ? await ctx.ui.confirm("pi-data-masking: out-of-scope use (approval requested)", question) : false;
       recordAudit({
         at: Date.now(),
-        kind: allowed ? "confirmed" : "declined",
+        kind: allowed ? "restored" : "blocked",
+        basis: allowed ? "user-approved" : "user-declined",
         ruleId: v.ruleId,
         ruleName: v.ruleName,
         tool: event.toolName,
@@ -1526,6 +1537,7 @@ export default async function (pi: ExtensionAPI) {
       recordAudit({
         at: Date.now(),
         kind: "restored",
+        basis: auditDestinations.length > 0 ? "verified" : "local",
         ruleId,
         ruleName: config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
         tool: event.toolName,
@@ -1536,7 +1548,8 @@ export default async function (pi: ExtensionAPI) {
     for (const unverified of decision.unverified) {
       recordAudit({
         at: Date.now(),
-        kind: "unverified",
+        kind: "restored",
+        basis: "unverifiable",
         ruleId: unverified.ruleId,
         ruleName: unverified.ruleName,
         tool: event.toolName,
@@ -1547,7 +1560,8 @@ export default async function (pi: ExtensionAPI) {
     for (const consumed of decision.consumed) {
       recordAudit({
         at: Date.now(),
-        kind: "unverified",
+        kind: "warning",
+        basis: "consumer",
         ruleId: consumed.ruleId,
         ruleName: consumed.ruleName,
         tool: event.toolName,
