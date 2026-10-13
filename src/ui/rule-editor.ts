@@ -722,10 +722,10 @@ export async function addConfigRule(
       return 'Destinations this rule\'s value may be sent to, comma-separated: domains (suffix match — stripe.com covers api.stripe.com), IP literals, wildcards (*.internal.acme.com, 10.0.*)';
     };
     const outboundDescription = (): string => outbound === "never"
-      ? 'Never: the value may not go outbound at all (saved as an empty destinations list) · Scope mode decides whether local use is allowed'
+      ? 'Never: the value may never be sent outbound · whether local use is allowed is set by Scope mode'
       : outbound === "listed"
-        ? "Listed only: outbound use requires a destination from the list below · Scope mode decides what happens when it is missing or unverifiable"
-        : "Anywhere: no destination restriction (no scope is saved unless the field below carries one)";
+        ? "Listed only: outbound use requires a destination from the list below · what happens when a destination can't be verified is set by Scope mode"
+        : "Anywhere: the value may be sent to any destination — no restriction";
     /** Field text for a rule's scope: the destination list when the list
      *  can express it, full JSON when it cannot (tools/advanced fields). */
     function scopeFieldText(scope: unknown): string {
@@ -1281,11 +1281,11 @@ export async function addConfigRule(
             renderSelector(lines, "scopeMode", "Scope mode",
               scopeMode === "strict" ? "Strict" : scopeMode === "semi-strict" ? "Semi-strict" : "Permissive",
               width,
-              "Strict restores only verified destinations · Semi-strict also allows local use · Permissive also restores unverifiable outbound (warned)");
+              "Strict restores only verified destinations · Semi-strict also allows local use · Permissive also restores unverifiable outbound, with a warning");
             renderSelector(lines, "scopeRefuse", "On refusal",
               scopeRefuse === "block" ? "Block" : "Ask",
               width,
-              "Block refuses the call and tells the model why · Ask pauses for your approval (approve releases this call, decline blocks it)");
+              "Block: the call is refused and the model is told why · Ask: you decide — approve releases this call, decline blocks it");
           }
           const fixedFieldRowCount = 10;
           while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
