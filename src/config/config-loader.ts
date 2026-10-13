@@ -15,7 +15,6 @@ import { randomUUID } from "node:crypto";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { generatePlaceholder } from "../core/placeholder-gen.ts";
 import { isRegexRule, MAX_COLLISION_ATTEMPTS, type MaskingRule, type PreserveStructure } from "../core/masker.ts";
-import { expandMaskingPreset, getMaskingPreset } from "../core/presets.ts";
 import { effectiveScope, type EffectiveScope, type RestoreScope } from "../core/restore-scope.ts";
 import { analyzeRegexSafety } from "../core/regex-safety.ts";
 import { isCommonSemanticValue } from "../core/common-semantic-terms.ts";
@@ -83,9 +82,8 @@ export interface ConfiguredMaskingRule {
   enabled: boolean;
   /** False when the rule is valid but its environment value is unavailable. */
   available: boolean;
-  /** Original configuration shape before preset/env expansion. */
-  sourceKind: "literal" | "regex" | "preset";
-  presetName?: string;
+  /** Original configuration shape (presets are Builder templates only). */
+  sourceKind: "literal" | "regex";
   realFromEnv?: string;
   /** Whether the configured literal replacement is generated or fixed. */
   placeholderMode?: "auto" | "custom";
@@ -135,7 +133,7 @@ export interface InitialConfig {
   $schema: string;
   version: 1;
   enabled: true;
-  rules: Array<{ id: string; name: string; preset: string; enabled: true }>;
+  rules: never[];
   options: {
     showStatusBar: boolean;
     systemPromptGuidance: false;
@@ -223,21 +221,13 @@ export function generateUniqueRuleId(name: string, existingIds: Iterable<string>
 
 /** Build the minimal config written by the /masking configuration center. */
 export function buildInitialConfig(
-  presetNames: readonly string[],
   options: InitialConfigOptions = { showStatusBar: true, persistHistory: true },
 ): InitialConfig {
-  const uniqueNames = [...new Set(presetNames)];
-  for (const name of uniqueNames) {
-    if (!getMaskingPreset(name)) throw new Error(`Unknown masking preset ${JSON.stringify(name)}`);
-  }
   return {
     $schema: CONFIG_SCHEMA_URL,
     version: 1,
     enabled: true,
-    rules: uniqueNames.map((presetName) => {
-      const preset = getMaskingPreset(presetName)!;
-      return { id: presetName, name: preset.label, preset: presetName, enabled: true };
-    }),
+    rules: [],
     options: {
       showStatusBar: options.showStatusBar,
       systemPromptGuidance: false,
@@ -496,30 +486,7 @@ export function validateConfig(
     }
 
     if (rule.preset !== undefined) {
-      if (typeof rule.preset !== "string" || rule.preset.length === 0) {
-        warnings.push(`Rule [${id}] has invalid 'preset' (must be a non-empty string) and was skipped`);
-        continue;
-      }
-      const incompatible = ["type", "real", "realFromEnv", "pattern", "flags", "placeholder", "allowCommonPlaceholder", "disclosePlaceholder", "caseSensitive"]
-        .filter((field) => rule[field] !== undefined);
-      if (incompatible.length > 0) {
-        warnings.push(`Rule [${id}] preset reference also sets ${incompatible.join(", ")} and was skipped`);
-        continue;
-      }
-      const preset = getMaskingPreset(rule.preset);
-      if (!preset) {
-        warnings.push(`Rule [${id}] references unknown preset ${JSON.stringify(rule.preset)} and was skipped`);
-        continue;
-      }
-      rules.push(expandMaskingPreset(preset, {
-        id,
-        name: typeof rule.name === "string" ? rule.name : undefined,
-        enabled: rule.enabled as boolean | undefined,
-        description: typeof rule.description === "string" ? rule.description : undefined,
-        lowEntropy: rule.lowEntropy === true,
-        preserveStructure,
-        restoreScope,
-      }));
+      warnings.push(`Rule [${id}] uses 'preset' references, which are no longer supported — add the rule via the Rule Builder (Built-in preset template) to materialize it, and was skipped`);
       continue;
     }
 
@@ -830,7 +797,7 @@ function parseRestoreScope(
     warnings.push(`Rule [${id}] has unknown 'restoreScope' field(s) ${unknown.join(", ")} and was skipped`);
     return null;
   }
-  const scope: RestoreScope = {};
+  const scope = {} as RestoreScope;
 
   const stringList = (field: "tools" | "envNames"):
     | { ok: true; value: string[] }
@@ -870,20 +837,16 @@ function parseRestoreScope(
     scope.destinations = [...new Set(entries)];
   }
 
-  if (record.mode !== undefined) {
-    if (record.mode !== "strict" && record.mode !== "semi-strict" && record.mode !== "permissive") {
-      warnings.push(`Rule [${id}] has invalid 'restoreScope.mode' (must be "strict", "semi-strict" or "permissive") and was skipped`);
-      return null;
-    }
-    scope.mode = record.mode;
+  if (record.mode !== "strict" && record.mode !== "semi-strict" && record.mode !== "permissive") {
+    warnings.push(`Rule [${id}] is missing or has an invalid 'restoreScope.mode' (required; must be "strict", "semi-strict" or "permissive") and was skipped`);
+    return null;
   }
-  if (record.onRefuse !== undefined) {
-    if (record.onRefuse !== "block" && record.onRefuse !== "ask") {
-      warnings.push(`Rule [${id}] has invalid 'restoreScope.onRefuse' (must be "block" or "ask") and was skipped`);
-      return null;
-    }
-    scope.onRefuse = record.onRefuse;
+  scope.mode = record.mode;
+  if (record.onRefuse !== "block" && record.onRefuse !== "ask") {
+    warnings.push(`Rule [${id}] is missing or has an invalid 'restoreScope.onRefuse' (required; must be "block" or "ask") and was skipped`);
+    return null;
   }
+  scope.onRefuse = record.onRefuse;
   return scope;
 }
 
@@ -1134,7 +1097,6 @@ function buildLoadResult(
       warnings.push(...validated.warnings.map(
         (warning) => `${scope} ${warning}${rawRecord.enabled === false ? " (rule is currently disabled)" : ""}`,
       ));
-      const presetName = typeof rawRecord.preset === "string" ? rawRecord.preset : undefined;
       const realFromEnv = typeof rawRecord.realFromEnv === "string" ? rawRecord.realFromEnv : undefined;
       let rule = validated.rules[0];
       let available = true;
@@ -1150,8 +1112,7 @@ function buildLoadResult(
         }
       }
       if (!rule) return;
-      const sourceKind: "literal" | "regex" | "preset" =
-        presetName ? "preset" : isRegexRule(rule) ? "regex" : "literal";
+      const sourceKind: "literal" | "regex" = isRegexRule(rule) ? "regex" : "literal";
       configuredRules.push({
         rule,
         scope,
@@ -1160,14 +1121,9 @@ function buildLoadResult(
         enabled: rule.enabled !== false,
         available,
         sourceKind,
-        presetName,
         realFromEnv,
         effectiveScope: effectiveScope({
           scope: rule.restoreScope,
-          presetDestinations: presetName
-            ? getMaskingPreset(presetName)?.destinations
-            : undefined,
-          sourceKind,
           realFromEnv,
           trustedDestinations: config.options.trustedDestinations,
         }),

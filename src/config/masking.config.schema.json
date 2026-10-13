@@ -30,9 +30,6 @@
           },
           {
             "$ref": "#/$defs/regexRule"
-          },
-          {
-            "$ref": "#/$defs/presetRule"
           }
         ]
       }
@@ -228,67 +225,6 @@
         }
       ]
     },
-    "presetRule": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Reference a tested built-in regex preset by name.",
-      "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Unique ID within this file."
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Short human-readable rule name shown in the configuration center."
-        },
-        "preset": {
-          "enum": [
-            "github-pat",
-            "npm-token",
-            "huggingface-token",
-            "aws-access-key-id",
-            "slack-token",
-            "jwt",
-            "pem-private-key",
-            "bearer-token",
-            "database-userinfo",
-            "private-ipv4",
-            "public-ipv4"
-          ]
-        },
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        },
-        "description": {
-          "type": "string",
-          "description": "Optional override for the built-in description."
-        },
-        "preserveStructure": {
-          "$ref": "#/$defs/preserveStructure"
-        },
-        "restoreScope": {
-          "$ref": "#/$defs/restoreScope"
-        },
-        "lowEntropy": {
-          "type": "boolean",
-          "default": false
-        }
-      },
-      "required": [
-        "id",
-        "preset"
-      ],
-      "examples": [
-        {
-          "id": "github_pat",
-          "preset": "github-pat",
-          "enabled": true
-        }
-      ]
-    },
     "options": {
       "type": "object",
       "additionalProperties": false,
@@ -364,7 +300,7 @@
     "restoreScope": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Restrict where this rule's real values may flow once restored into tool arguments. Omit to restore unconditionally (previous behavior). When a restriction cannot be verified, the placeholder is kept and the hold is reported — the real value never reaches an unverified destination.",
+      "description": "Fully explicit restoration scope: either absent (restore unconditionally) or complete. mode and onRefuse are required.",
       "properties": {
         "destinations": {
           "type": "array",
@@ -403,16 +339,20 @@
             "semi-strict",
             "permissive"
           ],
-          "description": "What the rule restores: strict restores only when the destination is verified (blocks confirmed violations, unverifiable outbound calls, and any local use of the value); semi-strict also allows local use (writes are tracked) but still blocks confirmed violations and unverifiable outbound calls; permissive also restores unverifiable outbound calls with a warning. Confirmed violations are refused in every mode. Preset rules with built-in destinations default to strict; everything else defaults to permissive."
+          "description": "What to restore, per situation: strict (verified destinations only), semi-strict (also local use), permissive (also unverifiable outbound, warned). Required."
         },
         "onRefuse": {
           "enum": [
             "block",
             "ask"
           ],
-          "description": "What to do when the mode refuses to restore: \"block\" refuses the call outright and tells the model why; \"ask\" pauses for the user's approval (approving releases this one call, declining blocks it; headless sessions decline). Preset by mode: strict/semi-strict default to block, permissive to ask. Independent of the mode: the mode decides what is refused, this decides who refuses it."
+          "description": "What to do when the mode refuses: block (refuse the call) or ask (pause for user approval). Required."
         }
-      }
+      },
+      "required": [
+        "mode",
+        "onRefuse"
+      ]
     }
   },
   "examples": [
@@ -421,11 +361,6 @@
       "version": 1,
       "enabled": true,
       "rules": [
-        {
-          "id": "github_pat",
-          "preset": "github-pat",
-          "enabled": true
-        },
         {
           "id": "prod_api_key",
           "realFromEnv": "PROD_API_KEY"

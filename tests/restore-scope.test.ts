@@ -17,85 +17,38 @@ import {
   type RestoreScope,
 } from "../src/core/restore-scope.ts";
 
-// ─── effectiveScope defaults matrix ─────────────────────────────────────────
+// ─── effectiveScope materialization ───────────────────────────────────────
 
-test("effectiveScope: no scope and no preset default → null (backward compatible)", () => {
-  assert.equal(
-    effectiveScope({ scope: undefined, presetDestinations: undefined, sourceKind: "literal", realFromEnv: undefined }),
-    null,
-  );
-  assert.equal(
-    effectiveScope({ scope: undefined, presetDestinations: undefined, sourceKind: "preset", realFromEnv: "K" }),
-    null,
-  );
+test("effectiveScope: no declared scope → null (unconditional restore)", () => {
+  assert.equal(effectiveScope({ scope: undefined, realFromEnv: undefined }), null);
+  assert.equal(effectiveScope({ scope: undefined, realFromEnv: "K" }), null);
 });
 
-test("effectiveScope: preset with default destinations → strict with those destinations", () => {
-  const scope = effectiveScope({
-    scope: undefined,
-    presetDestinations: ["stripe.com"],
-    sourceKind: "preset",
-    realFromEnv: "STRIPE_KEY",
-  });
-  assert.deepEqual(scope, {
-    destinations: ["stripe.com"],
-    tools: undefined,
-    envNames: ["STRIPE_KEY"],
-    mode: "strict",
-    onRefuse: "block",
-  });
-});
-
-test("effectiveScope: preset without default destinations → permissive, unconstrained", () => {
-  const scope = effectiveScope({
-    scope: undefined,
-    presetDestinations: undefined,
-    sourceKind: "preset",
-    realFromEnv: undefined,
-  });
-  assert.equal(scope, null);
-});
-
-test("effectiveScope: custom rule with explicit scope → permissive by default", () => {
-  const scope: RestoreScope = { destinations: ["internal.acme.com"] };
+test("effectiveScope: declared scope passes mode/onRefuse through verbatim", () => {
+  const scope: RestoreScope = { destinations: ["internal.acme.com"], mode: "semi-strict", onRefuse: "ask" };
   assert.deepEqual(
-    effectiveScope({ scope, presetDestinations: undefined, sourceKind: "literal", realFromEnv: undefined }),
-    { destinations: ["internal.acme.com"], tools: undefined, envNames: undefined, mode: "permissive", onRefuse: "ask" },
+    effectiveScope({ scope, realFromEnv: undefined }),
+    { destinations: ["internal.acme.com"], tools: undefined, envNames: undefined, mode: "semi-strict", onRefuse: "ask" },
   );
 });
 
-test("effectiveScope: explicit mode and envNames override defaults", () => {
-  const scope: RestoreScope = { destinations: ["a.com"], mode: "permissive", envNames: ["OTHER"] };
-  const effective = effectiveScope({
-    scope,
-    presetDestinations: ["preset.com"],
-    sourceKind: "preset",
-    realFromEnv: "REAL",
-  });
-  assert.deepEqual(effective, {
-    destinations: ["a.com"],
-    tools: undefined,
-    envNames: ["OTHER"],
-    mode: "permissive",
-    onRefuse: "ask",
-  });
+test("effectiveScope: envNames falls back to realFromEnv", () => {
+  const scope: RestoreScope = { destinations: ["a.com"], mode: "strict", onRefuse: "block" };
+  const effective = effectiveScope({ scope, realFromEnv: "REAL" });
+  assert.deepEqual(effective?.envNames, ["REAL"]);
+  const explicit: RestoreScope = { destinations: ["a.com"], mode: "strict", onRefuse: "block", envNames: ["OTHER"] };
+  assert.deepEqual(effectiveScope({ scope: explicit, realFromEnv: "REAL" })?.envNames, ["OTHER"]);
 });
 
-test("effectiveScope: explicit destinations replace (not merge with) preset defaults", () => {
-  const scope = effectiveScope({
-    scope: { destinations: ["my-proxy.corp"] },
-    presetDestinations: ["stripe.com"],
-    sourceKind: "preset",
-    realFromEnv: undefined,
-  });
-  assert.deepEqual(scope?.destinations, ["my-proxy.corp"]);
+test("effectiveScope: trustedDestinations widen declared destinations", () => {
+  const scope: RestoreScope = { destinations: ["my-proxy.corp"], mode: "strict", onRefuse: "block" };
+  const effective = effectiveScope({ scope, realFromEnv: undefined, trustedDestinations: ["corp.internal"] });
+  assert.deepEqual(effective?.destinations, ["my-proxy.corp", "corp.internal"]);
 });
 
 test("effectiveScope: tools-only scope constrains tools without destination checks", () => {
   const scope = effectiveScope({
-    scope: { tools: ["write", "edit"] },
-    presetDestinations: undefined,
-    sourceKind: "literal",
+    scope: { tools: ["write", "edit"], mode: "permissive", onRefuse: "ask" },
     realFromEnv: undefined,
   });
   assert.deepEqual(scope, { destinations: undefined, tools: ["write", "edit"], envNames: undefined, mode: "permissive", onRefuse: "ask" });

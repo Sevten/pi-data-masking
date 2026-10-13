@@ -139,7 +139,6 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           configured.rule.id,
           configured.rule.name,
           configured.rule.description,
-          configured.presetName,
           configured.realFromEnv,
           configured.scope,
           configured.sourceKind,

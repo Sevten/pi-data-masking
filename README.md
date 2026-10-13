@@ -29,7 +29,7 @@ user/tool data → mask → LLM → restore tool arguments → tool uses real da
 pi install npm:@sevten/pi-data-masking
 ```
 
-Start Pi and open `/masking`. Select `+ Add new rule`, pick one of the four rule types (literal, environment, regex, or preset), choose project or global scope (global is the default), test the rule in the same screen, and save it. That's it—masked values are replaced from the next request on. When adding preset rules, mark several with `Space` in the picker to add them all at once with their default settings.
+Start Pi and open `/masking`. Select `+ Add new rule`, pick one of the four rule types (literal, environment, regex, or a built-in preset template that fills the form for you), choose project or global scope (global is the default), test the rule in the same screen, and save it. That's it—masked values are replaced from the next request on. When adding preset templates, mark several with `Space` in the picker to add them all at once with their default settings.
 
 Configuration files are created and updated by the UI automatically; see [Rules and configuration](#rules-and-configuration) for their locations and the manual format.
 
@@ -89,7 +89,13 @@ For manual configuration:
     {
       "id": "github-personal-access-token",
       "name": "GitHub personal access token",
-      "preset": "github-pat"
+      "type": "regex",
+      "pattern": "\\bghp_[A-Za-z0-9]{36}\\b|\\bgithub_pat_[A-Za-z0-9_]{22,}\\b",
+      "restoreScope": {
+        "destinations": ["github.com", "api.github.com"],
+        "mode": "strict",
+        "onRefuse": "block"
+      }
     }
   ]
 }
@@ -104,7 +110,8 @@ Four rule sources are available:
 | Exact literal | `real` |
 | Environment literal | `realFromEnv` — read from an environment variable, never stored in the config file |
 | Custom regex | `type: "regex"` with a JavaScript `RegExp` `pattern` |
-| Built-in preset | `preset` — common tokens, credentials, private keys, connection strings, and IP addresses |
+
+The Rule Builder also offers built-in preset templates (common tokens, credentials, private keys, connection strings, IP addresses): picking one fills the form — pattern, description, and, for issuer presets, a ready `restoreScope` — and the saved rule is an ordinary regex rule. The config file never references presets; what you see in the file is everything the rule is.
 
 Literal rules may use a fixed `placeholder` or automatic generation; regex matches always receive generated placeholders, and capture groups restrict masking to the captured parts. Earlier rules take priority over overlapping later rules.
 
@@ -173,7 +180,7 @@ The opt-in `systemPromptGuidance` note mitigates both: its escape hatch (report 
 
 ### Scoped restoration (restoreScope)
 
-Rules may declare a `restoreScope` restricting where their real values may flow once restored into tool arguments: `destinations` (a dot-anchored host allowlist — `stripe.com` covers `api.stripe.com`, not `api.stripe.com.evil.com`; IP literals and intranet wildcards like `10.0.*` are supported), `tools` (tool names allowed to receive the value), and `mode` — a three-step ladder deciding what the rule restores:
+Rules may declare a `restoreScope` restricting where their real values may flow once restored into tool arguments. A rule either has no `restoreScope` (its values restore unconditionally, as before) or a fully explicit one — `mode` and `onRefuse` are required and validated at load time; the config file always states the effective policy, and nothing is derived from the rule's origin. A scope declares `destinations` (a dot-anchored host allowlist — `stripe.com` covers `api.stripe.com`, not `api.stripe.com.evil.com`; IP literals and intranet wildcards like `10.0.*` are supported), `tools` (tool names allowed to receive the value), and `mode` — a three-step ladder deciding what the rule restores:
 
 | situation | `strict` | `semi-strict` | `permissive` |
 |---|---|---|---|
@@ -184,13 +191,13 @@ Rules may declare a `restoreScope` restricting where their real values may flow 
 | local use (write a file, run a local command) | refuse | restore + mark (later egress stays tracked) | restore + mark (later egress stays tracked) |
 | marked or inline value consumed by an interpreter (`python x.py <file>`, `source .env`) | warning¹ | warning | warning |
 
-"Refuse" means the rule withholds the real value; a per-rule `onRefuse` setting decides *how*: `block` refuses the call outright and tells the model why (default for strict/semi-strict), `ask` pauses for your approval instead — the prompt names the value, the destination (or disallowed tool), and the rule; approving releases this one call, declining blocks it (default for permissive; headless sessions decline). The mode decides what is refused, `onRefuse` decides who refuses it: `strict` + `ask` puts a human behind every withheld value, `permissive` + `block` never asks.
+"Refuse" means the rule withholds the real value; the per-rule `onRefuse` field decides *how*: `block` refuses the call outright and tells the model why, `ask` pauses for your approval instead — the prompt names the value, the destination (or disallowed tool), and the rule; approving releases this one call, declining blocks it (headless sessions decline). The mode decides what is refused, `onRefuse` decides who refuses it: `strict` + `ask` puts a human behind every withheld value, `permissive` + `block` never asks. The Rule Builder presets `onRefuse` from the mode you pick (block for strict/semi-strict, ask for permissive) and re-presets it when you change the mode, but the value it writes is always the one shown.
 
 Every decision is recorded in the audit trail (`/masking-history`, audit tab) with one of five outcomes: `restored`, `unverified`, `blocked`, `confirmed`, `declined`.
 
 ¹ Under strict the rule-dimension case cannot arise (the local restore that would feed it is blocked); a marked path consumed by an interpreter is still warned. The warning fires once per rule+target per session and never blocks — it marks the point where the marker chain stops being able to observe the value.
 
-`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `semi-strict` lets the value flow freely through local files and processes, but any command with outbound intent must name a verifiable destination — a blind `curl "$URL"` blocks even when the value reached it via a marked file. `permissive` accepts the exposure risk of unverifiable calls to keep the task working, and presets `onRefuse: ask` so a confirmed violation pauses for your approval instead of hard-blocking. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
+`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `semi-strict` lets the value flow freely through local files and processes, but any command with outbound intent must name a verifiable destination — a blind `curl "$URL"` blocks even when the value reached it via a marked file. `permissive` accepts the exposure risk of unverifiable calls to keep the task working, and pairs naturally with `onRefuse: ask` so a confirmed violation pauses for your approval instead of hard-blocking. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` are Rule Builder templates: choosing one materializes a scoped rule — the issuing service's domains with `mode: "strict"` and `onRefuse: "block"` — straight into the config, where you can edit every field.
 
 Blocked calls return the reason to the model (offending destination, rule name, and the way out), so it can adapt instead of retrying blindly; notices for unverified restores appear at most once per turn. Edit the rule in `/masking` to widen or tighten its scope.
 
@@ -225,7 +232,7 @@ No. Masking applies at the LLM-provider boundary; Pi's local session files still
 
 ### Does it automatically detect every secret or piece of PII?
 
-No. Only values matched by configured literal, environment, preset, or regex rules are masked—whether they are secrets or any other content you choose to hide.
+No. Only values matched by configured literal, environment, or regex rules are masked—whether they are secrets or any other content you choose to hide.
 
 ### Do tools receive the original value?
 

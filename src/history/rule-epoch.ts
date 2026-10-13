@@ -11,7 +11,7 @@ export interface RuleEpochRuleMetadata {
   id: string;
   name: string;
   scope: "project" | "global";
-  sourceKind: "literal" | "regex" | "preset";
+  sourceKind: "literal" | "regex";
   enabled: boolean;
   available: boolean;
   order: number;
@@ -343,7 +343,7 @@ function parseRuleMetadata(value: unknown): RuleEpochRuleMetadata | undefined {
     typeof value.id !== "string" ||
     typeof value.name !== "string" ||
     (value.scope !== "project" && value.scope !== "global") ||
-    (value.sourceKind !== "literal" && value.sourceKind !== "regex" && value.sourceKind !== "preset") ||
+    (value.sourceKind !== "literal" && value.sourceKind !== "regex") ||
     typeof value.enabled !== "boolean" ||
     typeof value.available !== "boolean" ||
     typeof value.order !== "number" || !Number.isInteger(value.order) || value.order < 0 ||

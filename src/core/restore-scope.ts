@@ -4,10 +4,14 @@
  * docs/egress-scoping-design.md.
  *
  * This module owns the scope vocabulary: the declared shape, its
- * materialization into an effective scope (preset defaults, env-name
- * fallback, strict/permissive mode), and dot-anchored destination matching
- * with host normalization (lowercase, trailing dot, punycode, IPv4
+ * materialization into an effective scope, and dot-anchored destination
+ * matching with host normalization (lowercase, trailing dot, punycode, IPv4
  * literal forms) and userinfo exclusion.
+ *
+ * Config semantics: a rule either has no `restoreScope` (restores
+ * unconditionally) or a fully explicit one — `mode` and `onRefuse` are
+ * required and validated at load time. There is no value derivation from
+ * rule origin; presets are a Rule Builder template that materializes.
  */
 
 /** Declared per-rule scope, exactly as it appears in the config file. */
@@ -33,17 +37,15 @@ export interface RestoreScope {
  *  - permissive: also restore outbound calls with an unverifiable
  *    destination (with a warning); confirmed violations are refused in
  *    every mode.
- *  Default: "strict" for preset rules with default destinations,
- *  "permissive" otherwise. */
-  mode?: "strict" | "semi-strict" | "permissive";
+ *  Required: the config file always states the effective mode. */
+  mode: ScopeMode;
   /** What to do when the mode refuses to restore (confirmed violations in
    *  every mode, plus the gap/local cells the mode withholds): "block"
    *  refuses the call outright and tells the model why; "ask" pauses for
    *  the user's approval (approve releases this one call, decline blocks
-   *  it; no UI means decline). Preset by mode — strict/semi-strict
-   *  default to "block", permissive to "ask" — and independent of it:
-   *  the mode decides what is refused, this decides who refuses it. */
-  onRefuse?: "block" | "ask";
+   *  it; no UI means decline). The mode decides what is refused, this
+   *  decides who refuses it. Required: always explicit. */
+  onRefuse: RefuseAction;
 }
 
 export type ScopeMode = "strict" | "semi-strict" | "permissive";
@@ -56,17 +58,14 @@ export interface EffectiveScope {
   tools: string[] | undefined;
   envNames: string[] | undefined;
   mode: ScopeMode;
-  /** Effective refusal action: the declared value, or the mode's preset. */
+  /** Effective refusal action: always declared (required in config). */
   onRefuse: RefuseAction;
 }
 
-/** Inputs to effectiveScope(): the declared scope plus the rule's origin. */
+/** Inputs to effectiveScope(): the declared scope plus rule-level context. */
 export interface ScopeMaterializationInput {
   scope: RestoreScope | undefined;
-  /** Preset default destinations, or undefined for non-preset rules and
-   *  presets without an issuing domain. */
-  presetDestinations: string[] | undefined;
-  sourceKind: "literal" | "regex" | "preset";
+  /** Environment variable name backing the rule (envNames fallback). */
   realFromEnv: string | undefined;
   /** Global `options.trustedDestinations`, validated at load time. Merged
    *  (union) into the effective destinations — it widens the set of
@@ -76,26 +75,28 @@ export interface ScopeMaterializationInput {
 }
 
 /**
- * Materialize the declared scope. Returns null when neither an explicit
- * scope nor a preset default exists — the rule then restores unconditionally
- * (backward compatible). `envNames` alone does not constrain tool calls;
- * it participates once the env-reference path is enforced.
+ * Materialize the declared scope. Returns null when no scope is declared —
+ * the rule then restores unconditionally. `mode` and `onRefuse` are carried
+ * through verbatim (required and validated at load time; no derivation).
+ * `envNames` alone does not constrain tool calls; it participates once the
+ * env-reference path is enforced.
  */
 export function effectiveScope(input: ScopeMaterializationInput): EffectiveScope | null {
   const declared = input.scope;
-  const presetDefault = input.sourceKind === "preset" ? input.presetDestinations : undefined;
-  if (!declared && !presetDefault) return null;
+  if (!declared) return null;
 
   const destinations = unionDestinations(
-    declared?.destinations ?? presetDefault,
+    declared.destinations,
     input.trustedDestinations,
   );
-  const envNames = declared?.envNames ?? (input.realFromEnv ? [input.realFromEnv] : undefined);
-  const mode: ScopeMode =
-    declared?.mode ?? (presetDefault !== undefined ? "strict" : "permissive");
-  const onRefuse: RefuseAction =
-    declared?.onRefuse ?? (mode === "permissive" ? "ask" : "block");
-  return { destinations, tools: declared?.tools, envNames, mode, onRefuse };
+  const envNames = declared.envNames ?? (input.realFromEnv ? [input.realFromEnv] : undefined);
+  return {
+    destinations,
+    tools: declared.tools,
+    envNames,
+    mode: declared.mode,
+    onRefuse: declared.onRefuse,
+  };
 }
 
 /** Merge the global trusted-destination list into a rule's destinations

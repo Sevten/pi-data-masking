@@ -675,7 +675,7 @@ test("version rules show read-only rule metadata and net changes", () => {
       },
       {
         epoch: epoch(2, [
-          rule("host", "Private host", 0, { sourceKind: "preset", scope: "global" }),
+          rule("host", "Private host", 0, { sourceKind: "regex", scope: "global" }),
           rule("service", "Service token", 1, { enabled: false, behaviorFingerprint: "service-v2" }),
         ]),
         entries: [entry("v2")],

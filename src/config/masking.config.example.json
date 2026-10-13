@@ -32,8 +32,18 @@
     {
       "id": "github-personal-access-token",
       "name": "GitHub personal access token",
-      "preset": "github-pat",
-      "enabled": true
+      "enabled": true,
+      "description": "Materialized from the github-pat template (Rule Builder: Built-in preset template)",
+      "type": "regex",
+      "pattern": "\\bghp_[A-Za-z0-9]{36}\\b|\\bgithub_pat_[A-Za-z0-9_]{22,}\\b",
+      "restoreScope": {
+        "destinations": [
+          "github.com",
+          "api.github.com"
+        ],
+        "mode": "strict",
+        "onRefuse": "block"
+      }
     },
     {
       "id": "scoped-deploy-token",
@@ -49,7 +59,8 @@
           "write",
           "edit"
         ],
-        "mode": "strict"
+        "mode": "strict",
+        "onRefuse": "block"
       }
     }
   ],

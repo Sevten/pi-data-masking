@@ -635,23 +635,24 @@ test("Restore scope accepts a comma list and Scope mode toggles permissive", asy
       // Scope mode row appears once a scope is present.
       assert.ok(component.render(100).some((line) => line.includes("Scope mode")), "Scope mode selector should appear");
       component.handleInput(INPUT.down);
-      assert.ok(component.render(100).some((line) => /Scope mode.*Permissive/.test(line.replace(/\x1b\[[0-9;]*m/g, ""))), "the selector starts at the effective default");
+      assert.ok(component.render(100).some((line) => /Scope mode.*Semi-strict/.test(line.replace(/\x1b\[[0-9;]*m/g, ""))), "a new scope starts at the semi-strict starting default");
       component.handleInput(INPUT.right);
       const toggled = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
-      assert.ok(/Scope mode.*Strict/.test(toggled), "right arrow toggles away from the permissive default");
+      assert.ok(/Scope mode.*Permissive/.test(toggled), "right arrow toggles to Permissive");
+      // On refusal re-presets with the mode: permissive → Ask.
+      assert.ok(/On refusal.*Ask/.test(toggled), "permissive re-presets On refusal: Ask");
       component.handleInput(INPUT.right);
       const toggledTwice = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
-      assert.ok(/Scope mode.*Semi-strict/.test(toggledTwice), "second toggle reaches Semi-strict");
+      assert.ok(/Scope mode.*Strict/.test(toggledTwice), "second toggle reaches Strict");
+      assert.ok(/On refusal.*Block/.test(toggledTwice), "strict re-presets On refusal: Block");
       component.handleInput(INPUT.right);
       const toggledThrice = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
-      assert.ok(/Scope mode.*Permissive/.test(toggledThrice), "third toggle returns to Permissive");
-      // On refusal row: present, preset by the mode; toggling it writes an
-      // explicit onRefuse.
-      assert.ok(/On refusal.*Ask/.test(toggledThrice), "permissive presets On refusal: Ask");
+      assert.ok(/Scope mode.*Semi-strict/.test(toggledThrice), "third toggle returns to Semi-strict");
+      // On refusal row: toggling it overrides the mode's re-preset.
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.right);
       const refusalToggled = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
-      assert.ok(/On refusal.*Block/.test(refusalToggled), "toggling On refusal sets it explicitly");
+      assert.ok(/On refusal.*Ask/.test(refusalToggled), "toggling On refusal sets it explicitly");
       component.handleInput(INPUT.enter);
       await waitFor(() => configRules(projectPath).length === 1);
     },
@@ -662,9 +663,9 @@ test("Restore scope accepts a comma list and Scope mode toggles permissive", asy
     const rule = configRules(projectPath)[0];
     assert.deepEqual(rule.restoreScope, {
       destinations: ["api.stripe.com", "*.internal.example.com"],
-      mode: "permissive",
-      onRefuse: "block",
-    }, "comma list dedupes into destinations; explicit mode and refusal action are written");
+      mode: "semi-strict",
+      onRefuse: "ask",
+    }, "comma list dedupes into destinations; mode and refusal action are always written in full");
   } finally {
     await harness.shutdown();
     rmSync(dir, { recursive: true, force: true });

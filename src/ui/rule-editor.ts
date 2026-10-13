@@ -357,7 +357,7 @@ export async function addConfigRule(
     if ("batch" in pick) {
       const source = sources.find((source) => source.scope === "global")!;
       if (!existsSync(source.path)) {
-        const initial = buildInitialConfig([]);
+        const initial = buildInitialConfig();
         try {
           await createJsonFileExclusive(source.path, {
             $schema: initial.$schema,
@@ -384,6 +384,11 @@ export async function addConfigRule(
           pattern: preset.pattern,
           ...(preset.flags ? { flags: preset.flags } : {}),
           ...(preset.preserveStructure ? { preserveStructure: { ...preset.preserveStructure } } : { preserveStructure: { keepPrefix: true } }),
+          // Materialize the template's scope too: presets with an issuing
+          // domain restore only there, strict/block written in full.
+          ...(preset.destinations && preset.destinations.length > 0
+            ? { restoreScope: { destinations: [...preset.destinations], mode: "strict" as const, onRefuse: "block" as const } }
+            : {}),
         };
       });
       const mutations = rules.map((rule) => ({ kind: "append" as const, path: source.path, rule }));
@@ -408,7 +413,7 @@ export async function addConfigRule(
     rule: RawConfigRule,
   ): Promise<ConfigSaveResult> {
     if (!existsSync(source.path)) {
-      const initial = buildInitialConfig([]);
+      const initial = buildInitialConfig();
       try {
         await createJsonFileExclusive(source.path, {
           $schema: initial.$schema,
@@ -530,6 +535,21 @@ export async function addConfigRule(
           : selectedPreset?.destinations && selectedPreset.destinations.length > 0
             ? selectedPreset.destinations.join(", ")
             : "",
+        false,
+        // Text → selector sync: hand-typed full JSON carrying mode/onRefuse
+        // moves the selectors, so the displayed state always matches what
+        // a save will write.
+        () => {
+          const text = editors.restoreScope.getExpandedText().trim();
+          if (!text.startsWith("{")) return;
+          try {
+            const parsed = JSON.parse(text) as Record<string, unknown>;
+            if (parsed.mode === "strict" || parsed.mode === "semi-strict" || parsed.mode === "permissive") scopeMode = parsed.mode;
+            if (parsed.onRefuse === "block" || parsed.onRefuse === "ask") scopeRefuse = parsed.onRefuse;
+          } catch {
+            // Invalid JSON: the save path blocks with a clear message.
+          }
+        },
       ),
     };
     testEditor = editors.test;
@@ -543,45 +563,32 @@ export async function addConfigRule(
 
     const currentSource = () => selectedSource;
     const currentType = () => builderType;
-    // Scope mode selector. Effective default mirrors effectiveScope():
-    // strict for preset-backed rules, permissive otherwise. Until the user
-    // toggles the selector the mode is not written to the rule — it keeps
-    // inheriting the effective default.
-    const initialScopeMode: { value: "strict" | "semi-strict" | "permissive"; explicit: boolean } = (() => {
+    // Scope mode selector. A scope is always written in full: the selector
+    // starts at the declared value when editing, or at a starting default
+    // for a new scope (strict when a preset template carried destinations,
+    // semi-strict otherwise — a UI convenience, the value is always saved).
+    let scopeMode: "strict" | "semi-strict" | "permissive" = (() => {
       const declared = editing?.initial.restoreScope;
       if (declared && typeof declared === "object" && !Array.isArray(declared)) {
         const mode = (declared as { mode?: unknown }).mode;
-        if (mode === "strict" || mode === "semi-strict" || mode === "permissive") return { value: mode, explicit: true };
+        if (mode === "strict" || mode === "semi-strict" || mode === "permissive") return mode;
       }
-      const presetBacked = editing?.configured.sourceKind === "preset" ||
-        (currentType() === "Built-in preset template" && !!selectedPreset?.destinations?.length);
-      return { value: presetBacked ? "strict" as const : "permissive" as const, explicit: false };
+      const templateBacked = currentType() === "Built-in preset template" && !!selectedPreset?.destinations?.length;
+      return templateBacked ? "strict" as const : "semi-strict" as const;
     })();
-    let scopeMode: "strict" | "semi-strict" | "permissive" = initialScopeMode.value;
-    let scopeModeExplicit = initialScopeMode.explicit;
     // Refusal-action selector: what to do when the mode refuses to restore.
-    // Preset by the effective mode (permissive → ask, otherwise block);
-    // changing the mode re-presets it. Until toggled it is not written.
-    const initialScopeRefuse: { value: "block" | "ask"; explicit: boolean } = (() => {
+    // Changing the mode re-presets it; the value is always saved.
+    let scopeRefuse: "block" | "ask" = (() => {
       const declared = editing?.initial.restoreScope;
       if (declared && typeof declared === "object" && !Array.isArray(declared)) {
         const value = (declared as { onRefuse?: unknown }).onRefuse;
-        if (value === "block" || value === "ask") return { value, explicit: true };
+        if (value === "block" || value === "ask") return value;
       }
-      return { value: initialScopeMode.value === "permissive" ? "ask" as const : "block" as const, explicit: false };
+      return scopeMode === "permissive" ? "ask" as const : "block" as const;
     })();
-    let scopeRefuse: "block" | "ask" = initialScopeRefuse.value;
-    let scopeRefuseExplicit = initialScopeRefuse.explicit;
-    /** A scope is in play: the field has content, or the rule is preset-
-     *  backed with default destinations (visible or inherited). */
+    /** A scope is in play: the Restore scope field has content. */
     function scopePresent(): boolean {
-      if (editors.restoreScope.getExpandedText().trim()) return true;
-      if (currentType() === "Built-in preset template" && selectedPreset?.destinations?.length) return true;
-      if (editing?.configured.sourceKind === "preset" && editing.configured.presetName) {
-        const preset = MASKING_PRESETS.find((p) => p.name === editing!.configured.presetName);
-        return !!preset?.destinations?.length;
-      }
-      return false;
+      return editors.restoreScope.getExpandedText().trim().length > 0;
     }
 
     const editableTypes: readonly BuilderType[] = ["Exact literal value", "Literal from environment", "Custom regex"];
@@ -701,7 +708,7 @@ export async function addConfigRule(
       if (invalid.length > 0) {
         return { error: `not valid destinations: ${invalid.join(", ")} — use host names, IP literals, or wildcards (*.corp.internal, 10.0.*)` };
       }
-      return { scope: { destinations: entries }, fromList: true };
+      return { scope: { destinations: entries } as unknown as RestoreScope, fromList: true };
     }
     function draftFromForm(): RawConfigRule {
       const name = editors.name.getExpandedText().trim();
@@ -721,20 +728,15 @@ export async function addConfigRule(
         if (scopeText) {
           const parsed = parseRestoreScopeText(scopeText);
           if ("scope" in parsed) {
-            if (scopeModeExplicit && parsed.fromList) parsed.scope.mode = scopeMode;
-            if (scopeRefuseExplicit && parsed.fromList) parsed.scope.onRefuse = scopeRefuse;
+            // A scope is always written in full: the selectors are the
+            // single source of truth for mode/onRefuse (kept in sync with
+            // hand-typed JSON both ways).
+            parsed.scope.mode = scopeMode;
+            parsed.scope.onRefuse = scopeRefuse;
             base.restoreScope = parsed.scope;
           } else {
             base.restoreScope = scopeText as unknown as RawConfigRule["restoreScope"];
           }
-        } else if (scopeModeExplicit || scopeRefuseExplicit) {
-          // Preset-backed rule with empty scope text (built-in destinations):
-          // an explicitly toggled selector still has to land — a minimal
-          // scope object keeps the preset defaults while pinning the choice.
-          const scope: Record<string, unknown> = {};
-          if (scopeModeExplicit) scope.mode = scopeMode;
-          if (scopeRefuseExplicit) scope.onRefuse = scopeRefuse;
-          base.restoreScope = scope as RawConfigRule["restoreScope"];
         } else delete base.restoreScope;
       }
       if (name) base.name = name;
@@ -1203,15 +1205,11 @@ export async function addConfigRule(
             renderSelector(lines, "scopeMode", "Scope mode",
               scopeMode === "strict" ? "Strict" : scopeMode === "semi-strict" ? "Semi-strict" : "Permissive",
               width,
-              scopeModeExplicit
-                ? "Strict restores only verified destinations · Semi-strict also allows local use · Permissive also restores unverifiable outbound (warned)"
-                : `Default: strict for preset keys with destinations, permissive otherwise · ←/→ or Space to override`);
+              "Strict restores only verified destinations · Semi-strict also allows local use · Permissive also restores unverifiable outbound (warned)");
             renderSelector(lines, "scopeRefuse", "On refusal",
               scopeRefuse === "block" ? "Block" : "Ask",
               width,
-              scopeRefuseExplicit
-                ? "Block refuses the call and tells the model why · Ask pauses for your approval (approve releases this call, decline blocks it)"
-                : `Preset by the mode: block for strict/semi-strict, ask for permissive · ←/→ or Space to override`);
+              "Block refuses the call and tells the model why · Ask pauses for your approval (approve releases this call, decline blocks it)");
           }
           const fixedFieldRowCount = 10;
           while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
@@ -1330,19 +1328,17 @@ export async function addConfigRule(
           } else if (field === "scopeMode") {
             const modes: Array<"strict" | "semi-strict" | "permissive"> = ["strict", "semi-strict", "permissive"];
             scopeMode = modes[(((modes.indexOf(scopeMode) + selectorDirection) % modes.length) + modes.length) % modes.length]!;
-            scopeModeExplicit = true;
             // The mode is the primary knob: changing it re-presets the
             // refusal action (and drops a prior override).
             scopeRefuse = scopeMode === "permissive" ? "ask" : "block";
-            scopeRefuseExplicit = false;
-            // Keep full-JSON text in sync so the saved rule matches what
-            // the selector shows.
+            // Keep full-JSON text in sync so the field matches what the
+            // selectors show.
             const scopeText = editors.restoreScope.getExpandedText().trim();
             if (scopeText.startsWith("{")) {
               try {
                 const parsed = JSON.parse(scopeText) as Record<string, unknown>;
                 parsed.mode = scopeMode;
-                delete parsed.onRefuse;
+                parsed.onRefuse = scopeRefuse;
                 editors.restoreScope.setText(JSON.stringify(parsed));
               } catch {
                 // Invalid JSON: the save path blocks with a clear message.
@@ -1351,7 +1347,6 @@ export async function addConfigRule(
           } else if (field === "scopeRefuse") {
             const actions: Array<"block" | "ask"> = ["block", "ask"];
             scopeRefuse = actions[(((actions.indexOf(scopeRefuse) + selectorDirection) % actions.length) + actions.length) % actions.length]!;
-            scopeRefuseExplicit = true;
             const scopeText = editors.restoreScope.getExpandedText().trim();
             if (scopeText.startsWith("{")) {
               try {
@@ -1434,7 +1429,7 @@ export async function editConfigRule(
     if (!original || typeof original !== "object" || original.id !== configured.rule.id) {
       throw new Error("source position changed; reopen /masking");
     }
-    const initial = configured.sourceKind === "preset" ? { ...configured.rule } : { ...original };
+    const initial = { ...original };
     return await addConfigRule(bridge, ctx, { configured, original, initial }, { initialMode });
   } catch (err) {
     ctx.ui.notify(`Failed to edit rule: ${(err as Error).message}`, "error");

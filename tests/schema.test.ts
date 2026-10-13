@@ -16,10 +16,9 @@ test("packaged example covers every rule source and matches the schema", () => {
   assert.equal(example.rules.some((rule) => typeof rule.real === "string"), true);
   assert.equal(example.rules.some((rule) => typeof rule.realFromEnv === "string"), true);
   assert.equal(example.rules.some((rule) => rule.type === "regex"), true);
-  assert.equal(example.rules.some((rule) => typeof rule.preset === "string"), true);
 });
 
-test("JSON Schema accepts literal, environment, regex, and preset rules", () => {
+test("JSON Schema accepts literal, environment, and regex rules", () => {
   const config = {
     $schema: "./masking.config.schema.json",
     version: 1,
@@ -28,19 +27,19 @@ test("JSON Schema accepts literal, environment, regex, and preset rules", () => 
       { id: "domain", name: "Internal domain", real: "internal.example", placeholder: "public.example", allowCommonPlaceholder: false },
       { id: "api", realFromEnv: "PROD_API_KEY", preserveStructure: { keepPrefix: true } },
       { id: "custom", type: "regex", pattern: "\\btoken_[A-Za-z0-9]{24}\\b", flags: "i" },
-      { id: "github", preset: "github-pat", enabled: false },
+      { id: "github", type: "regex", pattern: "\\bghp_[A-Za-z0-9]{36}\\b", restoreScope: { destinations: ["github.com"], mode: "strict", onRefuse: "block" } },
     ],
     options: { showStatusBar: true, persistHistory: true },
   };
   assert.equal(validate(config), true, JSON.stringify(validate.errors));
 });
 
-test("JSON Schema rejects ambiguous sources, fixed regex placeholders, and unknown presets", () => {
+test("JSON Schema rejects ambiguous sources, fixed regex placeholders, and preset references", () => {
   const invalidRules = [
     { id: "ambiguous", real: "secret-value", realFromEnv: "SECRET_VALUE" },
     { id: "regex-placeholder", type: "regex", pattern: "secret.+", placeholder: "fixed" },
-    { id: "unknown", preset: "future-preset" },
-    { id: "empty-name", name: "", preset: "jwt" },
+    { id: "preset-ref", preset: "github-pat" },
+    { id: "empty-name", name: "", real: "secret-value-9" },
   ];
   for (const rule of invalidRules) {
     assert.equal(validate({ rules: [rule] }), false, `unexpectedly accepted ${JSON.stringify(rule)}`);
@@ -63,10 +62,10 @@ test("JSON Schema accepts restoreScope and rejects unknown members", () => {
     version: 1,
     enabled: true,
     rules: [
-      { id: "k", preset: "github-pat", restoreScope: { destinations: ["github.com"], mode: "strict" } },
-      { id: "t", real: "local-secret-value", placeholder: "masked-local-value", restoreScope: { tools: ["write", "edit"] } },
-      { id: "e", real: "another-secret-value", placeholder: "masked-another-value", restoreScope: { envNames: ["OTHER_KEY"] } },
-      { id: "w", real: "wildcard-secret-value", placeholder: "masked-wildcard-value", restoreScope: { destinations: ["*.internal.acme.com", "10.0.*"] } },
+      { id: "k", type: "regex", pattern: "\\bghp_[A-Za-z0-9]{36}\\b", restoreScope: { destinations: ["github.com"], mode: "strict", onRefuse: "block" } },
+      { id: "t", real: "local-secret-value", placeholder: "masked-local-value", restoreScope: { tools: ["write", "edit"], mode: "semi-strict", onRefuse: "block" } },
+      { id: "e", real: "another-secret-value", placeholder: "masked-another-value", restoreScope: { envNames: ["OTHER_KEY"], mode: "strict", onRefuse: "ask" } },
+      { id: "w", real: "wildcard-secret-value", placeholder: "masked-wildcard-value", restoreScope: { destinations: ["*.internal.acme.com", "10.0.*"], mode: "permissive", onRefuse: "ask" } },
     ],
     options: {},
   };
@@ -74,7 +73,9 @@ test("JSON Schema accepts restoreScope and rejects unknown members", () => {
 
   const invalid = [
     { id: "x", real: "secret-value-1", restoreScope: { unknownField: true } },
-    { id: "y", real: "secret-value-2", restoreScope: { mode: "yolo" } },
+    { id: "y", real: "secret-value-2", restoreScope: { mode: "yolo", onRefuse: "block" } },
+    { id: "partial", real: "secret-value-5", restoreScope: { destinations: ["a.com"] } },
+    { id: "partial2", real: "secret-value-6", restoreScope: { destinations: ["a.com"], mode: "strict" } },
     { id: "z", real: "secret-value-3", restoreScope: { destinations: [] } },
     { id: "w2", real: "secret-value-4", restoreScope: { destinations: ["a.*.b"] } },
   ];

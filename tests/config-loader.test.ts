@@ -88,10 +88,10 @@ test("rule IDs are unique per file but may repeat across project and global scop
     const projectPath = join(dir, "project.json");
     writeFileSync(globalPath, JSON.stringify({ rules: [
       { id: "shared-name", real: "global-secret-value" },
-      { id: "shared-name", preset: "jwt" },
+      { id: "shared-name", type: "regex", pattern: "\\beyJ[A-Za-z0-9_-]{10,}" },
     ] }));
     writeFileSync(projectPath, JSON.stringify({ rules: [
-      { id: "shared-name", preset: "github-pat" },
+      { id: "shared-name", type: "regex", pattern: "\\bghp_[A-Za-z0-9]{36}\\b" },
     ] }));
 
     const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
@@ -119,9 +119,9 @@ test("rule names are optional while generated IDs are readable and collision-fre
 
   const legacy = validateConfig([{ id: "legacy", real: "legacy-secret" }]);
   assert.equal(legacy.rules[0]!.name, undefined);
-  const named = validateConfig([{ id: "named", name: "Readable name", preset: "jwt" }]);
+  const named = validateConfig([{ id: "named", name: "Readable name", type: "regex", pattern: "tok-[a-z]{6}" }]);
   assert.equal(named.rules[0]!.name, "Readable name");
-  assert.ok(validateConfig([{ id: "bad-name", name: " ", preset: "jwt" }]).warnings.some(
+  assert.ok(validateConfig([{ id: "bad-name", name: " ", type: "regex", pattern: "tok-[a-z]{6}" }]).warnings.some(
     (warning) => warning.includes("invalid 'name'"),
   ));
 });
@@ -206,7 +206,7 @@ test("invalid disabled rules keep their disabled-state context in load warnings"
   }
 });
 
-test("preset references expand in place while unknown presets stay inactive", async () => {
+test("preset references are rejected with a materialization hint", async () => {
   const dir = makeTmp();
   try {
     const globalPath = join(dir, "global.json");
@@ -214,24 +214,14 @@ test("preset references expand in place while unknown presets stay inactive", as
     writeFileSync(globalPath, JSON.stringify({ rules: [] }));
     writeFileSync(projectPath, JSON.stringify({ rules: [
       { id: "github", preset: "github-pat" },
-      { id: "private", preset: "private-ipv4", preserveStructure: { keepIPv4Octets: 1 } },
-      { id: "future", preset: "does-not-exist" },
+      { id: "ok", real: "plain-secret" },
     ] }));
 
     const { config, warnings } = await loadConfigFromPaths(globalPath, projectPath, KEY);
-    assert.deepEqual(config.rules.map((rule) => rule.id), ["github", "private"]);
-    assert.deepEqual(config.configuredRules.map(({ sourceKind, presetName }) => ({ sourceKind, presetName })), [
-      { sourceKind: "preset", presetName: "github-pat" },
-      { sourceKind: "preset", presetName: "private-ipv4" },
-    ]);
-    assert.equal((config.rules[1]!.preserveStructure?.keepIPv4Octets), 1);
-    assert.ok(warnings.some((warning) => warning.includes("unknown preset")));
-
-    const masker = new Masker(config.rules, KEY);
-    assert.equal(masker.mask("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").count, 1);
-    const ipResult = masker.mask("valid=10.1.2.3 invalid=10.999.2.3");
-    assert.equal(ipResult.count, 1);
-    assert.ok(ipResult.text.includes("10.999.2.3"));
+    assert.deepEqual(config.rules.map((rule) => rule.id), ["ok"]);
+    assert.ok(warnings.some((warning) =>
+      warning.includes("[github]") && warning.includes("'preset' references") && warning.includes("no longer supported")
+    ));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -273,16 +263,15 @@ test("realFromEnv resolves only in memory and missing/conflicting sources stay i
   }
 });
 
-test("initializer builds a minimal preset config and can update .gitignore", async () => {
+test("initializer builds a minimal config and can update .gitignore", async () => {
   const dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "masking-init-"));
   try {
-    const initial = buildInitialConfig(["github-pat", "private-ipv4", "github-pat"], {
+    const initial = buildInitialConfig({
       showStatusBar: false,
       persistHistory: true,
     });
     assert.equal(initial.$schema, CONFIG_SCHEMA_URL);
-    assert.deepEqual(initial.rules.map((rule) => rule.preset), ["github-pat", "private-ipv4"]);
-    assert.deepEqual(initial.rules.map((rule) => rule.name), ["GitHub access token", "Private IPv4 address"]);
+    assert.deepEqual(initial.rules, []);
     assert.equal(initial.options.showStatusBar, false);
 
     assert.equal(await ensureProjectConfigGitignored(dir), true);
@@ -379,7 +368,7 @@ test("structural rule mutations validate targets and preserve unrelated config f
       ],
     }));
 
-    await saveConfigRuleMutations([{ kind: "append", path, rule: { id: "c", preset: "github-pat" } }]);
+    await saveConfigRuleMutations([{ kind: "append", path, rule: { id: "c", type: "regex", pattern: "ghp_[A-Za-z0-9]{36}" } }]);
     await saveConfigRuleMutations([{
       kind: "replace",
       path,
@@ -417,7 +406,7 @@ test("structural rule mutations validate targets and preserve unrelated config f
       /source position changed/,
     );
     await assert.rejects(
-      saveConfigRuleMutations([{ kind: "append", path, rule: { id: "c", preset: "jwt" } }]),
+      saveConfigRuleMutations([{ kind: "append", path, rule: { id: "c", type: "regex", pattern: "eyJ[a-z]{6}" } }]),
       /ID already exists/,
     );
   } finally {
@@ -953,7 +942,7 @@ test("allowlist: loaded entries exempt matching values end to end", async () => 
     const globalPath = join(dir, "global.json");
     const projectPath = join(dir, "project.json");
     writeFileSync(globalPath, JSON.stringify({
-      rules: [{ id: "ip", preset: "private-ipv4" }],
+      rules: [{ id: "ip", type: "regex", pattern: "\\b(?:10\\.(?:\\d{1,3}\\.){2}\\d{1,3}|192\\.168\\.(?:\\d{1,3}\\.){1}\\d{1,3})\\b" }],
       options: { allowlist: ["10.0.0.5"] },
     }));
     writeFileSync(projectPath, JSON.stringify({ rules: [] }));
@@ -1034,8 +1023,8 @@ test("options.trustedDestinations: union into scoped rules, invalid entries drop
     writeFileSync(globalPath, JSON.stringify({
       options: { trustedDestinations: ["artifactory.corp", "10.0.*", "not a host!!"] },
       rules: [
-        { id: "preset-default", preset: "github-pat" },
-        { id: "custom-scope", real: "trusted-union-secret", restoreScope: { destinations: ["internal.acme.com"], mode: "strict" } },
+        { id: "preset-default", type: "regex", pattern: "\bghp_[A-Za-z0-9]{36}\b", restoreScope: { destinations: ["github.com", "api.github.com"], mode: "strict", onRefuse: "block" } },
+        { id: "custom-scope", real: "trusted-union-secret", restoreScope: { destinations: ["internal.acme.com"], mode: "strict", onRefuse: "block" } },
         // no scope, no preset default → null; global list must NOT create scope
         { id: "unscoped", real: "unscoped-trusted-secret" },
       ],
@@ -1058,7 +1047,7 @@ test("options.trustedDestinations: union into scoped rules, invalid entries drop
     // dedupe: trusted entries already covered by preset defaults are not repeated
     writeFileSync(globalPath, JSON.stringify({
       options: { trustedDestinations: ["github.com"] },
-      rules: [{ id: "preset-default", preset: "github-pat" }],
+      rules: [{ id: "preset-default", type: "regex", pattern: "\\bghp_[A-Za-z0-9]{36}\\b", restoreScope: { destinations: ["github.com", "api.github.com"], mode: "strict", onRefuse: "block" } }],
     }));
     const dedup = await loadConfigFromPaths(globalPath, join(dir, "missing-project.json"), KEY);
     assert.deepEqual(dedup.config.configuredRules[0].effectiveScope?.destinations,
@@ -1073,23 +1062,22 @@ test("options.trustedDestinations: union into scoped rules, invalid entries drop
   }
 });
 
-test("restoreScope: validation, materialization, and preset defaults", async () => {
+test("restoreScope: validation requires a fully explicit scope", async () => {
   const dir = makeTmp();
   try {
     const globalPath = join(dir, "global.json");
     writeFileSync(globalPath, JSON.stringify({ rules: [
-      // explicit scope on a literal rule → permissive default
+      // fully explicit scope on a literal rule
       { id: "custom-scope", real: "custom-secret-value", placeholder: "masked-custom-value",
         restoreScope: { destinations: ["internal.acme.com"], tools: ["write"], envNames: ["CUSTOM_KEY"], mode: "strict", onRefuse: "block" } },
-      // preset default destinations + strict with zero configuration
-      { id: "preset-default", preset: "github-pat" },
-      // explicit destinations REPLACE preset defaults, permissive flip keeps declared list
-      { id: "preset-override", preset: "github-pat",
-        restoreScope: { destinations: ["git-proxy.corp"], mode: "permissive" } },
-      // invalid scope member → rule skipped with a warning
-      { id: "bad-scope", real: "bad-secret-value", restoreScope: { mode: "yolo" } },
+      // missing mode → skipped
+      { id: "no-mode", real: "nomode-secret-value", restoreScope: { destinations: ["a.com"], onRefuse: "block" } },
+      // missing onRefuse → skipped
+      { id: "no-refuse", real: "norefuse-secret-value", restoreScope: { destinations: ["a.com"], mode: "strict" } },
+      // invalid mode value → skipped
+      { id: "bad-scope", real: "bad-secret-value", restoreScope: { destinations: ["a.com"], mode: "yolo", onRefuse: "block" } },
       // invalid wildcard → skipped
-      { id: "bad-wildcard", real: "wildcard-secret-value", restoreScope: { destinations: ["a.*.b.com"] } },
+      { id: "bad-wildcard", real: "wildcard-secret-value", restoreScope: { destinations: ["a.*.b.com"], mode: "strict", onRefuse: "block" } },
     ] }));
     const { config, warnings } = await loadConfigFromPaths(globalPath, join(dir, "missing-project.json"), KEY);
     const byId = new Map(config.configuredRules.map((c) => [c.rule.id, c]));
@@ -1097,14 +1085,12 @@ test("restoreScope: validation, materialization, and preset defaults", async () 
     assert.deepEqual(byId.get("custom-scope")?.effectiveScope, {
       destinations: ["internal.acme.com"], tools: ["write"], envNames: ["CUSTOM_KEY"], mode: "strict", onRefuse: "block",
     });
-    assert.deepEqual(byId.get("preset-default")?.effectiveScope, {
-      destinations: ["github.com", "api.github.com"], tools: undefined, envNames: undefined, mode: "strict", onRefuse: "block",
-    });
-    assert.deepEqual(byId.get("preset-override")?.effectiveScope, {
-      destinations: ["git-proxy.corp"], tools: undefined, envNames: undefined, mode: "permissive", onRefuse: "ask",
-    });
+    assert.equal(byId.has("no-mode"), false);
+    assert.equal(byId.has("no-refuse"), false);
     assert.equal(byId.has("bad-scope"), false);
     assert.equal(byId.has("bad-wildcard"), false);
+    assert.ok(warnings.some((w) => w.includes("no-mode") && w.includes("'restoreScope.mode'")));
+    assert.ok(warnings.some((w) => w.includes("no-refuse") && w.includes("'restoreScope.onRefuse'")));
     assert.ok(warnings.some((w) => w.includes("bad-scope") && w.includes("'restoreScope.mode'")));
     assert.ok(warnings.some((w) => w.includes("bad-wildcard") && w.includes("restoreScope")));
     // rules without restoreScope materialize to null (unconditional)

@@ -62,13 +62,13 @@ extension automatically):
 {
   "rules": [
     { "name": "collector key", "real": "sk_live_TESTCOLLECTORKEY0011223344",
-      "restoreScope": { "destinations": ["collector.test.internal"], "mode": "strict" } },
+      "restoreScope": { "destinations": ["collector.test.internal"], "mode": "strict", "onRefuse": "block" } },
     { "name": "loose key", "real": "pk_live_LOOSEPERMISSIVEKEY55667788",
-      "restoreScope": { "destinations": ["collector.test.internal"], "mode": "permissive" } },
+      "restoreScope": { "destinations": ["collector.test.internal"], "mode": "permissive", "onRefuse": "ask" } },
     { "name": "semi-strict key", "real": "gk_live_TESTGUARDEDKEY00112233",
-      "restoreScope": { "destinations": ["collector.test.internal"], "mode": "semi-strict" } },
+      "restoreScope": { "destinations": ["collector.test.internal"], "mode": "semi-strict", "onRefuse": "block" } },
     { "name": "env key", "realFromEnv": "TEST_SECRET_VAR",
-      "restoreScope": { "destinations": ["collector.test.internal"], "envNames": ["TEST_SECRET_VAR"], "mode": "strict" } }
+      "restoreScope": { "destinations": ["collector.test.internal"], "envNames": ["TEST_SECRET_VAR"], "mode": "strict", "onRefuse": "block" } }
   ]
 }
 ```
@@ -139,10 +139,10 @@ expected).
 
 | # | Action | Expected |
 |---|---|---|
-| D1 | create a preset rule (e.g. stripe) | Restore scope row **prefilled** with default destinations, editable |
+| D1 | create a rule from a preset template (e.g. stripe) | form prefilled (pattern, description, Restore scope with the issuer's destinations); saved rule is an ordinary regex rule with a full `restoreScope` (`mode: "strict"`, `onRefuse: "block"`) — no `preset` reference in the config |
 | D2 | enter `collector.test.internal, evil.test.internal` in Restore scope | destinations listed on save (shorthand comma list works) |
 | D3 | enter an invalid entry (e.g. `a*b.com`) | save blocked, naming the invalid entry and the correct syntax |
-| D4 | Scope mode row | non-preset rules show `Permissive (default)`; after ←/→ the `(default)` marker disappears and the explicit mode is persisted |
+| D4 | Scope mode / On refusal rows | shown whenever the Restore scope field has content; a new scope starts at `Semi-strict` / `Block` (issuer templates start `Strict`); mode ←/→ re-presets On refusal; both values are always written to the config in full |
 
 ## 3. Verdict quick reference
 

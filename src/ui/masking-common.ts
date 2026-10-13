@@ -180,10 +180,7 @@ export function configuredRuleDetail(
   const lines = [
     `Description: ${rule.description?.trim() || "—"}`,
   ];
-  if (configured.sourceKind === "preset") {
-    lines.push(`Preset: ${configured.presetName}`);
-    if (isRegexRule(rule)) lines.push(`Expanded regex: /${rule.pattern}/${rule.flags ?? ""}`);
-  } else if (isRegexRule(rule)) {
+  if (isRegexRule(rule)) {
     lines.push(`Regex: /${rule.pattern}/${rule.flags ?? ""}`);
   } else {
     if (configured.realFromEnv) {
