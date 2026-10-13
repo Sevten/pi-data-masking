@@ -717,9 +717,9 @@ export async function addConfigRule(
     const restoreScopeDescription = (): string => {
       const presetDefaults = currentType() === "Built-in preset template" ? selectedPreset?.destinations : undefined;
       if (presetDefaults && presetDefaults.length > 0) {
-        return `Comma-separated destinations (wildcards like *.corp.internal, 10.0.*) or JSON {"destinations":[...],"tools":[...],"mode":"strict"} · preset default: ${presetDefaults.join(", ")}`;
+        return `Destinations this rule's value may be sent to, comma-separated: domains (suffix match — stripe.com covers api.stripe.com), IP literals, wildcards (*.internal.acme.com, 10.0.*) · preset default: ${presetDefaults.join(", ")}`;
       }
-      return 'Comma-separated destinations (wildcards like *.corp.internal, 10.0.*), or full JSON: {"destinations":["stripe.com"],"tools":["write"],"mode":"strict"}';
+      return 'Destinations this rule\'s value may be sent to, comma-separated: domains (suffix match — stripe.com covers api.stripe.com), IP literals, wildcards (*.internal.acme.com, 10.0.*) · advanced: full JSON {"destinations":[...],"tools":[...]} for per-tool restrictions';
     };
     const outboundDescription = (): string => outbound === "never"
       ? 'Never: the value may not go outbound at all (saved as an empty destinations list) · Scope mode decides whether local use is allowed'
@@ -1269,7 +1269,7 @@ export async function addConfigRule(
               } else {
                 editors.restoreScope.focused = focusedField() === "restoreScope";
                 renderFieldRow(lines, "restoreScope", "Destinations",
-                  presetDefaults && presetDefaults.length > 0 ? `preset default: ${presetDefaults.join(", ")}` : "(list destinations, or full JSON)",
+                  presetDefaults && presetDefaults.length > 0 ? `preset default: ${presetDefaults.join(", ")}` : "(e.g. api.stripe.com, *.internal.acme.com, 10.0.*)",
                   width, restoreScopeDescription(), { dim: true, cursorEditor: editors.restoreScope });
               }
             }
