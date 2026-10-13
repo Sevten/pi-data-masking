@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- Fixed: CI workflow declares explicit `permissions: contents: read`, resolving the CodeQL `actions/missing-workflow-permissions` alert; the intentional ReDoS test fixture in `tests/regex-safety.test.ts` now carries a `codeql[js/redos]` suppression so Code Scanning stops flagging it.
+
 ## [0.9.1] - 2026-10-10
 
 ### Changed
