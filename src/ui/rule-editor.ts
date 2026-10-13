@@ -719,7 +719,7 @@ export async function addConfigRule(
       if (presetDefaults && presetDefaults.length > 0) {
         return `Destinations this rule's value may be sent to, comma-separated: domains (suffix match — stripe.com covers api.stripe.com), IP literals, wildcards (*.internal.acme.com, 10.0.*) · preset default: ${presetDefaults.join(", ")}`;
       }
-      return 'Destinations this rule\'s value may be sent to, comma-separated: domains (suffix match — stripe.com covers api.stripe.com), IP literals, wildcards (*.internal.acme.com, 10.0.*) · advanced: full JSON {"destinations":[...],"tools":[...]} for per-tool restrictions';
+      return 'Destinations this rule\'s value may be sent to, comma-separated: domains (suffix match — stripe.com covers api.stripe.com), IP literals, wildcards (*.internal.acme.com, 10.0.*)';
     };
     const outboundDescription = (): string => outbound === "never"
       ? 'Never: the value may not go outbound at all (saved as an empty destinations list) · Scope mode decides whether local use is allowed'
