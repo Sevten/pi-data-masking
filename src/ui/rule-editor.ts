@@ -727,6 +727,14 @@ export async function addConfigRule(
           } else {
             base.restoreScope = scopeText as unknown as RawConfigRule["restoreScope"];
           }
+        } else if (scopeModeExplicit || scopeRefuseExplicit) {
+          // Preset-backed rule with empty scope text (built-in destinations):
+          // an explicitly toggled selector still has to land — a minimal
+          // scope object keeps the preset defaults while pinning the choice.
+          const scope: Record<string, unknown> = {};
+          if (scopeModeExplicit) scope.mode = scopeMode;
+          if (scopeRefuseExplicit) scope.onRefuse = scopeRefuse;
+          base.restoreScope = scope as RawConfigRule["restoreScope"];
         } else delete base.restoreScope;
       }
       if (name) base.name = name;

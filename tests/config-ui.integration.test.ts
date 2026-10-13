@@ -983,3 +983,5 @@ test("stale project options are offered for migration into the global config", a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
