@@ -52,7 +52,7 @@ const KIND_LABEL: Record<AuditEventKind, string> = {
 };
 
 // One-line semantics shown below the bottom rule for the selected event:
-// the outcome phrase (kind) plus the situation phrase (basis). The kind
+// `symbol kind (basis) — outcome sentence (basis sentence)`. The kind
 // answers "did the value leave"; the basis answers "why this decision".
 const OUTCOME_EXPLAIN: Record<AuditEventKind, string> = {
   restored: "the real value was released into this call",
@@ -62,7 +62,7 @@ const OUTCOME_EXPLAIN: Record<AuditEventKind, string> = {
 
 const BASIS_EXPLAIN: Record<AuditBasis, string> = {
   verified: "destination verified against the rule's allowlist",
-  unverifiable: "outbound intent with no verifiable destination (e.g. curl \"$URL\") — the mode chose to " /* completed per kind below */,
+  unverifiable: "outbound intent with no verifiable destination (e.g. curl \"$URL\")",
   violation: "destination or tool outside the rule's allowlist",
   local: "local use: a file write or local process, no outbound intent",
   consumer: "a marked or inline value was handed to an interpreter — that process's network behavior is not observable",
@@ -71,38 +71,42 @@ const BASIS_EXPLAIN: Record<AuditBasis, string> = {
 };
 
 function explain(event: AuditEvent): string {
-  const outcome = OUTCOME_EXPLAIN[event.kind];
-  let basis = BASIS_EXPLAIN[event.basis];
+  const label = KIND_LABEL[event.kind].toLowerCase();
+  let basisPhrase = BASIS_EXPLAIN[event.basis];
   if (event.basis === "unverifiable") {
-    basis += event.kind === "restored" ? "let it through" : "fail closed";
+    basisPhrase += `; the mode chose to ${event.kind === "restored" ? "let it through" : "fail closed"}`;
   }
-  return `${outcome} — ${basis}`;
+  return `${KIND_SYMBOL[event.kind]} ${label} (${event.basis}) — ${OUTCOME_EXPLAIN[event.kind]} (${basisPhrase})`;
 }
 
-function formatTime(at: number): string {
+// Session-local view: time of day only; the date prefix appears just for
+// days other than the newest event's (an audit trail rarely spans days).
+function formatTime(at: number, refAt: number): string {
   const date = new Date(at);
+  const ref = new Date(refAt);
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  const hm = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  const sameDay =
+    date.getFullYear() === ref.getFullYear() &&
+    date.getMonth() === ref.getMonth() &&
+    date.getDate() === ref.getDate();
+  return sameDay ? hm : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${hm}`;
 }
 
-function eventLines(event: AuditEvent, width: number, theme: AuditTheme, selected = false): string[] {
+function eventLines(event: AuditEvent, width: number, theme: AuditTheme, selected = false, refAt = event.at): string[] {
   const symbol = theme.fg(KIND_COLOR[event.kind], KIND_SYMBOL[event.kind]);
-  const label = theme.fg(KIND_COLOR[event.kind], KIND_LABEL[event.kind].padEnd(10));
-  const time = theme.fg("dim", formatTime(event.at));
+  const time = theme.fg("dim", formatTime(event.at, refAt));
   const tool = theme.fg("muted", event.tool);
-  const head = `${selected ? theme.fg("accent", "> ") : "  "}${symbol} ${label.padEnd(10)} ${time}  ${tool}`;
-  const lines = [truncateToWidth(head, width)];
-
-  const detailParts = [`"${event.ruleName}"`];
+  // One line per event: symbol, time, tool, rule, destinations, detail. The
+  // kind label is intentionally omitted — the symbol carries it, and the
+  // explanation line below the list spells out the selected combination.
+  const parts = [`"${event.ruleName}"`];
   if (event.destinations && event.destinations.length > 0) {
-    detailParts.push(`→ ${event.destinations.join(", ")}`);
+    parts.push(`→ ${event.destinations.join(", ")}`);
   }
-  if (event.detail) detailParts.push(event.detail);
-  const detail = `                ${detailParts.join("  ")}`;
-  for (const wrapped of wrapTextWithAnsi(theme.fg("muted", detail), width)) {
-    lines.push(truncateToWidth(wrapped, width));
-  }
-  return lines;
+  if (event.detail) parts.push(event.detail);
+  const body = theme.fg("muted", parts.join("  "));
+  return [truncateToWidth(`${selected ? theme.fg("accent", "> ") : "  "}${symbol} ${time} ${tool}  ${body}`, width)];
 }
 
 export function createAuditViewer(
@@ -139,7 +143,9 @@ export function createAuditViewer(
     lastWidth = width;
     const matching = filtered();
     if (cursor < 0 || cursor >= matching.length) cursor = matching.length - 1;
-    const blocks = matching.map((event, index) => eventLines(event, width, theme, index === cursor));
+    const blocks = matching.map((event, index) =>
+      eventLines(event, width, theme, index === cursor, events.length > 0 ? events[events.length - 1]!.at : event.at),
+    );
     const body: string[] = [];
     if (matching.length === 0) {
       body.push(theme.fg("muted", filter ? `  No events match "${filter}"` : "  No restoration events recorded yet"));
@@ -147,7 +153,7 @@ export function createAuditViewer(
       for (const block of blocks) body.push(...block);
     }
 
-    const bodyRows = Math.max(1, tui.terminal.rows - 8);
+    const bodyRows = Math.max(1, tui.terminal.rows - 6);
     // Keep the selected block inside the window, then clamp.
     if (blocks.length > 0 && blocks[cursor]) {
       const starts: number[] = [];
@@ -168,7 +174,6 @@ export function createAuditViewer(
     const ruleLine = theme.fg("muted", "\u2500".repeat(width));
 
     const header = theme.fg("accent", theme.bold(`Restoration audit · ${matching.length}${filter ? ` of ${events.length}` : ""} events${filter ? ` · filter: ${filter}` : ""}`));
-    const legend = theme.fg("dim", "✅ restored · ❌ blocked · ⚠️ warning");
     const progress = status
       ? theme.fg("warning", status)
       : offset > 0
@@ -182,12 +187,9 @@ export function createAuditViewer(
     // and the key hints; the transient status line keeps its own slot.
     const selectedEvent = cursor >= 0 && cursor < matching.length ? matching[cursor] : undefined;
     const context = selectedEvent
-      ? wrapTextWithAnsi(
-          theme.fg("dim", `${KIND_SYMBOL[selectedEvent.kind]} ${KIND_LABEL[selectedEvent.kind].toLowerCase()} · ${selectedEvent.basis} — ${explain(selectedEvent)}`),
-          width,
-        )
+      ? wrapTextWithAnsi(theme.fg("dim", explain(selectedEvent)), width)
       : [];
-    const lines = [...wrapTextWithAnsi(header, width), "", legend, ruleLine, ...visible, ruleLine, ...context, "", ...footerLines];
+    const lines = [...wrapTextWithAnsi(header, width), ruleLine, ...visible, ruleLine, ...context, "", ...footerLines];
 
     return [...lines, ...Array(Math.max(0, tui.terminal.rows - lines.length)).fill("")];
   };
@@ -202,7 +204,7 @@ export function createAuditViewer(
   const pageCursor = (direction: number): void => {
     const matching = filtered();
     if (matching.length === 0) return;
-    const rows = Math.max(1, tui.terminal.rows - 7);
+    const rows = Math.max(1, tui.terminal.rows - 5);
     const sizes = matching.map((event) => eventLines(event, lastWidth, theme).length);
     let steps = 0;
     let budget = rows;

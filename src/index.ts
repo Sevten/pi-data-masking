@@ -1263,7 +1263,7 @@ export default async function (pi: ExtensionAPI) {
             ruleName,
             tool: event.toolName,
             callId: event.toolCallId,
-            detail: `marked value consumed by "${consumerWord}" — process network behavior not observable`,
+            detail: `consumed by "${consumerWord}"`,
           });
           const key = `consumer:${ruleId}:${paths}`;
           if (!consumerNotified.has(key)) {
@@ -1365,7 +1365,7 @@ export default async function (pi: ExtensionAPI) {
             ruleName: v.ruleName,
             tool: event.toolName,
             callId: event.toolCallId,
-            detail: `marked path outbound without verifiable destination (${scopes.get(v.ruleId)?.mode ?? "permissive"})`,
+            detail: `(mode: ${scopes.get(v.ruleId)?.mode ?? "permissive"})`,
           });
           if (!scopeNotifiedThisTurn.has(key)) {
             scopeNotifiedThisTurn.add(key);
@@ -1439,13 +1439,9 @@ export default async function (pi: ExtensionAPI) {
           callId: event.toolCallId,
           destinations: v.offending.length > 0 ? v.offending : undefined,
           detail:
-            v.reason === "destination"
-              ? "outside allowed destinations"
-              : v.reason === "tool"
-                ? `tool not in allowlist: ${v.offending.join(", ")}`
-                : hasNetworkSignature(command)
-                  ? "outbound call with no verifiable destination"
-                  : "local use blocked (use-not-copy)",
+            v.reason === "tool"
+              ? `tool not in allowlist: ${v.offending.join(", ")}`
+              : undefined,
         });
       }
       const sentences = decision.violations.map((v) => {
@@ -1554,7 +1550,7 @@ export default async function (pi: ExtensionAPI) {
         ruleName: unverified.ruleName,
         tool: event.toolName,
         callId: event.toolCallId,
-        detail: `restored unchecked — no destination verifiable (${scopes.get(unverified.ruleId)?.mode ?? "permissive"})`,
+        detail: `(mode: ${scopes.get(unverified.ruleId)?.mode ?? "permissive"})`,
       });
     }
     for (const consumed of decision.consumed) {
@@ -1566,7 +1562,6 @@ export default async function (pi: ExtensionAPI) {
         ruleName: consumed.ruleName,
         tool: event.toolName,
         callId: event.toolCallId,
-        detail: `restored value handed to an unobservable process (consumer command word)`,
       });
       const key = `consumer:${consumed.ruleId}:inline`;
       if (!consumerNotified.has(key)) {

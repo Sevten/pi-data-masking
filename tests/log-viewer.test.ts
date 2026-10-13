@@ -65,7 +65,7 @@ test("log viewer opens on Masked views and Tab switches to the restoration audit
   viewer.handleInput?.("\t");
   const second = viewer.render(120).join("\n");
   assert.match(second, /Restoration audit · 1 events/);
-  assert.match(second, /RESTORED/);
+  assert.match(second, /✅/); // symbol carries the kind; label column is gone
   assert.match(second, /"Stripe key"/);
   assert.ok(tui.renders() > 0);
 
@@ -170,7 +170,7 @@ test("Enter on an audit event jumps to Masked views and reveals the matching too
   );
   viewer.handleInput?.("\t"); // → audit tab
   const audit = viewer.render(120).join("\n");
-  assert.match(audit, /> ✅ RESTORED/); // cursor defaults to the newest event
+  assert.match(audit, /> ✅/); // cursor defaults to the newest event
   viewer.handleInput?.("\r");
   const after = viewer.render(120).join("\n");
   assert.match(after, /● Masked views/);
@@ -240,11 +240,11 @@ test("audit selection shows the outcome semantics line below the bottom rule", (
   // explanation wraps at narrow widths, so match the unwrapped prefix.
   assert.match(
     viewer.render(120).join("\n"),
-    /❌ blocked · violation — the call was refused; the real value did not leave/,
+    /❌ blocked \(violation\) — the call was refused; the real value did not leave/,
   );
   viewer.handleInput?.("\u001b[A"); // ↑ now the restored event
   assert.match(
     viewer.render(120).join("\n"),
-    /✅ restored · verified — the real value was released into this call/,
+    /✅ restored \(verified\) — the real value was released into this call/,
   );
 });
