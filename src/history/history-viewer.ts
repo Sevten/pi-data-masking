@@ -72,6 +72,9 @@ interface RenderSelection {
 // Internal zero-width anchor used only to locate the selected occurrence after
 // Text has wrapped it. entryRender() strips it before any line reaches the TUI.
 const SELECTED_OCCURRENCE_ANCHOR = "\u2063\u200b\u2063";
+// Marks the tool card a jump-from-audit should land on; located like the
+// occurrence anchor and stripped before display.
+const REVEAL_ANCHOR = "\u2064\u200b\u2064";
 
 interface HistoryTui {
   terminal: { rows: number };
@@ -427,12 +430,14 @@ function addToolCard(
   theme: HistoryTheme,
   mode: HistoryViewMode,
   selection: RenderSelection,
+  revealCallId: string | undefined,
 ) {
   const originalArguments = JSON.stringify(call.arguments ?? {}, null, 2);
   const maskedArguments = JSON.stringify(maskedCall.arguments ?? {}, null, 2);
   const card = new Box(1, 0, (text) => theme.bg("toolSuccessBg", text));
   const name = typeof call.name === "string" ? call.name : "tool";
-  card.addChild(new Text(theme.fg("toolTitle", theme.bold(`▸ ${name}`))));
+  const title = call.id === revealCallId ? `${REVEAL_ANCHOR}▸ ${name}` : `▸ ${name}`;
+  card.addChild(new Text(theme.fg("toolTitle", theme.bold(title))));
   addMessageText(card, originalArguments, maskedArguments, theme, "assistant", mode, selection);
   if (result) {
     const original = contentText(result.original.content);
@@ -460,6 +465,7 @@ function addAssistant(
   theme: HistoryTheme,
   mode: HistoryViewMode,
   selection: RenderSelection,
+  revealCallId: string | undefined,
 ) {
   const originalContent = Array.isArray(entry.original.content) ? entry.original.content : [];
   const maskedContent = Array.isArray(entry.masked.content) ? entry.masked.content : [];
@@ -493,7 +499,7 @@ function addAssistant(
       addMessageText(container, String(original.text ?? ""), String(maskedBlock.text ?? ""), theme, "assistant", mode, selection);
     } else if (original.type === "toolCall") {
       const id = typeof original.id === "string" ? original.id : "";
-      addToolCard(container, original, maskedBlock, toolResults.get(`tool:${id}`), expanded, theme, mode, selection);
+      addToolCard(container, original, maskedBlock, toolResults.get(`tool:${id}`), expanded, theme, mode, selection, revealCallId);
     }
   }
   flushThinking();
@@ -507,6 +513,7 @@ function renderTranscriptEntry(
   theme: HistoryTheme,
   mode: HistoryViewMode,
   selected: Replacement | undefined,
+  revealCallId: string | undefined,
 ): Component {
   const container = new Container();
   const selection: RenderSelection = {
@@ -522,7 +529,7 @@ function renderTranscriptEntry(
     container.addChild(box);
   } else if (role === "assistant") {
     container.addChild(new Text(theme.fg("accent", "Assistant"), 1, 0));
-    addAssistant(container, entry, toolResults, expanded, thinkingVisible, theme, mode, selection);
+    addAssistant(container, entry, toolResults, expanded, thinkingVisible, theme, mode, selection, revealCallId);
     if (entry.pending) container.addChild(new Text(theme.fg("dim", "Not yet included in a subsequent model request."), 1, 0));
   } else {
     container.addChild(new Text(theme.fg("muted", `Unsupported message type: ${String(role)}`), 1, 0));
@@ -580,9 +587,13 @@ export function createHistoryViewer(
   let revealSelectedOccurrence = false;
   let searchMode = false;
   let searchQuery = "";
-  // Entry marked by a jump from the audit tab; cleared when another reveal
-  // replaces it. The marker is the inverse-video entry header.
+  // Entry marked by a jump from the audit tab; replaced by the next reveal.
+  // The marker is inverse video on the tool card's title line; revealLine is
+  // that line's offset inside the entry (the call lives inside the assistant
+  // message, so the entry header is not the landing spot).
   let revealEntry: number | undefined;
+  let revealCallId: string | undefined;
+  let revealLine = 0;
   interface SearchHit { entry: number; line: number; col: number }
   let searchMatches: SearchHit[] = [];
   let searchCursor: SearchHit = { entry: 0, line: 0, col: -1 };
@@ -740,6 +751,7 @@ export function createHistoryViewer(
     version: number;
     lines: string[];
     selectedLine: number;
+    revealLine: number;
   }>();
 
   const replacements: Replacement[] = [];
@@ -770,7 +782,7 @@ export function createHistoryViewer(
     const cached = entryCache.get(index);
     if (cached?.width === width && cached.version === cacheVersion) return cached;
     const entry = displayEntries[index];
-    if (!entry) return { width, version: cacheVersion, lines: [], selectedLine: -1 };
+    if (!entry) return { width, version: cacheVersion, lines: [], selectedLine: -1, revealLine: -1 };
     const rendered = renderTranscriptEntry(
       entry,
       toolResults,
@@ -779,10 +791,12 @@ export function createHistoryViewer(
       theme,
       viewMode,
       selectedReplacement()?.entryIndex === index ? selectedReplacement() : undefined,
+      revealCallId,
     ).render(width);
     const selectedLine = rendered.findIndex((line) => line.includes(SELECTED_OCCURRENCE_ANCHOR));
-    const lines = rendered.map((line) => line.replaceAll(SELECTED_OCCURRENCE_ANCHOR, ""));
-    const result = { width, version: cacheVersion, lines, selectedLine };
+    const revealLine = rendered.findIndex((line) => line.includes(REVEAL_ANCHOR));
+    const lines = rendered.map((line) => line.replaceAll(SELECTED_OCCURRENCE_ANCHOR, "").replaceAll(REVEAL_ANCHOR, ""));
+    const result = { width, version: cacheVersion, lines, selectedLine, revealLine };
     entryCache.set(index, result);
     return result;
   };
@@ -869,14 +883,20 @@ export function createHistoryViewer(
       let revealMarked = false;
       while (visible.length < pageSize() && cursor.entry < displayEntries.length) {
         const lines = entryLines(cursor.entry, width);
+        // Per-width lookup: the card offset depends on wrapping, so trust the
+        // cached render at the current width rather than the stored revealLine.
+        const revealOffset = revealEntry === cursor.entry
+          ? Math.max(0, entryRender(cursor.entry, width).revealLine)
+          : 0;
         const take = Math.min(pageSize() - visible.length, Math.max(0, lines.length - cursor.line));
         visible.push(...lines
           .slice(cursor.line, cursor.line + take)
           .map((line, offset) => {
             const styled = highlightSearchHits(cursor.entry, cursor.line + offset, line);
-            // Mark the first visible content line of the revealed entry —
-            // entries start with a blank separator that inverse would eat.
-            if (cursor.entry === revealEntry && !revealMarked && stripAnsi(line).trim() !== "") {
+            // Mark the revealed tool card's title line — the first non-blank
+            // line at or after its offset (entries start with a blank
+            // separator that inverse would eat).
+            if (cursor.entry === revealEntry && !revealMarked && cursor.line + offset >= revealOffset && stripAnsi(line).trim() !== "") {
               revealMarked = true;
               return theme.inverse ? theme.inverse(styled) : theme.fg("accent", styled);
             }
@@ -1049,7 +1069,10 @@ export function createHistoryViewer(
       const index = displayEntries.findIndex((entry) => entryHasToolCall(entry, callId));
       if (index < 0) return false;
       revealEntry = index;
-      position = { entry: index, line: 0 };
+      revealCallId = callId;
+      cacheVersion++;
+      revealLine = Math.max(0, entryRender(index, lastWidth).revealLine);
+      position = { entry: index, line: revealLine };
       tui.requestRender();
       return true;
     },

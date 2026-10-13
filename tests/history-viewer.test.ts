@@ -718,7 +718,7 @@ test("revealToolCall positions the viewport on the entry carrying the call and m
   const call = { type: "toolCall", id: "call-42", name: "bash", arguments: { command: "curl evil.example" } };
   const entries = [
     { key: "user:1", original: { role: "user", content: "filler one" }, masked: { role: "user", content: "filler one" }, capturedAt: 1 },
-    { key: "assistant:2", original: { role: "assistant", content: [call] }, masked: { role: "assistant", content: [call] }, capturedAt: 2 },
+    { key: "assistant:2", original: { role: "assistant", content: [{ type: "text", text: "I will run a command first thing.\n\nSecond paragraph of the preamble." }, call] }, masked: { role: "assistant", content: [{ type: "text", text: "I will run a command first thing.\n\nSecond paragraph of the preamble." }, call] }, capturedAt: 2 },
     { key: "tool:call-42", original: { role: "toolResult", toolCallId: "call-42", content: "ok" }, masked: { role: "toolResult", toolCallId: "call-42", content: "ok" }, capturedAt: 3 },
   ] as never as Parameters<typeof createHistoryViewer>[3];
 
@@ -731,7 +731,12 @@ test("revealToolCall positions the viewport on the entry carrying the call and m
   );
   assert.equal(viewer.revealToolCall?.("call-42"), true);
   const out = viewer.render(120).join("\n");
-  assert.match(out, /\[reveal\]/);
+  // The viewport lands on the tool card, not the assistant preamble: the
+  // inverse mark sits on the card title line, and the preamble is scrolled
+  // above the fold.
+  const markedLine = out.split("\n").find((line) => line.includes("[reveal]")) ?? "";
+  assert.match(markedLine, /▸ bash/);
+  assert.doesNotMatch(markedLine, /preamble|Assistant$/);
   assert.match(out, /curl evil\.example/);
   assert.equal(viewer.revealToolCall?.("call-ghost"), false);
 });
