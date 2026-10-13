@@ -871,8 +871,8 @@ function parseRestoreScope(
   }
 
   if (record.mode !== undefined) {
-    if (record.mode !== "strict" && record.mode !== "guarded" && record.mode !== "permissive") {
-      warnings.push(`Rule [${id}] has invalid 'restoreScope.mode' (must be "strict", "guarded" or "permissive") and was skipped`);
+    if (record.mode !== "strict" && record.mode !== "semi-strict" && record.mode !== "permissive") {
+      warnings.push(`Rule [${id}] has invalid 'restoreScope.mode' (must be "strict", "semi-strict" or "permissive") and was skipped`);
       return null;
     }
     scope.mode = record.mode;

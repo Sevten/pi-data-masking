@@ -24,7 +24,7 @@ import { generateSessionKey } from "../src/core/placeholder-gen.ts";
 
 const CWD = "/srv/app";
 
-const scope = (mode: "strict" | "guarded" | "permissive", destinations: string[]): EffectiveScope => ({
+const scope = (mode: "strict" | "semi-strict" | "permissive", destinations: string[]): EffectiveScope => ({
   destinations,
   tools: undefined,
   envNames: undefined,
@@ -194,8 +194,8 @@ test("marker decision: strict + unmatched destination → block", () => {
   assert.equal(d.warned.length, 0);
 });
 
-test("marker decision: guarded/permissive + unmatched destination → block (confirmed violation, every mode)", () => {
-  for (const mode of ["strict", "guarded", "permissive"] as const) {
+test("marker decision: semi-strict/permissive + unmatched destination → block (confirmed violation, every mode)", () => {
+  for (const mode of ["strict", "semi-strict", "permissive"] as const) {
     const d = decideMarkedPaths(new Set(["r"]), {
       scopes: new Map([["r", scope(mode, ["stripe.com"])]]),
       ruleName: (id) => id,
@@ -217,8 +217,8 @@ test("marker decision: all destinations allowlisted → pass", () => {
   assert.equal(d.blocked.length + d.warned.length, 0);
 });
 
-test("marker decision: signature without destination → strict blocks, guarded/permissive warn", () => {
-  for (const mode of ["strict", "guarded", "permissive"] as const) {
+test("marker decision: signature without destination → strict blocks, semi-strict/permissive warn", () => {
+  for (const mode of ["strict", "semi-strict", "permissive"] as const) {
     const d = decideMarkedPaths(new Set(["r"]), {
       scopes: new Map([["r", scope(mode, ["stripe.com"])]]),
       ruleName: (id) => id,

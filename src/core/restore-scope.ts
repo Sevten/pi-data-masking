@@ -26,7 +26,7 @@ export interface RestoreScope {
  *  - strict: fail closed — block on confirmed violations, on outbound
  *    calls whose destination cannot be verified, and on local use
  *    (use-not-copy: the value only flows to allowlisted destinations);
- *  - guarded: block confirmed violations and local use, but tolerate
+ *  - semi-strict: block confirmed violations and local use, but tolerate
  *    detection gaps (outbound + unverifiable destination restores with a
  *    warning);
  *  - permissive: block confirmed violations only; local materialization
@@ -34,10 +34,10 @@ export interface RestoreScope {
  *    warning.
  *  Default: "strict" for preset rules with default destinations,
  *  "permissive" otherwise. */
-  mode?: "strict" | "guarded" | "permissive";
+  mode?: "strict" | "semi-strict" | "permissive";
 }
 
-export type ScopeMode = "strict" | "guarded" | "permissive";
+export type ScopeMode = "strict" | "semi-strict" | "permissive";
 
 /** Materialized scope used by the tool_call decision flow. Null = the rule
  *  carries no tool-call constraints (today's unconditional restoration). */

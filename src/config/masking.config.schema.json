@@ -400,10 +400,10 @@
         "mode": {
           "enum": [
             "strict",
-            "guarded",
+            "semi-strict",
             "permissive"
           ],
-          "description": "What happens when the destination cannot be verified: strict fails closed (blocks outbound calls with unverifiable destinations and any local use of the value); guarded blocks confirmed violations and local use but restores unverifiable outbound calls with a warning; permissive blocks confirmed violations only (local writes restore and are tracked, unverifiable outbound restores with a warning). Preset rules with built-in destinations default to strict; everything else defaults to permissive."
+          "description": "What happens when the destination cannot be verified: strict fails closed (blocks outbound calls with unverifiable destinations and any local use of the value); semi-strict blocks confirmed violations and local use but restores unverifiable outbound calls with a warning; permissive blocks confirmed violations only (local writes restore and are tracked, unverifiable outbound restores with a warning). Preset rules with built-in destinations default to strict; everything else defaults to permissive."
         }
       }
     }

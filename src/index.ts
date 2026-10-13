@@ -1218,7 +1218,7 @@ export default async function (pi: ExtensionAPI) {
     // The real value is on disk; if the call runs, the leak is already
     // complete — confirmed violations block in every mode, the detection-
     // gap form (signature, no verifiable destination) blocks under strict
-    // and warns under guarded/permissive.
+    // and warns under semi-strict/permissive.
     const markedRefs = referencedMarkedPaths(fileMarkers, event.input, cwd);
     const referencedRuleIds = new Set(markedRefs.flatMap((ref) => ref.ruleIds));
     // $NAME references govern like marked paths: the real value lives in
@@ -1337,7 +1337,7 @@ export default async function (pi: ExtensionAPI) {
 
     // Scope violations block the call outright: a confirmed destination
     // violation (any mode), an outbound call with unverifiable destination
-    // under strict, or local use of a strict/guarded value (use-not-copy)
+    // under strict, or local use of a strict/semi-strict value (use-not-copy)
     // is either a misconfigured task or an exfiltration attempt — the
     // command must not run.
     if (decision.violations.length > 0) {

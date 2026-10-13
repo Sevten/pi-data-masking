@@ -175,14 +175,14 @@ The opt-in `systemPromptGuidance` note mitigates both: its escape hatch (report 
 
 Rules may declare a `restoreScope` restricting where their real values may flow once restored into tool arguments: `destinations` (a dot-anchored host allowlist — `stripe.com` covers `api.stripe.com`, not `api.stripe.com.evil.com`; IP literals and intranet wildcards like `10.0.*` are supported), `tools` (tool names allowed to receive the value), and `mode` — a three-step ladder deciding what happens when the destination cannot be verified:
 
-| situation | `strict` | `guarded` | `permissive` |
+| situation | `strict` | `semi-strict` | `permissive` |
 |---|---|---|---|
 | destination verified | restore | restore | restore |
 | destination outside the allowlist | block | block | block |
 | outbound call, destination unverifiable (`curl "$URL"`) | block | restore + warning | restore + warning |
 | local use (write a file, run a local command) | block | block | restore (later egress stays tracked) |
 
-`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `permissive` accepts the exposure risk of unverifiable calls to keep the task working; `guarded` sits between: it blocks violations and local copies but tolerates detection gaps. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
+`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `permissive` accepts the exposure risk of unverifiable calls to keep the task working; `semi-strict` sits between: it blocks violations and local copies but tolerates detection gaps. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
 
 Blocked calls return the reason to the model (offending destination, rule name, and the way out), so it can adapt instead of retrying blindly; notices for unverified restores appear at most once per turn. Edit the rule in `/masking` to widen or tighten its scope.
 

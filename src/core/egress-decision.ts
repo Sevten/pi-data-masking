@@ -11,7 +11,7 @@
  *
  * The matrix (mode × situation):
  *
- * | situation                        | strict | guarded   | permissive      |
+ * | situation                        | strict | semi-strict   | permissive      |
  * |----------------------------------|--------|-----------|-----------------|
  * | destination verified             | restore| restore   | restore         |
  * | destination outside allowlist    | block  | block     | block           |
@@ -37,14 +37,14 @@ export interface ScopeViolation {
    *  destination: an extracted destination is not allowlisted.
    *  no-destination: no destination could be extracted — an outbound
    *  (network-signature) call under strict, or any local use under
-   *  strict/guarded (use-not-copy). */
+   *  strict/semi-strict (use-not-copy). */
   reason: "tool" | "destination" | "no-destination";
   /** The disallowed tool name (reason=tool) or offending destinations
    *  (reason=destination); empty otherwise. */
   offending: string[];
 }
 
-/** Guarded/permissive notice: restored, but no destination could be checked
+/** Semi-strict/permissive notice: restored, but no destination could be checked
  *  (outbound call with a hidden destination — a detection gap, not a
  *  confirmed violation). */
 export interface ScopeWarning {
@@ -77,10 +77,10 @@ export interface DecisionOptions {
   /** True when the call runs a known outbound tool at command position
    *  (computed for bash-like tools only — write/edit contents must not
    *  count). With a signature and no extractable destination the call sits
-   *  in the detection-gap cell: strict blocks, guarded/permissive restore
+   *  in the detection-gap cell: strict blocks, semi-strict/permissive restore
    *  with a warning. Without a signature the call is local: permissive
    *  restores (the marker chain covers materialized values), strict and
-   *  guarded block (use-not-copy). */
+   *  semi-strict block (use-not-copy). */
   commandSignature?: boolean;
 }
 
@@ -162,7 +162,7 @@ export function decideToolCallRestore(
       if (destinations.length === 0) {
         if (opts.commandSignature) {
           // Detection-gap cell: outbound intent, destination hidden
-          // (`curl … "$URL"`). strict fails closed; guarded and
+          // (`curl … "$URL"`). strict fails closed; semi-strict and
           // permissive restore with a warning.
           if (scope.mode === "strict") {
             setViolation(ruleId, "no-destination", []);
@@ -174,7 +174,7 @@ export function decideToolCallRestore(
           return true;
         }
         // Local cell: no outbound form at all. permissive restores — the
-        // marker chain covers materialized values. strict and guarded
+        // marker chain covers materialized values. strict and semi-strict
         // enforce use-not-copy: the value only flows to allowlisted
         // destinations, and a local file or indirect process is not one.
         if (scope.mode === "permissive") return true;
@@ -303,7 +303,7 @@ function envNameReferenced(command: string, name: string): boolean {
  * if the call runs, the leak is already complete — so a confirmed
  * violation (destination outside the allowlist) blocks in every mode, and
  * the detection-gap form (network signature, no verifiable destination)
- * blocks under strict while guarded/permissive allow the call with a
+ * blocks under strict while semi-strict/permissive allow the call with a
  * warning. There is nothing to hold back here: no placeholder is involved.
  *
  * Triggered only by egress intent: an extractable destination or a network
@@ -323,7 +323,7 @@ export interface MarkedPathViolation {
 export interface MarkedPathDecision {
   /** Rule ids of the governing scopes that fired a blocking violation. */
   blocked: MarkedPathViolation[];
-  /** Detection-gap violations the guarded/permissive modes allow with a
+  /** Detection-gap violations the semi-strict/permissive modes allow with a
    *  warning. */
   warned: MarkedPathViolation[];
 }
@@ -361,7 +361,7 @@ export function decideMarkedPaths(
       blocked.push({ ruleId, ruleName: opts.ruleName(ruleId), offending });
     } else if (opts.signatureOnly) {
       // Detection gap: intent, no verified destination. strict fails
-      // closed; guarded and permissive tolerate it with a warning.
+      // closed; semi-strict and permissive tolerate it with a warning.
       const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending };
       if (scope.mode === "strict") blocked.push(violation);
       else warned.push(violation);

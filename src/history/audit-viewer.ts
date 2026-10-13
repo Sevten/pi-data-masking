@@ -66,7 +66,7 @@ const KIND_LABEL: Record<AuditEventKind, string> = {
 const KIND_EXPLAIN: Record<AuditEventKind, string> = {
   restored: "the real value was restored into this call, destination verified against the rule's scope",
   held: "legacy: the call ran with the placeholder; the real value stayed behind",
-  warned: "the real value went out without destination verification (guarded/permissive tolerate this gap)",
+  warned: "the real value went out without destination verification (semi-strict/permissive tolerate this gap)",
   blocked: "the call was refused outright; the real value never left (scope violation, blocked in every mode)",
   confirmed: "legacy: the call ran with the real value because you approved the confirm prompt",
   declined: "legacy: you refused the call at the confirm prompt; the real value never left",
