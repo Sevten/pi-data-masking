@@ -232,7 +232,7 @@ export async function addConfigRule(
   }
 
   type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
-  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "preserve" | "restoreScope" | "scopeMode" | "scopeRefuse" | "json" | "test";
+  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "preserve" | "outbound" | "restoreScope" | "scopeMode" | "scopeRefuse" | "json" | "test";
   const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
   let selectedSource: (typeof sources)[number] = sources.find((source) => source.scope === "global")!;
   let selectedType: BuilderType | undefined;
@@ -541,8 +541,8 @@ export async function addConfigRule(
             : "",
         false,
         // Text → selector sync: hand-typed full JSON carrying mode/onRefuse
-        // moves the selectors, so the displayed state always matches what
-        // a save will write.
+        // or a destinations key moves the selectors, so the displayed state
+        // always matches what a save will write.
         () => {
           const text = editors.restoreScope.getExpandedText().trim();
           if (!text.startsWith("{")) return;
@@ -550,6 +550,11 @@ export async function addConfigRule(
             const parsed = JSON.parse(text) as Record<string, unknown>;
             if (parsed.mode === "strict" || parsed.mode === "semi-strict" || parsed.mode === "permissive") scopeMode = parsed.mode;
             if (parsed.onRefuse === "block" || parsed.onRefuse === "ask") scopeRefuse = parsed.onRefuse;
+            if (Array.isArray(parsed.destinations)) {
+              outbound = parsed.destinations.length === 0 ? "never" : "listed";
+            } else if (parsed.destinations === undefined && "destinations" in parsed === false) {
+              outbound = "anywhere";
+            }
           } catch {
             // Invalid JSON: the save path blocks with a clear message.
           }
@@ -590,9 +595,31 @@ export async function addConfigRule(
       }
       return scopeMode === "permissive" ? "ask" as const : "block" as const;
     })();
-    /** A scope is in play: the Destinations field has content. */
+    /** Outbound selector: the destinations dimension of a scope.
+     *  `anywhere` = no destination restriction (with no other scope fields,
+     *  no restoreScope is written at all); `listed` = outbound requires a
+     *  destination from the Destinations list; `never` = explicit empty
+     *  allowlist, the value may not go outbound at all (local use only).
+     *  A scope present without a destinations key (tools/envNames-only)
+     *  reads as `anywhere`. */
+    let outbound: "anywhere" | "listed" | "never" = (() => {
+      const declared = editing?.initial.restoreScope;
+      if (declared && typeof declared === "object" && !Array.isArray(declared)) {
+        const destinations = (declared as { destinations?: unknown }).destinations;
+        if (Array.isArray(destinations)) {
+          return destinations.length === 0 ? ("never" as const) : ("listed" as const);
+        }
+        return "anywhere" as const;
+      }
+      return selectedPreset?.destinations && selectedPreset.destinations.length > 0
+        ? "listed" as const
+        : "anywhere" as const;
+    })();
+    const outboundLabel = (value = outbound) => value === "never" ? "Never" : value === "listed" ? "Listed only" : "Anywhere";
+    /** A scope is in play: the Outbound selector restricts destinations,
+     *  or the Destinations field carries content (list or JSON form). */
     function scopePresent(): boolean {
-      return editors.restoreScope.getExpandedText().trim().length > 0;
+      return outbound !== "anywhere" || editors.restoreScope.getExpandedText().trim().length > 0;
     }
 
     const editableTypes: readonly BuilderType[] = ["Exact literal value", "Literal from environment", "Custom regex"];
@@ -643,7 +670,10 @@ export async function addConfigRule(
         if (replacementIndex === 1) common.push("placeholder");
         common.push("disclose", "case");
       }
-      common.push("restoreScope");
+      common.push("outbound");
+      // The destination list is editable when Outbound asks for one, and
+      // for JSON-form scopes (tools/envNames) so those stay reachable.
+      if (outbound === "listed" || editors.restoreScope.getExpandedText().trim().startsWith("{")) common.push("restoreScope");
       if (scopePresent()) common.push("scopeMode", "scopeRefuse");
       common.push("test");
       return common;
@@ -689,8 +719,13 @@ export async function addConfigRule(
       if (presetDefaults && presetDefaults.length > 0) {
         return `Comma-separated destinations (wildcards like *.corp.internal, 10.0.*) or JSON {"destinations":[...],"tools":[...],"mode":"strict"} · preset default: ${presetDefaults.join(", ")}`;
       }
-      return 'Comma-separated allowed destinations (wildcards like *.corp.internal, 10.0.*), or full JSON: {"destinations":["stripe.com"],"tools":["write"],"mode":"strict"} · empty = restore everywhere';
+      return 'Comma-separated destinations (wildcards like *.corp.internal, 10.0.*), or full JSON: {"destinations":["stripe.com"],"tools":["write"],"mode":"strict"}';
     };
+    const outboundDescription = (): string => outbound === "never"
+      ? 'Never: the value may not go outbound at all (saved as an empty destinations list) · Scope mode decides whether local use is allowed'
+      : outbound === "listed"
+        ? "Listed only: outbound use requires a destination from the list below · Scope mode decides what happens when it is missing or unverifiable"
+        : "Anywhere: no destination restriction (no scope is saved unless the field below carries one)";
     /** Field text for a rule's scope: the destination list when the list
      *  can express it, full JSON when it cannot (tools/advanced fields). */
     function scopeFieldText(scope: unknown): string {
@@ -700,7 +735,7 @@ export async function addConfigRule(
         const destinations = Array.isArray(record.destinations) && record.destinations.every((d) => typeof d === "string")
           ? (record.destinations as string[])
           : [];
-        if (keys.length === 0 && destinations.length > 0) return destinations.join(", ");
+        if (keys.length === 0) return destinations.join(", ");
       }
       return JSON.stringify(scope);
     }
@@ -737,23 +772,32 @@ export async function addConfigRule(
       const id = generatedId();
       if (id) base.id = id;
       else delete base.id;
-      // Destinations field: `{`-prefixed text is full JSON; anything else is a
-      // comma-separated destination list (parseRestoreScopeText). Parse
-      // errors are kept raw so the save path can block with a clear message.
+      // Outbound is authoritative for the destinations dimension; the
+      // Destinations field carries the list (or full JSON for scopes with
+      // tools/envNames), and the selectors are the single source of truth
+      // for mode/onRefuse. Parse errors are kept raw so the save path can
+      // block with a clear message.
       {
         const scopeText = editors.restoreScope.getExpandedText().trim();
-        if (scopeText) {
-          const parsed = parseRestoreScopeText(scopeText);
-          if ("scope" in parsed) {
-            // A scope is always written in full: the selectors are the
-            // single source of truth for mode/onRefuse (kept in sync with
-            // hand-typed JSON both ways).
-            parsed.scope.mode = scopeMode;
-            parsed.scope.onRefuse = scopeRefuse;
-            base.restoreScope = parsed.scope;
-          } else {
-            base.restoreScope = scopeText as unknown as RawConfigRule["restoreScope"];
-          }
+        const parsedText = scopeText ? parseRestoreScopeText(scopeText) : undefined;
+        if (parsedText && "scope" in parsedText) {
+          const scope = parsedText.scope;
+          if (outbound === "never") scope.destinations = [];
+          else if (outbound === "anywhere") delete scope.destinations;
+          scope.mode = scopeMode;
+          scope.onRefuse = scopeRefuse;
+          // A scope that restricts nothing at all is no scope.
+          if (scope.destinations !== undefined || scope.tools || scope.envNames) {
+            base.restoreScope = scope;
+          } else delete base.restoreScope;
+        } else if (parsedText) {
+          base.restoreScope = scopeText as unknown as RawConfigRule["restoreScope"];
+        } else if (outbound === "never") {
+          base.restoreScope = {
+            destinations: [],
+            mode: scopeMode,
+            onRefuse: scopeRefuse,
+          } as unknown as RawConfigRule["restoreScope"];
         } else delete base.restoreScope;
       }
       if (name) base.name = name;
@@ -1087,6 +1131,18 @@ export async function addConfigRule(
           return;
         }
       }
+      if (mode === "form" && outbound === "listed") {
+        const parsed = editors.restoreScope.getExpandedText().trim()
+          ? parseRestoreScopeText(editors.restoreScope.getExpandedText())
+          : undefined;
+        const listed = parsed && "scope" in parsed && Array.isArray(parsed.scope.destinations) && parsed.scope.destinations.length > 0;
+        if (!listed) {
+          saveMessage = "Cannot save: Outbound is Listed only — list at least one destination, or choose Anywhere / Never";
+          focusFormField("restoreScope");
+          tui.requestRender();
+          return;
+        }
+      }
       let warnings: string[];
       try {
         warnings = validateRawConfigRule(draft.rule);
@@ -1200,19 +1256,22 @@ export async function addConfigRule(
             renderSelector(lines, "case", "Case", caseSensitiveOn ? "Sensitive" : "Insensitive", width,
               "←/→ or Space toggles case-sensitive matching for this rule");
           }
-          // Destinations shows the effective value when empty: a preset
-          // with default destinations inherits them; anything else means
-          // unrestricted restore. Same dim-derived pattern as Keep prefix.
+          // Outbound selector: the destinations dimension.
+          renderSelector(lines, "outbound", "Outbound", outboundLabel(), width, outboundDescription());
+          // Destination list: shown when Outbound asks for one, and for
+          // JSON-form scopes so tools/envNames stay editable.
           {
             const scopeText = editors.restoreScope.getExpandedText().trim();
             const presetDefaults = currentType() === "Built-in preset template" ? selectedPreset?.destinations : undefined;
-            if (scopeText) {
-              renderSingleLineField(lines, "restoreScope", "Destinations", editors.restoreScope, width, restoreScopeDescription());
-            } else {
-              editors.restoreScope.focused = focusedField() === "restoreScope";
-              renderFieldRow(lines, "restoreScope", "Destinations",
-                presetDefaults && presetDefaults.length > 0 ? `preset default: ${presetDefaults.join(", ")}` : "(empty = restore everywhere)",
-                width, restoreScopeDescription(), { dim: true, cursorEditor: editors.restoreScope });
+            if (outbound === "listed" || scopeText.startsWith("{")) {
+              if (scopeText) {
+                renderSingleLineField(lines, "restoreScope", "Destinations", editors.restoreScope, width, restoreScopeDescription());
+              } else {
+                editors.restoreScope.focused = focusedField() === "restoreScope";
+                renderFieldRow(lines, "restoreScope", "Destinations",
+                  presetDefaults && presetDefaults.length > 0 ? `preset default: ${presetDefaults.join(", ")}` : "(list destinations, or full JSON)",
+                  width, restoreScopeDescription(), { dim: true, cursorEditor: editors.restoreScope });
+              }
             }
           }
           // Scope mode selector: only meaningful when a scope is in play.
@@ -1342,6 +1401,24 @@ export async function addConfigRule(
           } else if (field === "preserve") {
             const modes: Array<"off" | "first" | "custom"> = ["off", "first", "custom"];
             preserveMode = modes[(((modes.indexOf(preserveMode) + selectorDirection) % modes.length) + modes.length) % modes.length]!;
+          } else if (field === "outbound") {
+            const states: Array<"anywhere" | "listed" | "never"> = ["anywhere", "listed", "never"];
+            outbound = states[(((states.indexOf(outbound) + selectorDirection) % states.length) + states.length) % states.length]!;
+            // Keep full-JSON text in sync so the field matches the selector
+            // (a plain destination list is kept as-is and simply hidden
+            // while Outbound is not Listed only).
+            const scopeText = editors.restoreScope.getExpandedText().trim();
+            if (scopeText.startsWith("{")) {
+              try {
+                const parsed = JSON.parse(scopeText) as Record<string, unknown>;
+                if (outbound === "never") parsed.destinations = [];
+                else if (outbound === "listed") { if (!Array.isArray(parsed.destinations)) parsed.destinations = []; }
+                else delete parsed.destinations;
+                editors.restoreScope.setText(JSON.stringify(parsed));
+              } catch {
+                // Invalid JSON: the save path blocks with a clear message.
+              }
+            }
           } else if (field === "scopeMode") {
             const modes: Array<"strict" | "semi-strict" | "permissive"> = ["strict", "semi-strict", "permissive"];
             scopeMode = modes[(((modes.indexOf(scopeMode) + selectorDirection) % modes.length) + modes.length) % modes.length]!;

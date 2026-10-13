@@ -1078,6 +1078,10 @@ test("restoreScope: validation requires a fully explicit scope", async () => {
       { id: "bad-scope", real: "bad-secret-value", restoreScope: { destinations: ["a.com"], mode: "yolo", onRefuse: "block" } },
       // invalid wildcard → skipped
       { id: "bad-wildcard", real: "wildcard-secret-value", restoreScope: { destinations: ["a.*.b.com"], mode: "strict", onRefuse: "block" } },
+      // explicit empty allowlist → accepted (never restore outbound)
+      { id: "never-out", real: "neverout-secret-value", restoreScope: { destinations: [], mode: "semi-strict", onRefuse: "block" } },
+      // destinations not an array → skipped
+      { id: "bad-dest-type", real: "baddest-secret-value", restoreScope: { destinations: "stripe.com", mode: "strict", onRefuse: "block" } },
     ] }));
     const { config, warnings } = await loadConfigFromPaths(globalPath, join(dir, "missing-project.json"), KEY);
     const byId = new Map(config.configuredRules.map((c) => [c.rule.id, c]));
@@ -1085,6 +1089,8 @@ test("restoreScope: validation requires a fully explicit scope", async () => {
     assert.deepEqual(byId.get("custom-scope")?.effectiveScope, {
       destinations: ["internal.acme.com"], tools: ["write"], envNames: ["CUSTOM_KEY"], mode: "strict", onRefuse: "block",
     });
+    assert.deepEqual(byId.get("never-out")?.effectiveScope?.destinations, []);
+    assert.equal(byId.has("bad-dest-type"), false);
     assert.equal(byId.has("no-mode"), false);
     assert.equal(byId.has("no-refuse"), false);
     assert.equal(byId.has("bad-scope"), false);

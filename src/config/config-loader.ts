@@ -822,8 +822,11 @@ function parseRestoreScope(
 
   if (record.destinations !== undefined) {
     const value = record.destinations;
-    if (!Array.isArray(value) || value.length === 0) {
-      warnings.push(`Rule [${id}] has invalid 'restoreScope.destinations' (must be a non-empty array) and was skipped`);
+    // An empty array is meaningful: an explicit empty allowlist means the
+    // value may never go outbound (local use only). Absent means "no
+    // destination restriction".
+    if (!Array.isArray(value)) {
+      warnings.push(`Rule [${id}] has invalid 'restoreScope.destinations' (must be an array; [] = never restore outbound) and was skipped`);
       return null;
     }
     const entries: string[] = [];

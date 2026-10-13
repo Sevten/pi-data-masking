@@ -1239,7 +1239,10 @@ export default async function (pi: ExtensionAPI) {
       const markedScopes = new Map<string, EffectiveScope>();
       for (const ruleId of referencedRuleIds) {
         const scope = scopes.get(ruleId);
-        if (scope?.destinations && scope.destinations.length > 0) {
+        if (scope?.destinations) {
+          // Includes an explicit empty allowlist ([] = never outbound): a
+          // marked path carrying such a value must still be checked, or
+          // the two-step path (write file, then blind send) would leak it.
           markedScopes.set(ruleId, scope);
         }
       }

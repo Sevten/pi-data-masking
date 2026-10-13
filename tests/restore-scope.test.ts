@@ -46,6 +46,12 @@ test("effectiveScope: trustedDestinations widen declared destinations", () => {
   assert.deepEqual(effective?.destinations, ["my-proxy.corp", "corp.internal"]);
 });
 
+test("effectiveScope: an explicit empty allowlist is absolute (not widened)", () => {
+  const scope: RestoreScope = { destinations: [], mode: "semi-strict", onRefuse: "block" };
+  const effective = effectiveScope({ scope, realFromEnv: undefined, trustedDestinations: ["corp.internal"] });
+  assert.deepEqual(effective?.destinations, [], "the global trusted list must not reopen a never-outbound rule");
+});
+
 test("effectiveScope: tools-only scope constrains tools without destination checks", () => {
   const scope = effectiveScope({
     scope: { tools: ["write", "edit"], mode: "permissive", onRefuse: "ask" },

@@ -628,8 +628,13 @@ test("Restore scope accepts a comma list and Scope mode toggles permissive", asy
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.down);
       for (const character of "sk_live_scopedvalue1234567890") component.handleInput(character);
-      // value → replacement → preserve → disclose → case → restore scope
-      for (let i = 0; i < 6; i++) component.handleInput(INPUT.down);
+      // value → replacement → preserve → disclose → case → Outbound
+      for (let i = 0; i < 5; i++) component.handleInput(INPUT.down);
+      assert.ok(component.render(100).some((line) => line.includes("▶ Outbound")), "Outbound selector should be focused");
+      // Anywhere → Listed only reveals the destination list.
+      component.handleInput(INPUT.right);
+      assert.ok(/Outbound.*Listed only/.test(component.render(100).map((l) => l.replace(/\x1b\[[0-9;]*m/g, "")).join("\n")), "right arrow sets Listed only");
+      component.handleInput(INPUT.down);
       assert.ok(component.render(100).some((line) => line.includes("▶ Destinations")), "Destinations field should be focused");
       for (const character of "api.stripe.com, *.internal.example.com, api.stripe.com") component.handleInput(character);
       // Scope mode row appears once a scope is present.
@@ -666,6 +671,62 @@ test("Restore scope accepts a comma list and Scope mode toggles permissive", asy
       mode: "semi-strict",
       onRefuse: "ask",
     }, "comma list dedupes into destinations; mode and refusal action are always written in full");
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Outbound Never saves an empty allowlist and hides the destination list", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(projectPath, JSON.stringify({ rules: [] }));
+
+  const harness = await createHarness(dir, [
+    async (component) => {
+      component.handleInput("a");
+      await waitFor(() => !component.render(100)[0]?.includes("Opening"));
+      component.handleInput(INPUT.escape);
+    },
+    async (component) => {
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.enter);
+    },
+    async (component) => {
+      await waitFor(() => component.render(100).some((line) => line.includes("New masking rule")));
+      component.handleInput(INPUT.up);
+      component.handleInput(INPUT.up);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.right);
+      component.handleInput(INPUT.down);
+      for (const character of "Local only rule") component.handleInput(character);
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.down);
+      for (const character of "gk_live_LOCALONLYVALUE00112233") component.handleInput(character);
+      // value → … → Outbound; two toggles: Anywhere → Listed only → Never.
+      for (let i = 0; i < 5; i++) component.handleInput(INPUT.down);
+      component.handleInput(INPUT.right);
+      component.handleInput(INPUT.right);
+      const plain = () => component.render(100).map((l) => l.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
+      assert.ok(/Outbound.*Never/.test(plain()), "right arrow twice reaches Never");
+      assert.ok(!/▶? ?Destinations/.test(plain()), "the destination list is hidden for Never");
+      assert.ok(/Scope mode.*Semi-strict/.test(plain()), "Never still creates a scope: Scope mode row appears");
+      assert.ok(/On refusal.*Block/.test(plain()), "On refusal row appears, preset to Block");
+      component.handleInput(INPUT.enter);
+      await waitFor(() => configRules(projectPath).length === 1);
+    },
+  ]);
+
+  try {
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    const rule = configRules(projectPath)[0];
+    assert.deepEqual(rule.restoreScope, {
+      destinations: [],
+      mode: "semi-strict",
+      onRefuse: "block",
+    }, "Never saves an explicit empty allowlist");
   } finally {
     await harness.shutdown();
     rmSync(dir, { recursive: true, force: true });

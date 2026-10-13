@@ -417,7 +417,9 @@ export function decideMarkedPaths(
   for (const ruleId of referencedRuleIds) {
     const scope = opts.scopes.get(ruleId);
     if (!scope?.destinations) continue; // not governed by markers
-    if (scope.destinations.length === 0) continue; // defensive: same rule
+    // An explicit empty allowlist is checked like any other: nothing can
+    // match it, so any egress intent is a confirmed violation (or a
+    // detection gap) — that is what "never restore outbound" means.
 
     let offending: string[] = [];
     if (opts.destinations.length > 0) {

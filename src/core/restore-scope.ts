@@ -101,11 +101,13 @@ export function effectiveScope(input: ScopeMaterializationInput): EffectiveScope
 
 /** Merge the global trusted-destination list into a rule's destinations
  *  (order-preserving dedupe: rule/preset entries first, trusted entries
- *  after). */
+ *  after). An explicit empty allowlist is absolute — the value may never
+ *  go outbound — so the global list does not widen it back open. */
 function unionDestinations(
   base: string[] | undefined,
   trusted: string[] | undefined,
 ): string[] | undefined {
+  if (base !== undefined && base.length === 0) return base;
   if (!trusted || trusted.length === 0) return base;
   return [...new Set([...(base ?? []), ...trusted])];
 }

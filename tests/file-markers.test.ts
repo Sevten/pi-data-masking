@@ -261,9 +261,38 @@ test("marker decision: no intent (no destination, no signature) → pass", () =>
   assert.equal(d.blocked.length + d.confirm.length + d.unverified.length, 0);
 });
 
-test("marker decision: rules without a destination allowlist are not governed", () => {
+test("marker decision: an explicit empty allowlist governs every egress", () => {
+  // [] = never restore outbound: nothing can match, so any destination is
+  // a confirmed violation and a hidden one is a detection gap.
+  const visible = decideMarkedPaths(new Set(["r"]), {
+    scopes: new Map([["r", scope("semi-strict", [])]]),
+    ruleName: (id) => id,
+    destinations: ["evil.com"],
+    signatureOnly: false,
+  });
+  assert.deepEqual(visible.blocked.map((v) => v.ruleId), ["r"]);
+  assert.deepEqual(visible.blocked[0]!.offending, ["evil.com"]);
+
+  const hidden = decideMarkedPaths(new Set(["r"]), {
+    scopes: new Map([["r", scope("semi-strict", [])]]),
+    ruleName: (id) => id,
+    destinations: [],
+    signatureOnly: true,
+  });
+  assert.deepEqual(hidden.blocked.map((v) => v.ruleId), ["r"]);
+
+  const tolerant = decideMarkedPaths(new Set(["r"]), {
+    scopes: new Map([["r", scope("permissive", [])]]),
+    ruleName: (id) => id,
+    destinations: [],
+    signatureOnly: true,
+  });
+  assert.deepEqual(tolerant.unverified.map((v) => v.ruleId), ["r"]);
+});
+
+test("marker decision: a scope without a destinations key is not governed", () => {
   const d = decideMarkedPaths(new Set(["r"]), {
-    scopes: new Map([["r", scope("strict", [])]]),
+    scopes: new Map([["r", { ...scope("strict", []), destinations: undefined }]]),
     ruleName: (id) => id,
     destinations: ["evil.com"],
     signatureOnly: false,

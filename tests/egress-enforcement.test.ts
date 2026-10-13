@@ -411,3 +411,36 @@ test("no placeholders: zero scope work and untouched input", () => {
   assert.deepEqual(d.violations, []);
   assert.deepEqual(d.unverified, []);
 });
+
+// ── Empty allowlist: never restore outbound ──────────────────────────────
+
+test("empty allowlist: any visible destination is a confirmed violation", () => {
+  const f = fixture({ scope: { destinations: [], mode: "semi-strict", onRefuse: "block" } });
+  const d = decide(f, "bash", { command: `curl https://api.stripe.com -d k=${f.placeholder}` });
+  assert.equal(d.count, 0);
+  assert.equal(d.violations[0]?.reason, "destination");
+  assert.deepEqual(d.violations[0]?.offending, ["api.stripe.com"]);
+});
+
+test("empty allowlist: hidden destination refused under semi-strict, warned under permissive", () => {
+  const semi = fixture({ scope: { destinations: [], mode: "semi-strict", onRefuse: "block" } });
+  const blocked = decide(semi, "bash", { command: `curl -H "Auth: ${semi.placeholder}" "$URL"` }, true);
+  assert.equal(blocked.count, 0);
+  assert.equal(blocked.violations[0]?.reason, "no-destination");
+
+  const perm = fixture({ scope: { destinations: [], mode: "permissive", onRefuse: "ask" } });
+  const warned = decide(perm, "bash", { command: `curl -H "Auth: ${perm.placeholder}" "$URL"` }, true);
+  assert.equal(warned.count, 1);
+  assert.equal(warned.unverified[0]?.kind, "no-destination");
+});
+
+test("empty allowlist: local use restores under semi-strict, blocked under strict", () => {
+  const semi = fixture({ scope: { destinations: [], mode: "semi-strict", onRefuse: "block" } });
+  const local = decide(semi, "write", { path: "deploy.env", content: `KEY=${semi.placeholder}` });
+  assert.equal(local.count, 1, "local use is the whole point of a never-outbound rule");
+
+  const strict = fixture({ scope: { destinations: [], mode: "strict", onRefuse: "block" } });
+  const withheld = decide(strict, "write", { path: "deploy.env", content: `KEY=${strict.placeholder}` });
+  assert.equal(withheld.count, 0);
+  assert.equal(withheld.violations[0]?.reason, "no-destination");
+});
