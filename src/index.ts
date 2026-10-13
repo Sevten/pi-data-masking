@@ -1263,7 +1263,7 @@ export default async function (pi: ExtensionAPI) {
             ruleName,
             tool: event.toolName,
             callId: event.toolCallId,
-            detail: `consumed by "${consumerWord}"`,
+            detail: `passed to "${consumerWord}"`,
           });
           const key = `consumer:${ruleId}:${paths}`;
           if (!consumerNotified.has(key)) {

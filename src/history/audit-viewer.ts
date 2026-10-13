@@ -57,7 +57,7 @@ const KIND_LABEL: Record<AuditEventKind, string> = {
 const OUTCOME_EXPLAIN: Record<AuditEventKind, string> = {
   restored: "the real value was released into this call",
   blocked: "the call was refused; the real value did not leave",
-  warning: "the call ran and nothing new was released — this entry marks a boundary, not a decision",
+  warning: "nothing new left in this call — but what that process does next is not observable",
 };
 
 const BASIS_EXPLAIN: Record<AuditBasis, string> = {
@@ -65,7 +65,7 @@ const BASIS_EXPLAIN: Record<AuditBasis, string> = {
   unverifiable: "outbound intent with no verifiable destination (e.g. curl \"$URL\")",
   violation: "destination or tool outside the rule's allowlist",
   local: "local use: a file write or local process, no outbound intent",
-  consumer: "a marked or inline value was handed to an interpreter — that process's network behavior is not observable",
+  consumer: "a marked or inline value was passed to another program (e.g. python, bash) — what that program does next is not observable",
   "user-approved": "you approved a confirmed violation at the prompt",
   "user-declined": "you declined at the prompt; the reason was returned to the model",
 };
@@ -74,7 +74,7 @@ function explain(event: AuditEvent): string {
   const label = KIND_LABEL[event.kind].toLowerCase();
   let basisPhrase = BASIS_EXPLAIN[event.basis];
   if (event.basis === "unverifiable") {
-    basisPhrase += `; the mode chose to ${event.kind === "restored" ? "let it through" : "fail closed"}`;
+    basisPhrase += `; the mode chose to ${event.kind === "restored" ? "let it through" : "block it instead"}`;
   }
   return `${KIND_SYMBOL[event.kind]} ${label} (${event.basis}) — ${OUTCOME_EXPLAIN[event.kind]} (${basisPhrase})`;
 }
