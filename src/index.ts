@@ -1322,9 +1322,12 @@ export default async function (pi: ExtensionAPI) {
           const paths = markedRefs.map((r) => r.path).join(", ");
           const allowed = ctx.ui
             ? await ctx.ui.confirm(
-                "pi-data-masking: out-of-scope egress (permissive)",
+                "pi-data-masking: out-of-scope egress (approval requested)",
                 `"${v.ruleName}" values were written to ${paths}. ` +
-                  `The command sends them to ${v.offending.join(", ")}, outside the rule's allowed destinations.\nAllow this call?`,
+                  (v.offending.length > 0
+                    ? `The command sends them to ${v.offending.join(", ")}, outside the rule's allowed destinations.`
+                    : "The command sends them to a destination that cannot be verified.") +
+                  "\nAllow this call?",
               )
             : false;
           recordAudit({
@@ -1342,7 +1345,10 @@ export default async function (pi: ExtensionAPI) {
               block: true,
               reason:
                 "Blocked by pi-data-masking: the user declined to send these files " +
-                `(they contain values of "${v.ruleName}") to ${v.offending.join(", ")}, outside the rule's allowed destinations.`,
+                `(they contain values of "${v.ruleName}") ` +
+                (v.offending.length > 0
+                  ? `to ${v.offending.join(", ")}, outside the rule's allowed destinations.`
+                  : "to a destination that cannot be verified."),
             };
           }
         }
@@ -1447,16 +1453,22 @@ export default async function (pi: ExtensionAPI) {
       return { block: true, reason: `Blocked by pi-data-masking: ${sentences.join(" ")}` };
     }
 
-    // Permissive confirmed violations: the value is restored, but the call
-    // runs only with the user's approval (no UI → decline, fail closed).
+    // Refused-but-asked violations (rule's onRefuse=ask): the value is
+    // restored, but the call runs only with the user's approval
+    // (no UI → decline, fail closed).
     const confirmRuleIds = new Set<string>();
     for (const v of decision.confirm) {
       confirmRuleIds.add(v.ruleId);
+      const mode = scopes.get(v.ruleId)?.mode ?? "strict";
       const question =
         v.reason === "tool"
-          ? `"${v.ruleName}" restores only for its allowed tools, and this call used "${v.offending.join(", ")}" (permissive asks instead of blocking).\nAllow this call?`
-          : `"${v.ruleName}" is scoped to its allowed destinations, and this call sends it to ${capDestinationList(v.offending)} (permissive asks instead of blocking).\nAllow this call?`;
-      const allowed = ctx.ui ? await ctx.ui.confirm("pi-data-masking: out-of-scope use (permissive)", question) : false;
+          ? `"${v.ruleName}" (${mode}) restores only for its allowed tools, and this call used "${v.offending.join(", ")}".\nAllow this call?`
+          : v.reason === "destination"
+            ? `"${v.ruleName}" (${mode}) is scoped to its allowed destinations, and this call sends it to ${capDestinationList(v.offending)}.\nAllow this call?`
+            : hasNetworkSignature(command)
+              ? `"${v.ruleName}" (${mode}) blocks outbound calls with no verifiable destination; this command hides it (a variable or config).\nAllow this call?`
+              : `"${v.ruleName}" (${mode}) may not be written to local files or used by local processes.\nAllow this call?`;
+      const allowed = ctx.ui ? await ctx.ui.confirm("pi-data-masking: out-of-scope use (approval requested)", question) : false;
       recordAudit({
         at: Date.now(),
         kind: allowed ? "confirmed" : "declined",
@@ -1465,7 +1477,14 @@ export default async function (pi: ExtensionAPI) {
         tool: event.toolName,
         callId: event.toolCallId,
         destinations: v.offending.length > 0 ? v.offending : undefined,
-        detail: v.reason === "tool" ? `tool not in allowlist: ${v.offending.join(", ")}` : "outside allowed destinations",
+        detail:
+          v.reason === "tool"
+            ? `tool not in allowlist: ${v.offending.join(", ")}`
+            : v.reason === "destination"
+              ? "outside allowed destinations"
+              : hasNetworkSignature(command)
+                ? "outbound call with no verifiable destination"
+                : "local use (use-not-copy)",
       });
       if (!allowed) {
         return {
@@ -1474,7 +1493,11 @@ export default async function (pi: ExtensionAPI) {
             `Blocked by pi-data-masking: the user declined this call for "${v.ruleName}" ` +
             (v.reason === "tool"
               ? `("${v.ruleName}" restores only for its allowed tools).`
-              : `(it sends the value to ${capDestinationList(v.offending)}, outside the rule's allowed destinations).`),
+              : v.reason === "destination"
+                ? `(it sends the value to ${capDestinationList(v.offending)}, outside the rule's allowed destinations).`
+                : hasNetworkSignature(command)
+                  ? "(it sends the value to a destination that cannot be verified)."
+                  : "(it writes the value to a local file or process)."),
         };
       }
     }

@@ -173,22 +173,24 @@ The opt-in `systemPromptGuidance` note mitigates both: its escape hatch (report 
 
 ### Scoped restoration (restoreScope)
 
-Rules may declare a `restoreScope` restricting where their real values may flow once restored into tool arguments: `destinations` (a dot-anchored host allowlist — `stripe.com` covers `api.stripe.com`, not `api.stripe.com.evil.com`; IP literals and intranet wildcards like `10.0.*` are supported), `tools` (tool names allowed to receive the value), and `mode` — a three-step ladder deciding what happens when the destination cannot be verified:
+Rules may declare a `restoreScope` restricting where their real values may flow once restored into tool arguments: `destinations` (a dot-anchored host allowlist — `stripe.com` covers `api.stripe.com`, not `api.stripe.com.evil.com`; IP literals and intranet wildcards like `10.0.*` are supported), `tools` (tool names allowed to receive the value), and `mode` — a three-step ladder deciding what the rule restores:
 
 | situation | `strict` | `semi-strict` | `permissive` |
 |---|---|---|---|
 | destination verified | restore | restore | restore |
-| destination outside the allowlist | block | block | **ask you** (approve once, or block) |
-| tool not in the rule's `tools` allowlist | block | block | **ask you** (approve once, or block) |
-| outbound call, destination unverifiable (`curl "$URL"`) | block | block | restore + warning |
-| local use (write a file, run a local command) | block | restore + mark (later egress stays tracked) | restore + mark (later egress stays tracked) |
+| destination outside the allowlist | refuse | refuse | refuse |
+| tool not in the rule's `tools` allowlist | refuse | refuse | refuse |
+| outbound call, destination unverifiable (`curl "$URL"`) | refuse | refuse | restore + warning |
+| local use (write a file, run a local command) | refuse | restore + mark (later egress stays tracked) | restore + mark (later egress stays tracked) |
 | marked or inline value consumed by an interpreter (`python x.py <file>`, `source .env`) | warning¹ | warning | warning |
+
+"Refuse" means the rule withholds the real value; a per-rule `onRefuse` setting decides *how*: `block` refuses the call outright and tells the model why (default for strict/semi-strict), `ask` pauses for your approval instead — the prompt names the value, the destination (or disallowed tool), and the rule; approving releases this one call, declining blocks it (default for permissive; headless sessions decline). The mode decides what is refused, `onRefuse` decides who refuses it: `strict` + `ask` puts a human behind every withheld value, `permissive` + `block` never asks.
 
 Every decision is recorded in the audit trail (`/masking-history`, audit tab) with one of five outcomes: `restored`, `unverified`, `blocked`, `confirmed`, `declined`.
 
 ¹ Under strict the rule-dimension case cannot arise (the local restore that would feed it is blocked); a marked path consumed by an interpreter is still warned. The warning fires once per rule+target per session and never blocks — it marks the point where the marker chain stops being able to observe the value.
 
-`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `semi-strict` lets the value flow freely through local files and processes, but any command with outbound intent must name a verifiable destination — a blind `curl "$URL"` blocks even when the value reached it via a marked file. `permissive` accepts the exposure risk of unverifiable calls to keep the task working, but a confirmed violation pauses for your approval — the prompt names the value, the destination, and the rule; approving releases this one call, declining blocks it. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
+`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `semi-strict` lets the value flow freely through local files and processes, but any command with outbound intent must name a verifiable destination — a blind `curl "$URL"` blocks even when the value reached it via a marked file. `permissive` accepts the exposure risk of unverifiable calls to keep the task working, and presets `onRefuse: ask` so a confirmed violation pauses for your approval instead of hard-blocking. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
 
 Blocked calls return the reason to the model (offending destination, rule name, and the way out), so it can adapt instead of retrying blindly; notices for unverified restores appear at most once per turn. Edit the rule in `/masking` to widen or tighten its scope.
 

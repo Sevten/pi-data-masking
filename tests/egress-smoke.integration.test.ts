@@ -311,6 +311,27 @@ test("smoke: consumer warning — placeholder passed to a code-executing command
   });
 });
 
+test("smoke: strict + onRefuse=ask — local write pauses for approval; decline blocks, approve writes", async () => {
+  await withProject([
+    { id: "strict-ask-key", name: "strict ask key", real: REAL, restoreScope: { destinations: ["collector.test.internal"], mode: "strict", onRefuse: "ask" } },
+  ], async (dir, harness) => {
+    const ph = await placeholderFor(harness);
+    // Decline (harness default): the write is blocked with a reason.
+    const write = { toolName: "write", input: { path: join(dir, "cfg.txt"), content: `token = ${ph}` } };
+    const blocked = (await harness.emit("tool_call", write)) as { block?: boolean; reason?: string } | undefined;
+    assert.ok(blocked?.block === true, "declined ask must block the write");
+    assert.ok((blocked.reason ?? "").includes("declined"), `unexpected reason: ${blocked?.reason}`);
+    assert.ok(harness.confirms.some((c) => c.message.includes("strict ask key")), "prompt must name the rule");
+
+    // Approve: the write runs with the real value.
+    harness.setConfirmAnswer(true);
+    const write2 = { toolName: "write", input: { path: join(dir, "cfg2.txt"), content: `token = ${ph}` } };
+    const ok = await harness.emit("tool_call", write2);
+    assert.equal(ok, undefined, "approved write must not be blocked");
+    assert.ok((write2.input as { content: string }).content.includes(REAL), "approved write restores the real value");
+  });
+});
+
 test("smoke: block reason surfaces even without ui (no ctx.ui)", async () => {
   // Marker blocking must not depend on ctx.ui being present.
   await withProject([

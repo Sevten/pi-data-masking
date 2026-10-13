@@ -21,23 +21,33 @@ export interface RestoreScope {
   /** Environment variable names bound to this rule (Phase 2: env-reference
    *  path). Defaults to the rule's `realFromEnv` name. */
   envNames?: string[];
-  /** What to do when the scope cannot be verified (design notes:
+  /** What to restore, per situation (design notes:
  *  docs/egress-mode-redesign-notes.zh.md — three-mode ladder):
- *  - strict: fail closed — block on confirmed violations, on outbound
- *    calls whose destination cannot be verified, and on local use
- *    (use-not-copy: the value only flows to allowlisted destinations);
- *  - semi-strict: block confirmed violations and local use, but tolerate
- *    detection gaps (outbound + unverifiable destination restores with a
- *    warning);
- *  - permissive: block confirmed violations only; local materialization
- *    restores (marker chain covers later egress), gaps restore with a
- *    warning.
+ *  - strict: restore only when the destination is verified — blocks
+ *    confirmed violations, outbound calls whose destination cannot be
+ *    verified, and local use (use-not-copy: the value only flows to
+ *    allowlisted destinations);
+ *  - semi-strict: also restore local use (the marker chain covers
+ *    materialized values), but still block confirmed violations and
+ *    outbound calls with an unverifiable destination;
+ *  - permissive: also restore outbound calls with an unverifiable
+ *    destination (with a warning); confirmed violations are refused in
+ *    every mode.
  *  Default: "strict" for preset rules with default destinations,
  *  "permissive" otherwise. */
   mode?: "strict" | "semi-strict" | "permissive";
+  /** What to do when the mode refuses to restore (confirmed violations in
+   *  every mode, plus the gap/local cells the mode withholds): "block"
+   *  refuses the call outright and tells the model why; "ask" pauses for
+   *  the user's approval (approve releases this one call, decline blocks
+   *  it; no UI means decline). Preset by mode — strict/semi-strict
+   *  default to "block", permissive to "ask" — and independent of it:
+   *  the mode decides what is refused, this decides who refuses it. */
+  onRefuse?: "block" | "ask";
 }
 
 export type ScopeMode = "strict" | "semi-strict" | "permissive";
+export type RefuseAction = "block" | "ask";
 
 /** Materialized scope used by the tool_call decision flow. Null = the rule
  *  carries no tool-call constraints (today's unconditional restoration). */
@@ -46,6 +56,8 @@ export interface EffectiveScope {
   tools: string[] | undefined;
   envNames: string[] | undefined;
   mode: ScopeMode;
+  /** Effective refusal action: the declared value, or the mode's preset. */
+  onRefuse: RefuseAction;
 }
 
 /** Inputs to effectiveScope(): the declared scope plus the rule's origin. */
@@ -81,7 +93,9 @@ export function effectiveScope(input: ScopeMaterializationInput): EffectiveScope
   const envNames = declared?.envNames ?? (input.realFromEnv ? [input.realFromEnv] : undefined);
   const mode: ScopeMode =
     declared?.mode ?? (presetDefault !== undefined ? "strict" : "permissive");
-  return { destinations, tools: declared?.tools, envNames, mode };
+  const onRefuse: RefuseAction =
+    declared?.onRefuse ?? (mode === "permissive" ? "ask" : "block");
+  return { destinations, tools: declared?.tools, envNames, mode, onRefuse };
 }
 
 /** Merge the global trusted-destination list into a rule's destinations

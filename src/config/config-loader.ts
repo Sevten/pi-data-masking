@@ -824,7 +824,7 @@ function parseRestoreScope(
     return null;
   }
   const record = raw as Record<string, unknown>;
-  const known = ["destinations", "tools", "envNames", "mode"];
+  const known = ["destinations", "tools", "envNames", "mode", "onRefuse"];
   const unknown = Object.keys(record).filter((key) => !known.includes(key));
   if (unknown.length > 0) {
     warnings.push(`Rule [${id}] has unknown 'restoreScope' field(s) ${unknown.join(", ")} and was skipped`);
@@ -876,6 +876,13 @@ function parseRestoreScope(
       return null;
     }
     scope.mode = record.mode;
+  }
+  if (record.onRefuse !== undefined) {
+    if (record.onRefuse !== "block" && record.onRefuse !== "ask") {
+      warnings.push(`Rule [${id}] has invalid 'restoreScope.onRefuse' (must be "block" or "ask") and was skipped`);
+      return null;
+    }
+    scope.onRefuse = record.onRefuse;
   }
   return scope;
 }

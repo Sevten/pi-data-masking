@@ -1045,11 +1045,11 @@ test("options.trustedDestinations: union into scoped rules, invalid entries drop
 
     assert.deepEqual(byId.get("preset-default")?.effectiveScope, {
       destinations: ["github.com", "api.github.com", "artifactory.corp", "10.0.*"],
-      tools: undefined, envNames: undefined, mode: "strict",
+      tools: undefined, envNames: undefined, mode: "strict", onRefuse: "block",
     });
     assert.deepEqual(byId.get("custom-scope")?.effectiveScope, {
       destinations: ["internal.acme.com", "artifactory.corp", "10.0.*"],
-      tools: undefined, envNames: undefined, mode: "strict",
+      tools: undefined, envNames: undefined, mode: "strict", onRefuse: "block",
     });
     assert.equal(byId.get("unscoped")?.effectiveScope ?? null, null);
     assert.deepEqual(config.options.trustedDestinations, ["artifactory.corp", "10.0.*"]);
@@ -1080,7 +1080,7 @@ test("restoreScope: validation, materialization, and preset defaults", async () 
     writeFileSync(globalPath, JSON.stringify({ rules: [
       // explicit scope on a literal rule → permissive default
       { id: "custom-scope", real: "custom-secret-value", placeholder: "masked-custom-value",
-        restoreScope: { destinations: ["internal.acme.com"], tools: ["write"], envNames: ["CUSTOM_KEY"], mode: "strict" } },
+        restoreScope: { destinations: ["internal.acme.com"], tools: ["write"], envNames: ["CUSTOM_KEY"], mode: "strict", onRefuse: "block" } },
       // preset default destinations + strict with zero configuration
       { id: "preset-default", preset: "github-pat" },
       // explicit destinations REPLACE preset defaults, permissive flip keeps declared list
@@ -1095,13 +1095,13 @@ test("restoreScope: validation, materialization, and preset defaults", async () 
     const byId = new Map(config.configuredRules.map((c) => [c.rule.id, c]));
 
     assert.deepEqual(byId.get("custom-scope")?.effectiveScope, {
-      destinations: ["internal.acme.com"], tools: ["write"], envNames: ["CUSTOM_KEY"], mode: "strict",
+      destinations: ["internal.acme.com"], tools: ["write"], envNames: ["CUSTOM_KEY"], mode: "strict", onRefuse: "block",
     });
     assert.deepEqual(byId.get("preset-default")?.effectiveScope, {
-      destinations: ["github.com", "api.github.com"], tools: undefined, envNames: undefined, mode: "strict",
+      destinations: ["github.com", "api.github.com"], tools: undefined, envNames: undefined, mode: "strict", onRefuse: "block",
     });
     assert.deepEqual(byId.get("preset-override")?.effectiveScope, {
-      destinations: ["git-proxy.corp"], tools: undefined, envNames: undefined, mode: "permissive",
+      destinations: ["git-proxy.corp"], tools: undefined, envNames: undefined, mode: "permissive", onRefuse: "ask",
     });
     assert.equal(byId.has("bad-scope"), false);
     assert.equal(byId.has("bad-wildcard"), false);

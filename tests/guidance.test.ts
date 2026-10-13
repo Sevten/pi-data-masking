@@ -256,9 +256,9 @@ test("guidanceScopeEntries collects only enabled rules with destinations", () =>
   const cfg = config({
     discloseGlobal: true,
     configuredRules: [
-      configuredRule({ effectiveScope: { destinations: ["stripe.com"], tools: undefined, envNames: undefined, mode: "strict" } }),
-      configuredRule({ effectiveScope: { destinations: [], tools: undefined, envNames: undefined, mode: "strict" } }),
-      configuredRule({ enabled: false, effectiveScope: { destinations: ["x.com"], tools: undefined, envNames: undefined, mode: "strict" } }),
+      configuredRule({ effectiveScope: { destinations: ["stripe.com"], tools: undefined, envNames: undefined, mode: "strict", onRefuse: "block" } }),
+      configuredRule({ effectiveScope: { destinations: [], tools: undefined, envNames: undefined, mode: "strict", onRefuse: "block" } }),
+      configuredRule({ enabled: false, effectiveScope: { destinations: ["x.com"], tools: undefined, envNames: undefined, mode: "strict", onRefuse: "block" } }),
       configuredRule({ effectiveScope: null }),
     ],
   });

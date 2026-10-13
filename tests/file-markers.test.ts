@@ -28,6 +28,7 @@ const scope = (mode: "strict" | "semi-strict" | "permissive", destinations: stri
   destinations,
   tools: undefined,
   envNames: undefined,
+  onRefuse: mode === "permissive" ? "ask" : "block",
   mode,
 });
 
@@ -283,4 +284,35 @@ test("marker decision: multiple rules, mixed modes — strict blocks, permissive
   assert.deepEqual(d.blocked.map((v) => v.ruleId), ["strictR"]);
   assert.deepEqual(d.confirm.map((v) => v.ruleId), ["permR"]);
   assert.deepEqual(d.unverified, []);
+});
+
+test("marker decision: onRefuse overrides the mode preset in both directions", () => {
+  // strict + ask: confirmed violation and the gap both go to confirm.
+  const askScope: EffectiveScope = { destinations: ["stripe.com"], tools: undefined, envNames: undefined, mode: "strict", onRefuse: "ask" };
+  const ask = decideMarkedPaths(new Set(["r"]), {
+    scopes: new Map([["r", askScope]]),
+    ruleName: (id) => id,
+    destinations: ["evil.com"],
+    signatureOnly: false,
+  });
+  assert.deepEqual(ask.blocked, []);
+  assert.equal(ask.confirm.length, 1);
+  const askGap = decideMarkedPaths(new Set(["r"]), {
+    scopes: new Map([["r", askScope]]),
+    ruleName: (id) => id,
+    destinations: [],
+    signatureOnly: true,
+  });
+  assert.deepEqual(askGap.blocked, []);
+  assert.equal(askGap.confirm.length, 1);
+  // permissive + block: confirmed violation blocks without asking.
+  const blockScope: EffectiveScope = { destinations: ["stripe.com"], tools: undefined, envNames: undefined, mode: "permissive", onRefuse: "block" };
+  const blk = decideMarkedPaths(new Set(["r"]), {
+    scopes: new Map([["r", blockScope]]),
+    ruleName: (id) => id,
+    destinations: ["evil.com"],
+    signatureOnly: false,
+  });
+  assert.deepEqual(blk.confirm, []);
+  assert.equal(blk.blocked.length, 1);
 });

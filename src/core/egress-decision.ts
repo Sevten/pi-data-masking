@@ -9,14 +9,16 @@
  * block the call outright — plus the per-rule violation/warn records for
  * the caller to report. No placeholders in the input means zero scope work.
  *
- * The matrix (mode × situation):
+ * The matrix (mode × situation; "block/ask" = refused, and the rule's
+ * onRefuse picks which — strict/semi-strict default to block, permissive
+ * to ask):
  *
  * | situation                        | strict      | semi-strict   | permissive      |
  * |----------------------------------|-------------|---------------|-----------------|
  * | destination verified             | restore     | restore       | restore         |
- * | destination outside allowlist    | block       | block         | ask the user    |
- * | outbound (signature), unverifiable| block      | block         | warn            |
- * | local (no signature, no dest.)   | block       | restore(+mark)| restore (+mark) |
+ * | destination outside allowlist    | block/ask   | block/ask     | block/ask       |
+ * | outbound (signature), unverifiable| block/ask   | block/ask     | warn            |
+ * | local (no signature, no dest.)   | block/ask   | restore(+mark)| restore (+mark) |
  *
  * Failure is safe by construction: a violation blocks the call, so the
  * attacker is left holding at most a placeholder.
@@ -169,28 +171,35 @@ export function decideToolCallRestore(
     if (!scope) return true;
     const name = opts.ruleName(ruleId);
 
-    if (scope.tools && !scope.tools.includes(opts.toolName)) {
-      // Permissive asks the user instead of blocking; the value is restored
-      // and the caller blocks the call unless the user approves.
-      if (scope.mode === "permissive") {
-        setViolation(confirm, ruleId, "tool", [opts.toolName]);
+    const refuse = (
+      reason: "tool" | "destination" | "no-destination",
+      offending: string[],
+    ): boolean => {
+      // The mode decided not to restore; onRefuse decides who refuses it.
+      // "ask" restores the value but pauses for the user's approval (the
+      // caller blocks the call unless they approve); "block" refuses now.
+      if (scope.onRefuse === "ask") {
+        setViolation(confirm, ruleId, reason, offending);
         return true;
       }
-      setViolation(violations, ruleId, "tool", [opts.toolName]);
+      setViolation(violations, ruleId, reason, offending);
       return false;
+    };
+
+    if (scope.tools && !scope.tools.includes(opts.toolName)) {
+      return refuse("tool", [opts.toolName]);
     }
 
     if (scope.destinations) {
       if (destinations.length === 0) {
         if (opts.commandSignature) {
           // Detection-gap cell: outbound intent, destination hidden
-          // (`curl … "$URL"`). strict and semi-strict fail closed — the
+          // (`curl … "$URL"`). strict and semi-strict refuse it — the
           // value may only go where the destination is verifiable; the
           // model can retry with a literal destination. permissive
           // restores with a warning.
           if (scope.mode !== "permissive") {
-            setViolation(violations, ruleId, "no-destination", []);
-            return false;
+            return refuse("no-destination", []);
           }
           if (!unverified.has(ruleId)) {
             unverified.set(ruleId, { ruleId, ruleName: name, kind: "no-destination" });
@@ -200,12 +209,11 @@ export function decideToolCallRestore(
         // Local cell: no outbound form at all. semi-strict and permissive
         // restore — the value may flow locally, and the marker chain
         // covers materialized values (a later blind egress hits the gap
-        // cell and blocks under semi-strict). strict enforces
+        // cell and is refused under semi-strict). strict enforces
         // use-not-copy: the value only flows to allowlisted destinations,
         // and a local file or indirect process is not one.
         if (scope.mode === "strict") {
-          setViolation(violations, ruleId, "no-destination", []);
-          return false;
+          return refuse("no-destination", []);
         }
         if (opts.consumerSignature) {
           consumed.set(ruleId, { ruleId, ruleName: name });
@@ -214,14 +222,8 @@ export function decideToolCallRestore(
       }
       const offending = unmatchedDestinations(destinations, matchersFor(scope));
       if (offending.length > 0) {
-        // Confirmed violation: strict/semi-strict block; permissive asks the
-        // user (restore now, caller blocks unless the user approves).
-        if (scope.mode === "permissive") {
-          setViolation(confirm, ruleId, "destination", offending);
-          return true;
-        }
-        setViolation(violations, ruleId, "destination", offending);
-        return false;
+        // Confirmed violation: refused in every mode.
+        return refuse("destination", offending);
       }
       return true;
     }
@@ -400,15 +402,17 @@ export function decideMarkedPaths(
     if (opts.destinations.length > 0) {
       offending = unmatchedDestinations(opts.destinations, matchersFor(scope));
       if (offending.length === 0) continue; // all destinations allowlisted
-      // Confirmed violation: strict/semi-strict block; permissive asks.
+      // Confirmed violation: refused in every mode; onRefuse decides how.
       const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending };
-      if (scope.mode === "permissive") confirm.push(violation);
+      if (scope.onRefuse === "ask") confirm.push(violation);
       else blocked.push(violation);
     } else if (opts.signatureOnly) {
       // Detection gap: intent, no verified destination. strict and
-      // semi-strict fail closed; permissive tolerates it with a warning.
+      // semi-strict refuse it (onRefuse: block or ask); permissive
+      // tolerates it with a warning.
       const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending };
       if (scope.mode === "permissive") unverified.push(violation);
+      else if (scope.onRefuse === "ask") confirm.push(violation);
       else blocked.push(violation);
     }
     // no egress intent at all — advisory state never blocks

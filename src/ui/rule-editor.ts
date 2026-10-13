@@ -232,7 +232,7 @@ export async function addConfigRule(
   }
 
   type BuilderType = "Built-in preset template" | "Literal from environment" | "Exact literal value" | "Custom regex";
-  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "preserve" | "restoreScope" | "scopeMode" | "json" | "test";
+  type BuilderField = "type" | "scope" | "name" | "description" | "pattern" | "flags" | "case" | "env" | "real" | "replacement" | "placeholder" | "disclose" | "preserve" | "restoreScope" | "scopeMode" | "scopeRefuse" | "json" | "test";
   const builderTypes: readonly BuilderType[] = ["Built-in preset template", "Literal from environment", "Exact literal value", "Custom regex"];
   let selectedSource: (typeof sources)[number] = sources.find((source) => source.scope === "global")!;
   let selectedType: BuilderType | undefined;
@@ -559,6 +559,19 @@ export async function addConfigRule(
     })();
     let scopeMode: "strict" | "semi-strict" | "permissive" = initialScopeMode.value;
     let scopeModeExplicit = initialScopeMode.explicit;
+    // Refusal-action selector: what to do when the mode refuses to restore.
+    // Preset by the effective mode (permissive → ask, otherwise block);
+    // changing the mode re-presets it. Until toggled it is not written.
+    const initialScopeRefuse: { value: "block" | "ask"; explicit: boolean } = (() => {
+      const declared = editing?.initial.restoreScope;
+      if (declared && typeof declared === "object" && !Array.isArray(declared)) {
+        const value = (declared as { onRefuse?: unknown }).onRefuse;
+        if (value === "block" || value === "ask") return { value, explicit: true };
+      }
+      return { value: initialScopeMode.value === "permissive" ? "ask" as const : "block" as const, explicit: false };
+    })();
+    let scopeRefuse: "block" | "ask" = initialScopeRefuse.value;
+    let scopeRefuseExplicit = initialScopeRefuse.explicit;
     /** A scope is in play: the field has content, or the rule is preset-
      *  backed with default destinations (visible or inherited). */
     function scopePresent(): boolean {
@@ -620,7 +633,7 @@ export async function addConfigRule(
         common.push("disclose", "case");
       }
       common.push("restoreScope");
-      if (scopePresent()) common.push("scopeMode");
+      if (scopePresent()) common.push("scopeMode", "scopeRefuse");
       common.push("test");
       return common;
     }
@@ -709,6 +722,7 @@ export async function addConfigRule(
           const parsed = parseRestoreScopeText(scopeText);
           if ("scope" in parsed) {
             if (scopeModeExplicit && parsed.fromList) parsed.scope.mode = scopeMode;
+            if (scopeRefuseExplicit && parsed.fromList) parsed.scope.onRefuse = scopeRefuse;
             base.restoreScope = parsed.scope;
           } else {
             base.restoreScope = scopeText as unknown as RawConfigRule["restoreScope"];
@@ -1180,9 +1194,16 @@ export async function addConfigRule(
               scopeMode === "strict" ? "Strict" : scopeMode === "semi-strict" ? "Semi-strict" : "Permissive",
               width,
               scopeModeExplicit
-                ? "Strict blocks unverifiable outbound and local use · Semi-strict blocks violations and unverifiable outbound, allows local use · Permissive asks on violations, warns on unverifiable outbound, allows local use"
+                ? "Strict restores only verified destinations · Semi-strict also allows local use · Permissive also restores unverifiable outbound (warned)"
                 : `Default (strict for preset keys with destinations, permissive otherwise) · ←/→ or Space to override`,
               scopeModeExplicit ? undefined : "(default)");
+            renderSelector(lines, "scopeRefuse", "On refusal",
+              scopeRefuse === "block" ? "Block" : "Ask",
+              width,
+              scopeRefuseExplicit
+                ? "Block refuses the call and tells the model why · Ask pauses for your approval (approve releases this call, decline blocks it)"
+                : `Preset by the mode (block for strict/semi-strict, ask for permissive) · ←/→ or Space to override`,
+              scopeRefuseExplicit ? undefined : "(default)");
           }
           const fixedFieldRowCount = 10;
           while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
@@ -1302,6 +1323,10 @@ export async function addConfigRule(
             const modes: Array<"strict" | "semi-strict" | "permissive"> = ["strict", "semi-strict", "permissive"];
             scopeMode = modes[(((modes.indexOf(scopeMode) + selectorDirection) % modes.length) + modes.length) % modes.length]!;
             scopeModeExplicit = true;
+            // The mode is the primary knob: changing it re-presets the
+            // refusal action (and drops a prior override).
+            scopeRefuse = scopeMode === "permissive" ? "ask" : "block";
+            scopeRefuseExplicit = false;
             // Keep full-JSON text in sync so the saved rule matches what
             // the selector shows.
             const scopeText = editors.restoreScope.getExpandedText().trim();
@@ -1309,6 +1334,21 @@ export async function addConfigRule(
               try {
                 const parsed = JSON.parse(scopeText) as Record<string, unknown>;
                 parsed.mode = scopeMode;
+                delete parsed.onRefuse;
+                editors.restoreScope.setText(JSON.stringify(parsed));
+              } catch {
+                // Invalid JSON: the save path blocks with a clear message.
+              }
+            }
+          } else if (field === "scopeRefuse") {
+            const actions: Array<"block" | "ask"> = ["block", "ask"];
+            scopeRefuse = actions[(((actions.indexOf(scopeRefuse) + selectorDirection) % actions.length) + actions.length) % actions.length]!;
+            scopeRefuseExplicit = true;
+            const scopeText = editors.restoreScope.getExpandedText().trim();
+            if (scopeText.startsWith("{")) {
+              try {
+                const parsed = JSON.parse(scopeText) as Record<string, unknown>;
+                parsed.onRefuse = scopeRefuse;
                 editors.restoreScope.setText(JSON.stringify(parsed));
               } catch {
                 // Invalid JSON: the save path blocks with a clear message.

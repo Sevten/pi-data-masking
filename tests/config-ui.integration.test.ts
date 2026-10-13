@@ -645,7 +645,15 @@ test("Restore scope accepts a comma list and Scope mode toggles permissive", asy
       component.handleInput(INPUT.right);
       const toggledThrice = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
       assert.ok(/Scope mode.*Permissive/.test(toggledThrice), "third toggle returns to Permissive");
-      assert.equal(toggled.includes("(default)"), false, "the default marker clears after an explicit choice");
+      const modeLine = toggled.split("\n").find((line) => line.includes("Scope mode")) ?? "";
+      assert.equal(modeLine.includes("(default)"), false, "the mode default marker clears after an explicit choice");
+      // On refusal row: present with its mode-preset marker; toggling it
+      // writes an explicit onRefuse.
+      assert.ok(/On refusal.*Ask.*\(default\)/.test(toggledThrice), "permissive re-presets On refusal: Ask (default marker)");
+      component.handleInput(INPUT.down);
+      component.handleInput(INPUT.right);
+      const refusalToggled = component.render(100).map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join("\n");
+      assert.ok(/On refusal.*Block/.test(refusalToggled) && !/(On refusal[^\n]*\(default\))/.test(refusalToggled), "toggling On refusal sets it explicitly");
       component.handleInput(INPUT.enter);
       await waitFor(() => configRules(projectPath).length === 1);
     },
@@ -657,7 +665,8 @@ test("Restore scope accepts a comma list and Scope mode toggles permissive", asy
     assert.deepEqual(rule.restoreScope, {
       destinations: ["api.stripe.com", "*.internal.example.com"],
       mode: "permissive",
-    }, "comma list dedupes into destinations; explicit mode is written");
+      onRefuse: "block",
+    }, "comma list dedupes into destinations; explicit mode and refusal action are written");
   } finally {
     await harness.shutdown();
     rmSync(dir, { recursive: true, force: true });

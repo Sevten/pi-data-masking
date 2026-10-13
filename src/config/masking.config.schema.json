@@ -403,7 +403,14 @@
             "semi-strict",
             "permissive"
           ],
-          "description": "What happens when the destination cannot be verified: strict fails closed (blocks outbound calls with unverifiable destinations and any local use of the value); semi-strict blocks confirmed violations and local use but restores unverifiable outbound calls with a warning; permissive blocks confirmed violations only (local writes restore and are tracked, unverifiable outbound restores with a warning). Preset rules with built-in destinations default to strict; everything else defaults to permissive."
+          "description": "What the rule restores: strict restores only when the destination is verified (blocks confirmed violations, unverifiable outbound calls, and any local use of the value); semi-strict also allows local use (writes are tracked) but still blocks confirmed violations and unverifiable outbound calls; permissive also restores unverifiable outbound calls with a warning. Confirmed violations are refused in every mode. Preset rules with built-in destinations default to strict; everything else defaults to permissive."
+        },
+        "onRefuse": {
+          "enum": [
+            "block",
+            "ask"
+          ],
+          "description": "What to do when the mode refuses to restore: \"block\" refuses the call outright and tells the model why; \"ask\" pauses for the user's approval (approving releases this one call, declining blocks it; headless sessions decline). Preset by mode: strict/semi-strict default to block, permissive to ask. Independent of the mode: the mode decides what is refused, this decides who refuses it."
         }
       }
     }

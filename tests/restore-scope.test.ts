@@ -42,6 +42,7 @@ test("effectiveScope: preset with default destinations → strict with those des
     tools: undefined,
     envNames: ["STRIPE_KEY"],
     mode: "strict",
+    onRefuse: "block",
   });
 });
 
@@ -59,7 +60,7 @@ test("effectiveScope: custom rule with explicit scope → permissive by default"
   const scope: RestoreScope = { destinations: ["internal.acme.com"] };
   assert.deepEqual(
     effectiveScope({ scope, presetDestinations: undefined, sourceKind: "literal", realFromEnv: undefined }),
-    { destinations: ["internal.acme.com"], tools: undefined, envNames: undefined, mode: "permissive" },
+    { destinations: ["internal.acme.com"], tools: undefined, envNames: undefined, mode: "permissive", onRefuse: "ask" },
   );
 });
 
@@ -76,6 +77,7 @@ test("effectiveScope: explicit mode and envNames override defaults", () => {
     tools: undefined,
     envNames: ["OTHER"],
     mode: "permissive",
+    onRefuse: "ask",
   });
 });
 
@@ -96,7 +98,7 @@ test("effectiveScope: tools-only scope constrains tools without destination chec
     sourceKind: "literal",
     realFromEnv: undefined,
   });
-  assert.deepEqual(scope, { destinations: undefined, tools: ["write", "edit"], envNames: undefined, mode: "permissive" });
+  assert.deepEqual(scope, { destinations: undefined, tools: ["write", "edit"], envNames: undefined, mode: "permissive", onRefuse: "ask" });
 });
 
 // ─── host normalization ──────────────────────────────────────────────────────
