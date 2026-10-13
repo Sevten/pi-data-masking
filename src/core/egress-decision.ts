@@ -134,7 +134,14 @@ export function decideToolCallRestore(
     };
   }
 
-  const destinations = extractDestinations(input);
+  // Destinations are extracted from the fully-restored form: a value
+  // masked by ANOTHER rule (e.g. a protected internal domain) resolves in
+  // place and can serve as this rule's destination. The placeholder form
+  // must not be used — format-preserving placeholders look like hostnames
+  // and would mismatch the allowlist as gibberish. Restored values never
+  // leave this function: only extracted hosts do (a secret resolves to no
+  // host and contributes nothing).
+  const destinations = extractDestinations(probe.value);
   // Env-var destination resolution: `$VAR`/`${VAR}` references resolved
   // from the extension's environment and fed through the same extraction,
   // so a destination kept in a variable (`curl … "$DEPLOY_URL"`) becomes
@@ -284,6 +291,20 @@ export function envDestinationHints(
     for (const destination of extractDestinations(value)) hints.add(destination);
   }
   return [...hints];
+}
+
+/**
+ * Destinations of a call as they would read after restoration: values
+ * masked by other rules resolve in place (a masked domain can serve as a
+ * destination), plaintext hosts are unchanged. Resolved values never
+ * leave this function — only extracted hosts do.
+ */
+export function resolvedDestinations(masker: Masker, input: unknown): string[] {
+  try {
+    return extractDestinations(masker.unmaskValue(input).value);
+  } catch {
+    return extractDestinations(input);
+  }
 }
 
 // ── Marker dimension: read-result marking ─────────────────────────────

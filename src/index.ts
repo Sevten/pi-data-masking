@@ -67,8 +67,8 @@ import {
   referencedMarkedPaths,
   structuredTargetPaths,
 } from "./core/file-markers.ts";
-import { extractDestinations } from "./core/destination-extract.ts";
 import { consumerSignatureWord, hasNetworkSignature } from "./core/network-signature.ts";
+import { resolvedDestinations } from "./core/egress-decision.ts";
 import {
   AUDIT_ENTRY,
   MARKERS_ENTRY,
@@ -1243,7 +1243,7 @@ export default async function (pi: ExtensionAPI) {
           markedScopes.set(ruleId, scope);
         }
       }
-      const destinations = extractDestinations(event.input);
+      const destinations = resolvedDestinations(masker, event.input);
       const signature = command !== "" && hasNetworkSignature(command);
       const consumerWord = command !== "" ? consumerSignatureWord(command) : undefined;
       if (markedScopes.size > 0 && destinations.length === 0 && !signature && consumerWord) {
@@ -1527,7 +1527,7 @@ export default async function (pi: ExtensionAPI) {
 
     // Audit: one factual entry per rule decision on this call. Confirmed
     // violations already recorded their own entry above.
-    const auditDestinations = extractDestinations(event.input);
+    const auditDestinations = resolvedDestinations(masker, event.input);
     for (const ruleId of decision.restoredRuleIds) {
       if (confirmRuleIds.has(ruleId)) continue;
       recordAudit({
