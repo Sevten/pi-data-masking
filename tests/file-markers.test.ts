@@ -194,7 +194,7 @@ test("marker decision: strict + unmatched destination → block", () => {
   assert.equal(d.unverified.length, 0);
 });
 
-test("marker decision: semi-strict/permissive + unmatched destination → block (confirmed violation, every mode)", () => {
+test("marker decision: unmatched destination — strict/semi-strict block, permissive asks", () => {
   for (const mode of ["strict", "semi-strict", "permissive"] as const) {
     const d = decideMarkedPaths(new Set(["r"]), {
       scopes: new Map([["r", scope(mode, ["stripe.com"])]]),
@@ -202,8 +202,14 @@ test("marker decision: semi-strict/permissive + unmatched destination → block 
       destinations: ["evil.com", "stripe.com"],
       signatureOnly: false,
     });
-    assert.equal(d.blocked.length, 1, mode);
-    assert.deepEqual(d.blocked[0].offending, ["evil.com"]);
+    if (mode === "permissive") {
+      assert.equal(d.confirm.length, 1, mode);
+      assert.deepEqual(d.confirm[0]?.offending, ["evil.com"]);
+      assert.equal(d.blocked.length, 0, mode);
+    } else {
+      assert.equal(d.blocked.length, 1, mode);
+      assert.deepEqual(d.blocked[0]?.offending, ["evil.com"]);
+    }
   }
 });
 
@@ -214,7 +220,7 @@ test("marker decision: all destinations allowlisted → pass", () => {
     destinations: ["api.stripe.com"],
     signatureOnly: false,
   });
-  assert.equal(d.blocked.length + d.unverified.length, 0);
+  assert.equal(d.blocked.length + d.confirm.length + d.unverified.length, 0);
 });
 
 test("marker decision: signature without destination → strict blocks, semi-strict/permissive warn", () => {
@@ -237,7 +243,7 @@ test("marker decision: no intent (no destination, no signature) → pass", () =>
     destinations: [],
     signatureOnly: false,
   });
-  assert.equal(d.blocked.length + d.unverified.length, 0);
+  assert.equal(d.blocked.length + d.confirm.length + d.unverified.length, 0);
 });
 
 test("marker decision: rules without a destination allowlist are not governed", () => {
@@ -247,10 +253,10 @@ test("marker decision: rules without a destination allowlist are not governed", 
     destinations: ["evil.com"],
     signatureOnly: false,
   });
-  assert.equal(d.blocked.length + d.unverified.length, 0);
+  assert.equal(d.blocked.length + d.confirm.length + d.unverified.length, 0);
 });
 
-test("marker decision: multiple rules, mixed modes — confirmed violation blocks every mode", () => {
+test("marker decision: multiple rules, mixed modes — strict blocks, permissive asks", () => {
   const d = decideMarkedPaths(new Set(["strictR", "permR", "scopeless"]), {
     scopes: new Map([
       ["strictR", scope("strict", ["stripe.com"])],
@@ -260,6 +266,7 @@ test("marker decision: multiple rules, mixed modes — confirmed violation block
     destinations: ["evil.com"],
     signatureOnly: false,
   });
-  assert.deepEqual(d.blocked.map((v) => v.ruleId), ["strictR", "permR"]);
+  assert.deepEqual(d.blocked.map((v) => v.ruleId), ["strictR"]);
+  assert.deepEqual(d.confirm.map((v) => v.ruleId), ["permR"]);
   assert.deepEqual(d.unverified, []);
 });

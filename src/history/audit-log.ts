@@ -19,10 +19,14 @@ export const MARKERS_ENTRY = "pi-data-masking.markers.v1";
 export type AuditEventKind =
   /** Placeholder-flow scope decision: value restored into args. */
   | "restored"
-  /** Outbound with unverifiable destination: restored unchecked (guarded/permissive gap cell). */
+  /** Outbound with unverifiable destination: restored unchecked (semi-strict/permissive gap cell). */
   | "unverified"
-  /** Call refused outright: confirmed violation, strict gap cell, or blocked local use. */
-  | "blocked";
+  /** Call refused outright: confirmed violation (strict/semi-strict), strict gap cell, or blocked local use. */
+  | "blocked"
+  /** Permissive confirmed violation released because the user approved the prompt. */
+  | "confirmed"
+  /** Permissive confirmed violation refused at the prompt; the call was blocked. */
+  | "declined";
 
 export interface AuditEvent {
   /** Date.now() at the decision. */
@@ -50,6 +54,8 @@ const KINDS: readonly AuditEventKind[] = [
   "restored",
   "unverified",
   "blocked",
+  "confirmed",
+  "declined",
 ];
 
 function asStringArray(value: unknown): string[] | undefined {

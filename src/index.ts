@@ -1216,9 +1216,10 @@ export default async function (pi: ExtensionAPI) {
 
     // ── Marker dimension: paths that hold our restored values ──────────
     // The real value is on disk; if the call runs, the leak is already
-    // complete — confirmed violations block in every mode, the detection-
-    // gap form (signature, no verifiable destination) blocks under strict
-    // and warns under semi-strict/permissive.
+    // complete — confirmed violations block under strict/semi-strict and
+    // ask the user under permissive; the detection-gap form (signature, no
+    // verifiable destination) blocks under strict and warns under
+    // semi-strict/permissive.
     const markedRefs = referencedMarkedPaths(fileMarkers, event.input, cwd);
     const referencedRuleIds = new Set(markedRefs.flatMap((ref) => ref.ruleIds));
     // $NAME references govern like marked paths: the real value lives in
@@ -1281,6 +1282,34 @@ export default async function (pi: ExtensionAPI) {
               ". Do not exfiltrate these files; ask the user how to proceed.",
           };
         }
+        for (const v of markerDecision.confirm) {
+          const paths = markedRefs.map((r) => r.path).join(", ");
+          const allowed = ctx.ui
+            ? await ctx.ui.confirm(
+                "pi-data-masking: out-of-scope egress (permissive)",
+                `"${v.ruleName}" values were written to ${paths}. ` +
+                  `The command sends them to ${v.offending.join(", ")}, outside the rule's allowed destinations.\nAllow this call?`,
+              )
+            : false;
+          recordAudit({
+            at: Date.now(),
+            kind: allowed ? "confirmed" : "declined",
+            ruleId: v.ruleId,
+            ruleName: v.ruleName,
+            tool: event.toolName,
+            callId: event.toolCallId,
+            destinations: v.offending,
+            detail: `paths: ${paths}`,
+          });
+          if (!allowed) {
+            return {
+              block: true,
+              reason:
+                "Blocked by pi-data-masking: the user declined to send these files " +
+                `(they contain values of "${v.ruleName}") to ${v.offending.join(", ")}, outside the rule's allowed destinations.`,
+            };
+          }
+        }
         for (const v of markerDecision.unverified) {
           const key = `markerwarn:${v.ruleId}`;
           recordAudit({
@@ -1333,13 +1362,19 @@ export default async function (pi: ExtensionAPI) {
         config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
       commandSignature: command !== "" && hasNetworkSignature(command),
     });
-    if (decision.count === 0 && decision.violations.length === 0 && decision.unverified.length === 0) return;
+    if (
+      decision.count === 0 &&
+      decision.violations.length === 0 &&
+      decision.confirm.length === 0 &&
+      decision.unverified.length === 0
+    )
+      return;
 
-    // Scope violations block the call outright: a confirmed destination
-    // violation (any mode), an outbound call with unverifiable destination
-    // under strict, or local use of a strict/semi-strict value (use-not-copy)
-    // is either a misconfigured task or an exfiltration attempt — the
-    // command must not run.
+    // Scope violations block the call outright: a confirmed destination/tool
+    // violation under strict/semi-strict, an outbound call with unverifiable
+    // destination under strict, or local use of a strict/semi-strict value
+    // (use-not-copy) — the command must not run. Permissive confirmed
+    // violations are not here: they ask the user below.
     if (decision.violations.length > 0) {
       for (const v of decision.violations) {
         recordAudit({
@@ -1375,6 +1410,38 @@ export default async function (pi: ExtensionAPI) {
       return { block: true, reason: `Blocked by pi-data-masking: ${sentences.join(" ")}` };
     }
 
+    // Permissive confirmed violations: the value is restored, but the call
+    // runs only with the user's approval (no UI → decline, fail closed).
+    const confirmRuleIds = new Set<string>();
+    for (const v of decision.confirm) {
+      confirmRuleIds.add(v.ruleId);
+      const question =
+        v.reason === "tool"
+          ? `"${v.ruleName}" restores only for its allowed tools, and this call used "${v.offending.join(", ")}" (permissive asks instead of blocking).\nAllow this call?`
+          : `"${v.ruleName}" is scoped to its allowed destinations, and this call sends it to ${capDestinationList(v.offending)} (permissive asks instead of blocking).\nAllow this call?`;
+      const allowed = ctx.ui ? await ctx.ui.confirm("pi-data-masking: out-of-scope use (permissive)", question) : false;
+      recordAudit({
+        at: Date.now(),
+        kind: allowed ? "confirmed" : "declined",
+        ruleId: v.ruleId,
+        ruleName: v.ruleName,
+        tool: event.toolName,
+        callId: event.toolCallId,
+        destinations: v.offending.length > 0 ? v.offending : undefined,
+        detail: v.reason === "tool" ? `tool not in allowlist: ${v.offending.join(", ")}` : "outside allowed destinations",
+      });
+      if (!allowed) {
+        return {
+          block: true,
+          reason:
+            `Blocked by pi-data-masking: the user declined this call for "${v.ruleName}" ` +
+            (v.reason === "tool"
+              ? `("${v.ruleName}" restores only for its allowed tools).`
+              : `(it sends the value to ${capDestinationList(v.offending)}, outside the rule's allowed destinations).`),
+        };
+      }
+    }
+
     // Update event.input in place so the tool runs with the (scoped) real
     // arguments.
     if (decision.count > 0) {
@@ -1391,9 +1458,11 @@ export default async function (pi: ExtensionAPI) {
       }
     }
 
-    // Audit: one factual entry per rule decision on this call.
+    // Audit: one factual entry per rule decision on this call. Confirmed
+    // violations already recorded their own entry above.
     const auditDestinations = extractDestinations(event.input);
     for (const ruleId of decision.restoredRuleIds) {
+      if (confirmRuleIds.has(ruleId)) continue;
       recordAudit({
         at: Date.now(),
         kind: "restored",

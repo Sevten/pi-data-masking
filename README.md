@@ -14,7 +14,7 @@ user/tool data → mask → LLM → restore tool arguments → tool uses real da
 - **Efficient long conversations** — with stable rules, cached masking results avoid repeated regex scans of unchanged history as the conversation grows.
 - **Model guidance for placeholders** — an opt-in system-prompt note teaches the model to compare placeholders as exact full strings, pass them verbatim into tools, and route transformations through tools instead of slicing or hashing them.
 - **Placeholder disclosure** — optionally list the session's actual placeholder strings in the model guidance, so the model can tell which values are substitutes instead of guessing. Disclosure is a three-position switch (on, off, or per-rule) with a plain on/off toggle per literal rule.
-- **Auditable model view** — `/masking-history` lets you verify the exact local and model-facing representations, together with the rule versions that produced them, and replay every restoration decision (restored, unverified, blocked) in its audit tab.
+- **Auditable model view** — `/masking-history` lets you verify the exact local and model-facing representations, together with the rule versions that produced them, and replay every restoration decision (restored, unverified, blocked, confirmed, declined) in its audit tab.
 
 ## Use cases
 
@@ -178,11 +178,11 @@ Rules may declare a `restoreScope` restricting where their real values may flow 
 | situation | `strict` | `semi-strict` | `permissive` |
 |---|---|---|---|
 | destination verified | restore | restore | restore |
-| destination outside the allowlist | block | block | block |
+| destination outside the allowlist | block | block | **ask you** (approve once, or block) |
 | outbound call, destination unverifiable (`curl "$URL"`) | block | restore + warning | restore + warning |
 | local use (write a file, run a local command) | block | block | restore (later egress stays tracked) |
 
-`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `permissive` accepts the exposure risk of unverifiable calls to keep the task working; `semi-strict` sits between: it blocks violations and local copies but tolerates detection gaps. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
+`strict` means *use, not copy*: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you. `permissive` accepts the exposure risk of unverifiable calls to keep the task working, but a confirmed violation pauses for your approval — the prompt names the value, the destination, and the rule; approving releases this one call, declining blocks it. `semi-strict` sits between: it blocks violations and local copies but tolerates detection gaps. Issuer presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` carry their issuing service's domains by default and default to strict — an API-key preset rule is scoped with zero configuration.
 
 Blocked calls return the reason to the model (offending destination, rule name, and the way out), so it can adapt instead of retrying blindly; notices for unverified restores appear at most once per turn. Edit the rule in `/masking` to widen or tighten its scope.
 

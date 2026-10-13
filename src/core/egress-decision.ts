@@ -61,6 +61,9 @@ export interface ToolCallDecision {
   count: number;
   /** Rules whose scope the call violates — the caller must block the call. */
   violations: ScopeViolation[];
+  /** Permissive confirmed violations: the value is restored, but the caller
+   *  must ask the user before the call runs (decline → block). */
+  confirm: ScopeViolation[];
   unverified: UnverifiedRestore[];
   /** Rule ids whose values were restored (hit minus violated) — the caller uses
    *  this to mark write targets (file markers). */
@@ -103,7 +106,7 @@ export function decideToolCallRestore(
 ): ToolCallDecision {
   const probe = masker.unmaskValue(input);
   if (probe.count === 0) {
-    return { value: probe.value, count: 0, violations: [], unverified: [], restoredRuleIds: [] };
+    return { value: probe.value, count: 0, violations: [], confirm: [], unverified: [], restoredRuleIds: [] };
   }
 
   const hitRuleIds = new Set(probe.details.map((d) => d.ruleId));
@@ -113,6 +116,7 @@ export function decideToolCallRestore(
       value: probe.value,
       count: probe.count,
       violations: [],
+      confirm: [],
       unverified: [],
       restoredRuleIds: [...hitRuleIds],
     };
@@ -136,16 +140,17 @@ export function decideToolCallRestore(
     }
   }
   const violations = new Map<string, ScopeViolation>();
+  const confirm = new Map<string, ScopeViolation>();
   const unverified = new Map<string, UnverifiedRestore>();
 
-  const setViolation = (ruleId: string, reason: ScopeViolation["reason"], offending: string[]): void => {
-    const existing = violations.get(ruleId);
+  const setViolation = (map: Map<string, ScopeViolation>, ruleId: string, reason: ScopeViolation["reason"], offending: string[]): void => {
+    const existing = map.get(ruleId);
     if (existing) {
       const merged = new Set([...existing.offending, ...offending]);
       existing.offending = [...merged];
       return;
     }
-    violations.set(ruleId, { ruleId, ruleName: opts.ruleName(ruleId), reason, offending });
+    map.set(ruleId, { ruleId, ruleName: opts.ruleName(ruleId), reason, offending });
   };
 
   const allow = (ruleId: string): boolean => {
@@ -154,7 +159,13 @@ export function decideToolCallRestore(
     const name = opts.ruleName(ruleId);
 
     if (scope.tools && !scope.tools.includes(opts.toolName)) {
-      setViolation(ruleId, "tool", [opts.toolName]);
+      // Permissive asks the user instead of blocking; the value is restored
+      // and the caller blocks the call unless the user approves.
+      if (scope.mode === "permissive") {
+        setViolation(confirm, ruleId, "tool", [opts.toolName]);
+        return true;
+      }
+      setViolation(violations, ruleId, "tool", [opts.toolName]);
       return false;
     }
 
@@ -165,7 +176,7 @@ export function decideToolCallRestore(
           // (`curl … "$URL"`). strict fails closed; semi-strict and
           // permissive restore with a warning.
           if (scope.mode === "strict") {
-            setViolation(ruleId, "no-destination", []);
+            setViolation(violations, ruleId, "no-destination", []);
             return false;
           }
           if (!unverified.has(ruleId)) {
@@ -178,13 +189,18 @@ export function decideToolCallRestore(
         // enforce use-not-copy: the value only flows to allowlisted
         // destinations, and a local file or indirect process is not one.
         if (scope.mode === "permissive") return true;
-        setViolation(ruleId, "no-destination", []);
+        setViolation(violations, ruleId, "no-destination", []);
         return false;
       }
       const offending = unmatchedDestinations(destinations, matchersFor(scope));
       if (offending.length > 0) {
-        // Confirmed violation: block in every mode.
-        setViolation(ruleId, "destination", offending);
+        // Confirmed violation: strict/semi-strict block; permissive asks the
+        // user (restore now, caller blocks unless the user approves).
+        if (scope.mode === "permissive") {
+          setViolation(confirm, ruleId, "destination", offending);
+          return true;
+        }
+        setViolation(violations, ruleId, "destination", offending);
         return false;
       }
       return true;
@@ -197,6 +213,7 @@ export function decideToolCallRestore(
     value: result.value,
     count: result.count,
     violations: [...violations.values()],
+    confirm: [...confirm.values()],
     unverified: [...unverified.values()],
     restoredRuleIds: [...hitRuleIds].filter((id) => !violations.has(id)),
   };
@@ -301,10 +318,11 @@ function envNameReferenced(command: string, name: string): boolean {
  * Decision for a call whose arguments reference a marked path (design:
  * "File markers" + the three-mode ladder). The real value lives on disk —
  * if the call runs, the leak is already complete — so a confirmed
- * violation (destination outside the allowlist) blocks in every mode, and
- * the detection-gap form (network signature, no verifiable destination)
- * blocks under strict while semi-strict/permissive allow the call with a
- * warning. There is nothing to hold back here: no placeholder is involved.
+ * violation (destination outside the allowlist) blocks under strict/
+ * semi-strict and asks the user under permissive, and the detection-gap
+ * form (network signature, no verifiable destination) blocks under strict
+ * while semi-strict/permissive allow the call with a warning. There is
+ * nothing to hold back here: no placeholder is involved.
  *
  * Triggered only by egress intent: an extractable destination or a network
  * signature. Calls with neither are never checked here (local reads, diffs
@@ -323,6 +341,9 @@ export interface MarkedPathViolation {
 export interface MarkedPathDecision {
   /** Rule ids of the governing scopes that fired a blocking violation. */
   blocked: MarkedPathViolation[];
+  /** Permissive confirmed violations: the caller must ask the user before
+   *  the call runs (decline → block). */
+  confirm: MarkedPathViolation[];
   /** Detection-gap violations the semi-strict/permissive modes allow with a
    *  warning. */
   unverified: MarkedPathViolation[];
@@ -346,6 +367,7 @@ export function decideMarkedPaths(
   opts: MarkedPathOptions,
 ): MarkedPathDecision {
   const blocked: MarkedPathViolation[] = [];
+  const confirm: MarkedPathViolation[] = [];
   const unverified: MarkedPathViolation[] = [];
 
   for (const ruleId of referencedRuleIds) {
@@ -357,8 +379,10 @@ export function decideMarkedPaths(
     if (opts.destinations.length > 0) {
       offending = unmatchedDestinations(opts.destinations, matchersFor(scope));
       if (offending.length === 0) continue; // all destinations allowlisted
-      // Confirmed violation: block in every mode.
-      blocked.push({ ruleId, ruleName: opts.ruleName(ruleId), offending });
+      // Confirmed violation: strict/semi-strict block; permissive asks.
+      const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending };
+      if (scope.mode === "permissive") confirm.push(violation);
+      else blocked.push(violation);
     } else if (opts.signatureOnly) {
       // Detection gap: intent, no verified destination. strict fails
       // closed; semi-strict and permissive tolerate it with a warning.
@@ -369,5 +393,5 @@ export function decideMarkedPaths(
     // no egress intent at all — advisory state never blocks
   }
 
-  return { blocked, unverified };
+  return { blocked, confirm, unverified };
 }

@@ -37,25 +37,33 @@ const KIND_SYMBOL: Record<AuditEventKind, string> = {
   restored: "✅",
   unverified: "⚠\uFE0F",
   blocked: "❌",
+  confirmed: "☑\uFE0F",
+  declined: "🚫",
 };
 
 const KIND_COLOR: Record<AuditEventKind, string> = {
   restored: "success",
   unverified: "warning",
   blocked: "error",
+  confirmed: "warning",
+  declined: "error",
 };
 
 const KIND_LABEL: Record<AuditEventKind, string> = {
   restored: "RESTORED",
   unverified: "UNVERIFIED",
   blocked: "BLOCKED",
+  confirmed: "CONFIRMED",
+  declined: "DECLINED",
 };
 
 // One-line semantics shown below the bottom rule for the selected event.
 const KIND_EXPLAIN: Record<AuditEventKind, string> = {
   restored: "the real value was restored into this call, destination verified against the rule's scope",
   unverified: "the real value went out without destination verification (semi-strict/permissive tolerate this gap)",
-  blocked: "the call was refused outright; the real value never left (scope violation, blocked in every mode)",
+  blocked: "the call was refused outright; the real value never left (scope violation, blocked by strict/semi-strict)",
+  confirmed: "a confirmed violation was released because you approved it at the prompt (permissive asks; the value then left)",
+  declined: "a confirmed violation was refused at the prompt; the call was blocked and the value never left",
 };
 
 function formatTime(at: number): string {
@@ -147,7 +155,7 @@ export function createAuditViewer(
     const ruleLine = theme.fg("muted", "\u2500".repeat(width));
 
     const header = theme.fg("accent", theme.bold(`Restoration audit · ${matching.length}${filter ? ` of ${events.length}` : ""} events${filter ? ` · filter: ${filter}` : ""}`));
-    const legend = theme.fg("dim", "✅ restored · ⚠️ unverified · ❌ blocked");
+    const legend = theme.fg("dim", "✅ restored · ⚠️ unverified · ❌ blocked · ☑️ confirmed · 🚫 declined");
     const progress = status
       ? theme.fg("warning", status)
       : offset > 0

