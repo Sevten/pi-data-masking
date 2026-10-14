@@ -11,6 +11,7 @@ import { Editor, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAns
 import {
   GLOBAL_CONFIG_PATH,
   getProjectConfigPath,
+  type ConfigScope,
   type ConfiguredMaskingRule,
   type MaskingConfig,
   type MaskingOptions,
@@ -367,6 +368,21 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
     /** Keep the home overlay mounted while a child screen is open. Stacked
      * overlays transition in one render frame and restore focus to this
      * component, avoiding a transcript/blank-frame flash between pages. */
+    async function toggleVaultInPlace(): Promise<void> {
+      const next = !bridge.effectiveConfig().options.persistedSecrets.enabled;
+      mutationInProgress = true;
+      mutationMessage = "Saving…";
+      tui.requestRender();
+      const result = await saveConfigOptionsUI(bridge, ctx, {
+        persistedSecrets: { ...bridge.effectiveConfig().options.persistedSecrets, enabled: next },
+      }, { scope: "global" as ConfigScope, path: GLOBAL_CONFIG_PATH });
+      mutationMessage = result.saved
+        ? (next ? "Session history enabled · outbound sends of these files are checked" : "Session history disabled · transcripts and config can be sent out unchecked")
+        : "Save failed · no changes applied";
+      mutationInProgress = false;
+      refresh();
+    }
+
     async function runScreenAction(action: ScreenAction): Promise<void> {
       if (mutationInProgress) return;
       mutationInProgress = true;
@@ -533,7 +549,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             ? "never outbound"
             : `${vaultOptions.destinations.length} destination(s)`;
           const cursor = selectedIndex === 0 && homeFocus === "rules" ? "›" : " ";
-          const text = `${cursor} [ ${slot} ]     —  ${vaultOptions.enabled ? vaultOptions.mode : "off"}  built-in  Session history · ${destinationLabel}`;
+          const text = `${cursor} [ ${slot} ] ${"—".padStart(5)}  ${vaultOptions.enabled ? vaultOptions.mode.padEnd(7) : "off".padEnd(7)}  ${"builtin".padEnd(7)}  Session history · ${destinationLabel}`;
           const clipped = truncateToWidth(text, Math.max(1, width));
           return homeFocus === "rules" && selectedIndex === 0
             ? theme.fg("accent", clipped)
@@ -553,7 +569,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           lines.push(theme.fg("warning", "No rules match the current filter/search."));
           lines.push("", theme.fg("accent", "▶ ＋ Add new rule"));
         } else {
-          const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
+          const header = `  ${"STATE".padEnd(8)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
           lines.push(theme.fg("dim", truncateToWidth(header, Math.max(1, width))));
           const reservedRows = 21 + settingsLines.length + confirmDisableLines.length + browseHints.length;
           const rowCount = visibleRulesNow.length + 2;
@@ -891,8 +907,10 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           return;
         }
         if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.space)) {
-          // The vault has no inline toggle: its Enabled field lives in the
-          // editor, like every other vault setting.
+          if (vaultSelected) {
+            void toggleVaultInPlace();
+            return;
+          }
           if (selected) void toggleRuleInPlace(selected);
           return;
         }

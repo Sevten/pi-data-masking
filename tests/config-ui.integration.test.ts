@@ -1088,11 +1088,13 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
       const text = () => editor.render(100).join("\n");
       await waitFor(() => text().includes("SESSION HISTORY"));
       assert.ok(text().includes("Enabled"), "field rows render");
-      // Navigate to the Destinations row and open the list editor.
+      assert.ok(text().includes("Outbound"), "the Outbound selector renders like the Rule Builder");
+      // Outbound → Listed only reveals the Destinations row (Rule Builder
+      // behavior), then Enter opens the list editor.
       editor.handleInput(INPUT.down);
-      editor.handleInput(INPUT.down);
-      editor.handleInput(INPUT.down);
-      assert.ok(text().includes("the files may never be sent outbound"), "empty-list description");
+      assert.ok(text().includes("Never: the files may never be sent outbound"), "focused-field description renders once below the rows");
+      editor.handleInput(INPUT.right);
+      assert.ok(text().includes("Listed only"), "outbound staged; the cursor jumped to Destinations");
       editor.handleInput(INPUT.enter);
       assert.ok(text().includes("No destinations"), "list mode shows the empty-list state");
       // Stage a destination — the empty list already focuses the add row.
