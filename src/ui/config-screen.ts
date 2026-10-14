@@ -368,6 +368,13 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
     /** Keep the home overlay mounted while a child screen is open. Stacked
      * overlays transition in one render frame and restore focus to this
      * component, avoiding a transcript/blank-frame flash between pages. */
+    /** Queued-options hint, mirroring the settings rows and rule rows. */
+    const vaultPendingHint = (): string =>
+      bridge.activationPending()
+      && JSON.stringify(bridge.config().options.persistedSecrets) !== JSON.stringify(bridge.effectiveConfig().options.persistedSecrets)
+        ? "activates next run"
+        : "";
+
     async function toggleVaultInPlace(): Promise<void> {
       const next = !bridge.effectiveConfig().options.persistedSecrets.enabled;
       mutationInProgress = true;
@@ -548,12 +555,28 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           const destinationLabel = vaultOptions.destinations.length === 0
             ? "never outbound"
             : `${vaultOptions.destinations.length} destination(s)`;
+          const pending = vaultPendingHint();
           const cursor = selectedIndex === 0 && homeFocus === "rules" ? "›" : " ";
-          const text = `${cursor} [ ${slot} ] ${"—".padStart(5)}  ${vaultOptions.enabled ? vaultOptions.mode.padEnd(7) : "off".padEnd(7)}  ${"builtin".padEnd(7)}  Session history · ${destinationLabel}`;
+          const text = `${cursor} ‹ ${slot} › ${"—".padStart(5)}  ${vaultOptions.mode.padEnd(7)}  ${"builtin".padEnd(7)}  Session history${pending ? ` · ${pending}` : ""}`;
           const clipped = truncateToWidth(text, Math.max(1, width));
           return homeFocus === "rules" && selectedIndex === 0
             ? theme.fg("accent", clipped)
             : theme.fg("dim", clipped);
+        };
+        /** Vault detail rows, mimicking the rule detail block style. */
+        const vaultDetailRows = (): string[] => {
+          const outbound = vaultOptions.destinations.includes("*")
+            ? "Anywhere · outbound sends are not destination-checked"
+            : vaultOptions.destinations.length === 0
+              ? "Never · local reads stay allowed"
+              : `Listed only · ${vaultOptions.destinations.join(", ")}`;
+          return [
+            `Description: built-in protection for persisted secrets${vaultOptions.enabled ? "" : " · disabled"}${vaultPendingHint()}`,
+            `Guards: ~/.pi/agent/sessions · masking.config.json`,
+            `Outbound: ${outbound}`,
+            `Scope mode: ${vaultOptions.mode}`,
+            `On refusal: ${vaultOptions.onRefuse}`,
+          ];
         };
         if (screenRules.length === 0) {
           lines.push(vaultRowLine());
@@ -627,10 +650,11 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           // Keep details outside the list dividers and reserve a fixed block
           // so exact/env/regex/preset rows never move the test panel.
           const detailRowCount = 5;
-          const selected = visibleRulesNow[selectedIndex - 1];
-          const details = selected
-            ? configuredRuleDetail(selected, showExactValues, bridge.config().options.disclosePlaceholders, (text) => theme.fg("dim", text))
-            : [];
+          const details = selectedIndex === 0
+            ? vaultDetailRows()
+            : selectedIndex <= visibleRulesNow.length
+              ? configuredRuleDetail(visibleRulesNow[selectedIndex - 1]!, showExactValues, bridge.config().options.disclosePlaceholders, (text) => theme.fg("dim", text))
+              : [];
           for (let index = 0; index < detailRowCount; index++) {
             const detail = details[index];
             lines.push(detail

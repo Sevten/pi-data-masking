@@ -451,6 +451,10 @@ export function decideMarkedPaths(
   for (const ruleId of referencedRuleIds) {
     const scope = opts.scopes.get(ruleId);
     if (!scope?.destinations) continue; // not governed by markers
+    // "*" is the destination-unrestricted spelling (the vault's Outbound
+    // "Anywhere", mirroring a rule scope without a destinations key): no
+    // destination checks, blind sends included.
+    if (scope.destinations.includes("*")) continue;
     // An explicit empty allowlist is checked like any other: nothing can
     // match it, so any egress intent is a confirmed violation (or a
     // detection gap) — that is what "never restore outbound" means.

@@ -937,6 +937,7 @@ function parseRestoreScope(
 function validDestinationEntry(entry: string): boolean {
   const e = entry.trim().toLowerCase().replace(/\.$/, "");
   if (!e || /\s/.test(e)) return false;
+  if (e === "*") return true; // destination-unrestricted (vault Outbound Anywhere)
   if (e.startsWith("*.")) return !e.slice(2).includes("*") && /^[*.a-z0-9-]+$/.test(e);
   if (e.endsWith(".*")) return !e.slice(0, -2).includes("*") && /^[*.a-z0-9-]+$/.test(e);
   return !e.includes("*") && /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(e);

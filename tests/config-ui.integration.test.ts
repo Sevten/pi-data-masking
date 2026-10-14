@@ -213,14 +213,14 @@ test("configuration home toggles and reorders in place while retaining selection
     component.handleInput(INPUT.pageDown);
     assert.ok(component.render(100).some((line) => line.startsWith("▶ ＋ Add new rule")));
     component.handleInput(INPUT.pageUp);
-    assert.ok(component.render(100).some((line) => line.startsWith("› [") && line.includes("Session history")), "pageUp lands on the vault row");
+    assert.ok(component.render(100).some((line) => line.startsWith("› ‹") && line.includes("Session history")), "pageUp lands on the vault row, toggle chrome like a rule row");
     component.handleInput(INPUT.down);
     assert.ok(component.render(100).some((line) => line.startsWith("›") && line.includes("First rule")));
     assert.ok(component.render(100).includes("Exact value: <hidden> · R to show"));
     component.handleInput(INPUT.end);
     assert.ok(component.render(100).some((line) => line.startsWith("▶ ＋ Add new rule")));
     component.handleInput(INPUT.home);
-    assert.ok(component.render(100).some((line) => line.startsWith("› [") && line.includes("Session history")), "home lands on the vault row");
+    assert.ok(component.render(100).some((line) => line.startsWith("› ‹") && line.includes("Session history")), "home lands on the vault row");
     component.handleInput(INPUT.down);
     component.handleInput("r");
     assert.ok(component.render(100).includes('Exact value: first-secret-value'));
@@ -1075,8 +1075,11 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
       // The pinned vault line sits in the rules zone with its default state.
       const screen = () => component.render(100).join("\n");
       assert.ok(screen().includes("Session history"), "vault line must render");
-      assert.ok(screen().includes("never outbound"), "default destinations [] reads as never outbound");
       assert.ok(screen().includes("strict"), "default mode shows");
+      // Selecting the vault row shows its detail block (rule-row behavior).
+      component.handleInput(INPUT.up);
+      assert.ok(component.render(100).some((line) => line.includes("Outbound: Never · local reads stay allowed")), "detail block shows the never-outbound default");
+      component.handleInput(INPUT.down);
       // V opens the dedicated editor; the editor's save writes the global
       // config, and once it lands this screen closes the whole flow.
       component.handleInput("v");
@@ -1093,6 +1096,8 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
       // behavior), then Enter opens the list editor.
       editor.handleInput(INPUT.down);
       assert.ok(text().includes("Never: the files may never be sent outbound"), "focused-field description renders once below the rows");
+      editor.handleInput(INPUT.right);
+      assert.ok(text().includes("Anywhere"), "right from Never wraps to Anywhere like the Rule Builder cycle");
       editor.handleInput(INPUT.right);
       assert.ok(text().includes("Listed only"), "outbound staged; the cursor jumped to Destinations");
       editor.handleInput(INPUT.enter);

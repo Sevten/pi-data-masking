@@ -47,16 +47,20 @@ export async function openPersistedSecretsEditor(
 ): Promise<boolean> {
   const original: PersistedSecretsScope = { ...current, destinations: [...current.destinations] };
   const draft: PersistedSecretsScope = { ...current, destinations: [...current.destinations] };
-  // Outbound selector, mirroring the Rule Builder: `never` = the files may
-  // never be sent outbound (empty destinations); `listed` = only the listed
-  // destinations may receive them. Switching to Never stashes the list so a
-  // stray flip does not destroy it.
-  let outboundListed = draft.destinations.length > 0;
+  // Outbound selector, mirroring the Rule Builder: `anywhere` = no
+  // destination checks (stored as ["*"], judged like a rule scope without a
+  // destinations key); `listed` = only the listed destinations; `never` =
+  // the files may never be sent outbound. Switching away from Listed
+  // stashes the list so a stray flip does not destroy it.
+  type Outbound = "anywhere" | "listed" | "never";
+  const outboundOf = (destinations: string[]): Outbound =>
+    destinations.includes("*") ? "anywhere" : destinations.length === 0 ? "never" : "listed";
+  let outbound: Outbound = outboundOf(draft.destinations);
   let stashedDestinations: string[] = [];
   // Field rows depend on the Outbound choice: 0 Enabled · 1 Outbound ·
   // 2 Destinations (only when Listed only) · 3 Scope mode · 4 On refusal.
-  const fieldCount = () => (outboundListed ? 5 : 4);
-  const DEST_FIELD = () => (outboundListed ? 2 : -1);
+  const fieldCount = () => (outbound === "listed" ? 5 : 4);
+  const DEST_FIELD = () => (outbound === "listed" ? 2 : -1);
   let selectedField = 0;
   // When true the Destinations list owns the keyboard: the field rows are
   // replaced by the list, an inline edit, and the trailing add input.
@@ -84,20 +88,24 @@ export async function openPersistedSecretsEditor(
     const refresh = () => tui.requestRender();
     const onAddRow = () => editingIndex === null && selectedIndex === draft.destinations.length;
 
-    const outboundLabel = (): string => (outboundListed ? "Listed only" : "Never");
+    const outboundLabel = (value: Outbound = outbound): string =>
+      value === "never" ? "Never" : value === "listed" ? "Listed only" : "Anywhere";
     const outboundDescription = (): string =>
-      outboundListed
-        ? "Listed only: outbound sends require a destination from the list below"
-        : "Never: the files may never be sent outbound · whether local use is allowed is set by Scope mode";
+      outbound === "anywhere"
+        ? "Anywhere: outbound sends are not destination-checked · Scope mode still governs blind sends"
+        : outbound === "listed"
+          ? "Listed only: outbound sends require a destination from the list below"
+          : "Never: the files may never be sent outbound · whether local use is allowed is set by Scope mode";
+    const OUTBOUND_CYCLE: Outbound[] = ["anywhere", "listed", "never"];
 
-    function setOutboundListed(listed: boolean): void {
-      if (listed === outboundListed) return;
-      outboundListed = listed;
-      if (!listed) {
-        stashedDestinations = draft.destinations;
-        draft.destinations = [];
-      } else {
-        draft.destinations = stashedDestinations;
+    function setOutbound(next: Outbound): void {
+      if (next === outbound) return;
+      if (outbound === "listed") stashedDestinations = draft.destinations;
+      outbound = next;
+      draft.destinations = next === "listed"
+        ? stashedDestinations
+        : next === "anywhere" ? ["*"] : [];
+      if (next === "listed") {
         stashedDestinations = [];
         selectedField = DEST_FIELD();
       }
@@ -199,7 +207,7 @@ export async function openPersistedSecretsEditor(
       exiting = true;
       const summary: string[] = [];
       if (draft.enabled !== original.enabled) summary.push(draft.enabled ? "protection on" : "protection off");
-      if (outboundLabel() !== (original.destinations.length === 0 ? "Never" : "Listed only")) {
+      if (outboundLabel() !== outboundLabel(outboundOf(original.destinations))) {
         summary.push(`outbound ${outboundLabel()}`);
       }
       if (draft.mode !== original.mode) summary.push(`mode ${original.mode} → ${draft.mode}`);
@@ -230,7 +238,7 @@ export async function openPersistedSecretsEditor(
         draft.mode = original.mode;
         draft.onRefuse = original.onRefuse;
         draft.destinations = [...original.destinations];
-        outboundListed = draft.destinations.length > 0;
+        outbound = outboundOf(draft.destinations);
         done(false);
         return;
       }
@@ -247,7 +255,7 @@ export async function openPersistedSecretsEditor(
         draft.enabled = !draft.enabled;
         message = draft.enabled ? "Protection on" : "Protection off — transcripts and config can be sent out unchecked";
       } else if (selectedField === 1) {
-        setOutboundListed(direction === 1);
+        setOutbound(cycle(OUTBOUND_CYCLE, outbound, direction));
         return;
       } else if (selectedField === DEST_FIELD()) {
         listEditing = true;
@@ -266,27 +274,31 @@ export async function openPersistedSecretsEditor(
 
     /** The description rows render once below the field rows (Rule Builder
      *  pattern): navigation never shifts the field rows themselves. */
-    const fieldRow = (index: number): [string, string, string] | null => {
+    const fieldRow = (index: number): [string, string] | null => {
       const marker = index === selectedField ? "▶" : " ";
       const row = (label: string, value: string): string =>
         `${marker} ${label.padEnd(LABEL_WIDTH)}  ‹ ${value} ›`;
       if (index === 0) {
-        return [row("Enabled", draft.enabled ? "on" : "off"), "",
+        return [row("Enabled", draft.enabled ? "ON" : "OFF"),
           draft.enabled
             ? "an outbound command that sends these files is checked"
             : "no protection — transcripts and config can be sent out unchecked"];
       }
-      if (index === 1) return [row("Outbound", outboundLabel()), "", outboundDescription()];
+      if (index === 1) return [row("Outbound", outboundLabel()), outboundDescription()];
       if (index === DEST_FIELD()) {
-        const label = draft.destinations.length === 0
-          ? "the files may never be sent outbound · Enter to list"
-          : "these destinations may receive the files · Enter to edit";
-        return [row("Destinations", `${draft.destinations.length} listed`), "", label];
+        const value = draft.destinations.length > 0
+          ? draft.destinations.join(", ")
+          : "(e.g. archive.internal, 10.0.*)";
+        return [row("Destinations", value),
+          draft.destinations.length === 0
+            ? "these destinations may receive the files · Enter to list"
+            : "these destinations may receive the files · Enter to edit"];
       }
       if (index === fieldCount() - 2) {
-        return [row("Scope mode", draft.mode), "", "how a blind send (no verifiable destination) is judged"];
+        return [row("Scope mode", draft.mode === "strict" ? "Strict" : draft.mode === "semi-strict" ? "Semi-strict" : "Permissive"),
+          "how a blind send (no verifiable destination) is judged · ←/→ re-presets On refusal"];
       }
-      return [row("On refusal", draft.onRefuse), "",
+      return [row("On refusal", draft.onRefuse === "block" ? "Block" : "Ask"),
         draft.onRefuse === "block"
           ? "Block: the call is refused and the model is told why"
           : "Ask: you decide — approve releases this call, decline blocks it"];
@@ -309,7 +321,7 @@ export async function openPersistedSecretsEditor(
           for (let index = 0; index < fieldCount(); index++) {
             const cell = fieldRow(index);
             if (!cell) continue;
-            const [text, , description] = cell;
+            const [text, description] = cell;
             lines.push(index === selectedField
               ? theme.fg("accent", truncateToWidth(text, Math.max(1, width)))
               : theme.fg("muted", truncateToWidth(text, Math.max(1, width))));

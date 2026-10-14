@@ -127,3 +127,39 @@ test("persistedSecrets: path forms and reference detection", () => {
     "detection walks the whole input tree",
   );
 });
+
+test("persistedSecrets: Outbound Anywhere (destinations ['*']) skips destination checks", async () => {
+  const { loadConfigFromPaths } = await import("../src/config/config-loader.ts");
+  const key = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
+  const dir = mkdtempSync(join(tmpdir(), "vault-anywhere-"));
+  try {
+    const configPath = join(dir, "masking.config.json");
+    writeFileSync(configPath, JSON.stringify({
+      options: { persistedSecrets: { enabled: true, mode: "strict", destinations: ["*"], onRefuse: "block" } },
+    }));
+    mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+    const { config } = await loadConfigFromPaths(configPath, undefined, key);
+    assert.deepEqual(config.options.persistedSecrets.destinations, ["*"], "'*' survives sanitization as Anywhere");
+
+    const { decideMarkedPaths } = await import("../src/core/egress-decision.ts");
+    const scopes = new Map([["session-history", { destinations: ["*"], mode: "strict", onRefuse: "block" }]]);
+    const decision = decideMarkedPaths(new Set(["session-history"]), {
+      scopes,
+      ruleName: () => "Session history",
+      destinations: ["evil.test.internal"],
+      signatureOnly: false,
+    });
+    assert.equal(decision.blocked.length, 0, "Anywhere means no destination checks");
+    assert.equal(decision.confirm.length, 0);
+
+    const blind = decideMarkedPaths(new Set(["session-history"]), {
+      scopes,
+      ruleName: () => "Session history",
+      destinations: [],
+      signatureOnly: true,
+    });
+    assert.equal(blind.blocked.length, 0, "Anywhere also lifts the blind-send hold");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
