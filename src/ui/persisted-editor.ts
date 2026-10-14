@@ -271,7 +271,7 @@ export async function openPersistedSecretsEditor(
         // never shifts the rows.
         if (exitChoice) {
           lines.push(...wrappedMaskingText(theme.fg("warning", theme.bold("Unsaved changes — what should happen to them?")), width));
-          const choices = ["Save & close (S)", "Discard changes (D)", "Back to editing (B)"];
+          const choices = ["Save & close (S)", "Discard changes (D)", "Back to editing (Esc)"];
           for (let index = 0; index < choices.length; index++) {
             const choiceRow = `${index === exitChoice.index ? "▶" : " "} ${choices[index]}`;
             lines.push(index === exitChoice.index ? theme.fg("accent", choiceRow) : theme.fg("muted", choiceRow));
@@ -305,13 +305,14 @@ export async function openPersistedSecretsEditor(
             pickExitChoice(exitChoice.index);
             return;
           }
+          if (matchesKey(data, Key.escape)) {
+            pickExitChoice(2);
+            return;
+          }
           if (typeof data === "string" && data.length === 1) {
             const key = data.toLowerCase();
             if (key === "s") pickExitChoice(0);
             else if (key === "d") pickExitChoice(1);
-            else if (key === "b") pickExitChoice(2);
-          } else if (matchesKey(data, Key.escape)) {
-            pickExitChoice(2);
           }
           return;
         }

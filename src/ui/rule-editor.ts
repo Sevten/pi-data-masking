@@ -1321,7 +1321,7 @@ export async function addConfigRule(
         if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
         if (exitChoice) {
           lines.push(...wrappedMaskingText(theme.fg("warning", theme.bold("Unsaved changes — what should happen to the draft?")), width));
-          const choices = ["Save & close (S)", "Discard changes (D)", "Back to editing (B)"];
+          const choices = ["Save & close (S)", "Discard changes (D)", "Back to editing (Esc)"];
           for (let index = 0; index < choices.length; index++) {
             const choiceRow = `${index === exitChoice.index ? "▶" : " "} ${choices[index]}`;
             lines.push(index === exitChoice.index ? theme.fg("accent", choiceRow) : theme.fg("muted", choiceRow));
@@ -1366,13 +1366,12 @@ export async function addConfigRule(
             tui.requestRender();
           } else if (keybindings.matches(data, "tui.select.confirm")) {
             pick(exitChoice.index);
+          } else if (matchesKey(data, Key.escape)) {
+            pick(2);
           } else if (typeof data === "string" && data.length === 1) {
             const key = data.toLowerCase();
             if (key === "s") pick(0);
             else if (key === "d") pick(1);
-            else if (key === "b" || matchesKey(data, Key.escape)) pick(2);
-          } else if (matchesKey(data, Key.escape)) {
-            pick(2);
           }
           return;
         }
