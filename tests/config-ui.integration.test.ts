@@ -57,6 +57,8 @@ async function createHarness(cwd: string, scenarios: Scenario[]) {
   const notifications: string[] = [];
   const statuses: string[] = [];
   const styleCalls: StyleCall[] = [];
+  const selects: Array<{ title: string; options: string[] }> = [];
+  let selectChoice: string | null = null;
   const pi = {
     on(name: string, handler: (event: unknown, ctx: unknown) => Promise<void> | void) {
       const handlers = events.get(name) ?? [];
@@ -91,7 +93,10 @@ async function createHarness(cwd: string, scenarios: Scenario[]) {
     setStatus(_key: string, value: string | undefined) { if (value) statuses.push(value); },
     setWidget() {},
     async confirm() { return true; },
-    async select() { return undefined; },
+    async select(title: string, options: string[]) {
+      selects.push({ title, options });
+      return selectChoice !== null && options.includes(selectChoice) ? selectChoice : undefined;
+    },
     async input() { return undefined; },
     async custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => Component): Promise<T> {
       const scenario = scenarios.shift();
@@ -119,6 +124,8 @@ async function createHarness(cwd: string, scenarios: Scenario[]) {
     notifications,
     statuses,
     styleCalls,
+    selects,
+    setSelectChoice: (choice: string | null) => { selectChoice = choice; },
     async emit(name: string, event: unknown): Promise<unknown> {
       let result: unknown;
       for (const handler of events.get(name) ?? []) {
@@ -1047,3 +1054,61 @@ test("stale project options are offered for migration into the global config", a
 });
 
 
+
+test("session history vault: pinned line renders, V opens the editor, destinations save to the global config", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
+  const projectPath = join(dir, ".pi", "pi-data-masking", "masking.config.json");
+  mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
+  writeFileSync(projectPath, JSON.stringify({ rules: [
+    { id: "pin", name: "PIN", real: "123456", placeholder: "834919", lowEntropy: true },
+  ] }));
+
+  const harness = await createHarness(dir, [
+    async (component) => {
+      // The pinned vault line sits in the rules zone with its default state.
+      const screen = () => component.render(100).join("\n");
+      assert.ok(screen().includes("Session history"), "vault line must render");
+      assert.ok(screen().includes("never outbound"), "default destinations [] reads as never outbound");
+      assert.ok(screen().includes("strict"), "default mode shows");
+      // V opens the dedicated editor; the editor's save writes the global
+      // config, and once it lands this screen closes the whole flow.
+      component.handleInput("v");
+      await waitFor(() => existsSync(globalConfigPath)
+        && ((JSON.parse(readFileSync(globalConfigPath, "utf8")) as { options?: { persistedSecrets?: { destinations?: string[] } } }).options?.persistedSecrets?.destinations?.length ?? 0) > 0);
+      component.handleInput(INPUT.escape);
+    },
+    async (editor) => {
+      const text = () => editor.render(100).join("\n");
+      await waitFor(() => text().includes("SESSION HISTORY"));
+      assert.ok(text().includes("Enabled"), "field rows render");
+      // Navigate to the Destinations row and open the list editor.
+      editor.handleInput(INPUT.down);
+      editor.handleInput(INPUT.down);
+      editor.handleInput(INPUT.down);
+      assert.ok(text().includes("the files may never be sent outbound"), "empty-list description");
+      editor.handleInput(INPUT.enter);
+      assert.ok(text().includes("No destinations"), "list mode shows the empty-list state");
+      // Stage a destination — the empty list already focuses the add row.
+      for (const ch of "archive.corp") editor.handleInput(ch);
+      editor.handleInput(INPUT.enter);
+      assert.ok(text().includes("archive.corp"), "staged destination renders");
+      // Back to fields, then finish — the confirmation screen is the next
+      // scenario; its default highlight is "Save & close".
+      editor.handleInput(INPUT.escape);
+      editor.handleInput(INPUT.escape);
+    },
+    async (confirm) => {
+      await waitFor(() => confirm.render(100).some((line) => line.includes("Finish Session history editing")));
+      confirm.handleInput(INPUT.enter);
+    },
+  ]);
+  try {
+    await harness.commands.get("masking")!.handler("", harness.ctx);
+    const saved = JSON.parse(readFileSync(globalConfigPath, "utf8")) as { options: { persistedSecrets: { destinations: string[]; enabled: boolean } } };
+    assert.deepEqual(saved.options.persistedSecrets.destinations, ["archive.corp"]);
+    assert.equal(saved.options.persistedSecrets.enabled, true, "untouched fields keep their values");
+  } finally {
+    await harness.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

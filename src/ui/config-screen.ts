@@ -30,6 +30,7 @@ import {
   type MaskingUIBridge,
 } from "./masking-common.ts";
 import { openAllowlistEditor } from "./allowlist-editor.ts";
+import { openPersistedSecretsEditor } from "./persisted-editor.ts";
 import {
   addConfigRule,
   applyBatchRuleState,
@@ -305,6 +306,20 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       })();
     }
 
+    /** Rules-zone pinned vault entry (📌 Session history): V opens the
+     *  dedicated editor; the save goes through the options pipeline. */
+    function openPersistedInPlace(): void {
+      mutationInProgress = true;
+      mutationMessage = "Opening Session history…";
+      refresh();
+      void (async () => {
+        const saved = await openPersistedSecretsEditor(bridge, ctx, bridge.effectiveConfig().options.persistedSecrets);
+        mutationInProgress = false;
+        mutationMessage = saved ? "Saved · Session history updated" : "";
+        refresh();
+      })();
+    }
+
     async function toggleRuleInPlace(selected: ConfiguredMaskingRule): Promise<void> {
       const stableKey = configuredRuleStableKey(selected);
       const enabling = !selected.enabled;
@@ -403,10 +418,18 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             || JSON.stringify(options.allowlist ?? []) !== JSON.stringify(activeOptions.allowlist ?? []))
           ? " · activates next run" : "";
         const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
+        // Pinned vault entry: the built-in persisted-secrets protection is
+        // not a rule row (no pattern, not deletable) but lives visually at
+        // the top of the rules zone, edited with V.
+        const vaultOptions = bridge.effectiveConfig().options.persistedSecrets;
+        const vaultLine = truncateToWidth(
+          `📌 Session history · built-in · ${vaultOptions.enabled ? vaultOptions.mode : "off"} · ${vaultOptions.destinations.length === 0 ? "never outbound" : `${vaultOptions.destinations.length} destination(s)`} · V edit`,
+          Math.max(1, width),
+        );
         // The navigation cluster leads the bar because the list scrolls
         // silently; it carries no label, which also keeps the narrow-width
         // wrap of every following pair intact.
-        const browseHints = wrappedMaskingText(theme.fg("dim", `↑↓/PgUp/PgDn · Enter edit · F2 JSON · ←/→ or Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
+        const browseHints = wrappedMaskingText(theme.fg("dim", `↑↓/PgUp/PgDn · Enter edit · F2 JSON · ←/→ or Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · V session history · Tab zone · M masking · H help · Esc close`), width);
         const settingsDivider = theme.fg(homeFocus === "settings" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
         const settingRow = (index: number, label: string, value: boolean | string | number, description: string, cell?: string): string => {
           const selected = homeFocus === "settings" && index === settingsIndex;
@@ -500,6 +523,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           "",
           rulesZoneLine,
           rulesDivider,
+          homeFocus === "rules" ? vaultLine : theme.fg("dim", vaultLine),
         ];
 
         if (screenRules.length === 0) {
@@ -871,6 +895,10 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         if (matchesKey(data, "i")) return void runScreenAction({ kind: "import" });
         if (matchesKey(data, "x")) return void runScreenAction({ kind: "export" });
         if (matchesKey(data, "h")) return void runScreenAction({ kind: "help" });
+        if (matchesKey(data, "v") || data === "V") {
+          openPersistedInPlace();
+          return;
+        }
         if (matchesKey(data, "f")) {
           filterIndex = (filterIndex + 1) % filters.length;
           selectedIndex = 0;

@@ -60,6 +60,7 @@ function config(overrides: Partial<MaskingConfig> & {
       disclosePlaceholders: overrides.discloseGlobal ?? false,
       persistHistory: true,
       allowlist: [],
+      persistedSecrets: { enabled: true, mode: "strict", destinations: [], onRefuse: "block" },
     },
   };
 }

@@ -63,8 +63,10 @@ import {
 } from "./core/egress-decision.ts";
 import {
   createFileMarkerRegistry,
+  persistedSecretPathForms,
   propagateCopies,
   referencedMarkedPaths,
+  referencesPersistedSecrets,
   structuredTargetPaths,
 } from "./core/file-markers.ts";
 import { consumerSignatureWord, hasNetworkSignature } from "./core/network-signature.ts";
@@ -79,7 +81,7 @@ import {
   type AuditEventKind,
 } from "./history/audit-log.ts";
 import { createMaskingLogViewer } from "./history/log-viewer.ts";
-import { readRawConfigFile, saveConfigRuleMutations } from "./config/config-loader.ts";
+import { readRawConfigFile, saveConfigRuleMutations, SESSIONS_DIR, saveConfigOptionChanges } from "./config/config-loader.ts";
 import type { EffectiveScope } from "./core/restore-scope.ts";
 import {
   armStreamRestore,
@@ -92,6 +94,7 @@ import { configuredRuleDisplayName, selectMaskingOption, type ConfigSaveResult, 
 import { previewWithRules, toggleGlobalMasking } from "./ui/rule-editor.ts";
 import {
   CACHE_IMPACT_HINT,
+  DEFAULT_PERSISTED_SECRETS,
   GLOBAL_CONFIG_PATH,
   getProjectConfigPath,
   loadConfig,
@@ -238,6 +241,12 @@ async function askGrant(
   return options.find((o) => o.label === choice)?.outcome ?? "decline";
 }
 
+/** Built-in persisted-secrets pseudo-rule: guards the pi sessions directory
+ *  (transcripts keep restored values verbatim) and the masking config file
+ *  (every rule's `real`) as one vault asset with its own scope. */
+export const HISTORY_RULE_ID = "session-history";
+export const HISTORY_RULE_NAME = "Session history";
+
 export default async function (pi: ExtensionAPI) {
   // Register stream-restoring provider wrappers eagerly — see stream-restore.ts.
   registerStreamRestoreProviders(pi);
@@ -246,10 +255,13 @@ export default async function (pi: ExtensionAPI) {
     enabled: false,
     rules: [],
     configuredRules: [],
-    options: { showStatusBar: true, systemPromptGuidance: false, disclosePlaceholders: false, persistHistory: true, allowlist: [] },
+    options: { showStatusBar: true, systemPromptGuidance: false, disclosePlaceholders: false, persistHistory: true, allowlist: [], persistedSecrets: { ...DEFAULT_PERSISTED_SECRETS } },
   };
   let masker = new Masker([]);
   let stopWatching: (() => void) | null = null;
+  // Path forms watched by the persisted-secrets protection; both targets are
+  // fixed installation paths, so the forms never change during a session.
+  const persistedSecretForms = persistedSecretPathForms(SESSIONS_DIR, GLOBAL_CONFIG_PATH);
   let configSnapshot: ConfigSourceSnapshot | undefined;
   /** True while the global config file still carries the legacy
    *  options.caseSensitive key; captured at load time because the in-memory
@@ -1219,6 +1231,24 @@ export default async function (pi: ExtensionAPI) {
     ruleId: string,
     additions: { destinations?: string[]; tool?: string },
   ): Promise<boolean> => {
+    // The built-in persisted-secrets pseudo-rule lives under options, not
+    // in rules[]: a saved destination goes into its explicit allowlist.
+    if (ruleId === HISTORY_RULE_ID) {
+      if (!additions.destinations?.length) return false;
+      try {
+        const raw = await readRawConfigFile(GLOBAL_CONFIG_PATH);
+        const current = (raw.options as Record<string, unknown> | undefined)?.persistedSecrets as Record<string, unknown> | undefined;
+        const existing = Array.isArray(current?.destinations) ? current!.destinations as string[] : [];
+        const next = {
+          ...(current ?? {}),
+          destinations: [...new Set([...existing, ...additions.destinations])],
+        };
+        await saveConfigOptionChanges(GLOBAL_CONFIG_PATH, { persistedSecrets: next as never });
+        return true;
+      } catch {
+        return false;
+      }
+    }
     const configured = config.configuredRules.find((c) => c.rule.id === ruleId);
     if (!configured) return false;
     try {
@@ -1263,7 +1293,11 @@ export default async function (pi: ExtensionAPI) {
   };
 
   pi.on("tool_call", async (event, ctx) => {
-    if (!config.enabled || config.rules.length === 0) return;
+    if (!config.enabled) return;
+    // Zero rules disables everything EXCEPT the persisted-secrets vault:
+    // transcripts and the config file hold secrets even when no rule is
+    // scoped, and the vault's whole point is to guard them regardless.
+    if (config.rules.length === 0 && !config.options.persistedSecrets.enabled) return;
     const cwd = process.cwd();
     const command =
       event.toolName === "bash" || event.toolName === "powershell"
@@ -1290,6 +1324,12 @@ export default async function (pi: ExtensionAPI) {
     // semi-strict/permissive.
     const markedRefs = referencedMarkedPaths(fileMarkers, event.input, cwd);
     const referencedRuleIds = new Set(markedRefs.flatMap((ref) => ref.ruleIds));
+    // Persisted secret stores (sessions transcripts, the config file) hold
+    // every protected value in plaintext no matter how rules are scoped; a
+    // referencing command is governed by the built-in vault pseudo-rule.
+    const persistedSecretsRef = config.enabled && config.options.persistedSecrets.enabled
+      && referencesPersistedSecrets(event.input, persistedSecretForms);
+    if (persistedSecretsRef) referencedRuleIds.add(HISTORY_RULE_ID);
     // $NAME references govern like marked paths: the real value lives in
     // the environment, so a referencing command with egress intent gets
     // the same block/confirm treatment.
@@ -1298,7 +1338,7 @@ export default async function (pi: ExtensionAPI) {
         referencedRuleIds.add(ruleId);
       }
     }
-    if (referencedRuleIds.size > 0) {
+    if (referencedRuleIds.size > 0 || persistedSecretsRef) {
       const markedScopes = new Map<string, EffectiveScope>();
       for (const ruleId of referencedRuleIds) {
         const scope = scopes.get(ruleId);
@@ -1309,6 +1349,21 @@ export default async function (pi: ExtensionAPI) {
           markedScopes.set(ruleId, scope);
         }
       }
+      // Built-in persisted-secrets pseudo-rule: the sessions directory and
+      // the masking config hold every secret in plaintext regardless of how
+      // rules are scoped, so a referencing command is governed by the
+      // "Session history" scope (default strict + [] = any outbound send is
+      // a confirmed violation; trustedDestinations does not widen it).
+      if (persistedSecretsRef) {
+        const vault = config.options.persistedSecrets;
+        markedScopes.set(HISTORY_RULE_ID, {
+          destinations: vault.destinations,
+          tools: undefined,
+          envNames: undefined,
+          mode: vault.mode,
+          onRefuse: vault.onRefuse,
+        });
+      }
       const destinations = resolvedDestinations(masker, event.input);
       const signature = command !== "" && hasNetworkSignature(command);
       const consumerWord = command !== "" ? consumerSignatureWord(command) : undefined;
@@ -1318,6 +1373,7 @@ export default async function (pi: ExtensionAPI) {
         // source .env). Never blocks — one warning per rule+target per
         // session marks the point where the marker chain stops seeing.
         for (const ruleId of markedScopes.keys()) {
+          if (ruleId === HISTORY_RULE_ID) continue; // no marker-chain consumer signal for the vault
           const ruleName =
             config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId;
           const paths = markedRefs.map((r) => r.path).join(", ");
@@ -1347,7 +1403,9 @@ export default async function (pi: ExtensionAPI) {
         const markerDecision = decideMarkedPaths(referencedRuleIds, {
           scopes: markedScopes,
           ruleName: (ruleId) =>
-            config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
+            ruleId === HISTORY_RULE_ID
+              ? HISTORY_RULE_NAME
+              : config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
           destinations,
           signatureOnly: signature && destinations.length === 0,
           granted: (ruleId, key) => sessionGrant(ruleId, key),

@@ -15,7 +15,8 @@ import { randomUUID } from "node:crypto";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { generatePlaceholder } from "../core/placeholder-gen.ts";
 import { isRegexRule, MAX_COLLISION_ATTEMPTS, type MaskingRule, type PreserveStructure } from "../core/masker.ts";
-import { effectiveScope, type EffectiveScope, type RestoreScope } from "../core/restore-scope.ts";
+import { effectiveScope, type EffectiveScope, type RestoreScope, type ScopeMode, type RefuseAction } from "../core/restore-scope.ts";
+export type { ScopeMode, RefuseAction };
 import { analyzeRegexSafety } from "../core/regex-safety.ts";
 import { isCommonSemanticValue } from "../core/common-semantic-terms.ts";
 import { watchConfigPaths } from "./config-watcher.ts";
@@ -58,7 +59,37 @@ export interface MaskingOptions {
    *  dot-anchored syntax as restoreScope destinations. Global-only;
    *  default undefined (= no widening). */
   trustedDestinations?: string[];
+  /** Protection for files that hold secret values in plaintext regardless of
+   *  any rule's restore decision: the pi sessions directory (transcripts keep
+   *  restored values and tool results verbatim) and this extension's own
+   *  config file (every rule's `real`). Modeled as a built-in pseudo-rule
+   *  ("Session history") with its own scope: default strict + no destinations
+   *  = local reads fine, any outbound send of these files is a confirmed
+   *  violation. Global-only. */
+  persistedSecrets: PersistedSecretsScope;
 }
+
+/** Scope of the built-in persisted-secrets protection; see MaskingOptions. */
+export interface PersistedSecretsScope {
+  /** Master switch (default true — fail closed). */
+  enabled: boolean;
+  /** Verification strictness for the pseudo-rule (default "strict"). */
+  mode: ScopeMode;
+  /** Destinations allowed to receive these files (default [] = never
+   *  outbound). Explicit list only — options.trustedDestinations does NOT
+   *  widen it: a trusted host may receive one value, not the whole vault. */
+  destinations: string[];
+  /** What happens on a confirmed violation (default "block"; "ask" enables
+   *  the four-choice approval dialog and session/save grants). */
+  onRefuse: RefuseAction;
+}
+
+export const DEFAULT_PERSISTED_SECRETS: PersistedSecretsScope = {
+  enabled: true,
+  mode: "strict",
+  destinations: [],
+  onRefuse: "block",
+};
 
 export interface MaskingConfig {
   enabled: boolean;
@@ -179,6 +210,10 @@ export const GLOBAL_CONFIG_PATH = join(
   "masking.config.json"
 );
 
+/** Pi's session transcript directory: transcripts keep restored values and
+ *  tool results verbatim, so the persisted-secrets protection watches it. */
+export const SESSIONS_DIR = join(AGENT_CONFIG_DIR, "sessions");
+
 /**
  * User-level switch state. It is intentionally separate from the rule config:
  * the configuration-center setting must survive new sessions and project-level
@@ -287,8 +322,51 @@ function defaultConfig(): MaskingConfig {
       disclosePlaceholders: false,
       persistHistory: true,
       allowlist: [],
+      persistedSecrets: { ...DEFAULT_PERSISTED_SECRETS },
     },
   };
+}
+
+/** Validate options.persistedSecrets (global config only). Unknown shapes
+ *  fall back to the default field-by-field: a partially valid object keeps
+ *  its valid fields, a non-object is ignored entirely with a warning. */
+function sanitizePersistedSecrets(
+  raw: unknown,
+  base: PersistedSecretsScope,
+  warnings: string[],
+): PersistedSecretsScope {
+  if (raw === undefined) return base;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    warnings.push("options.persistedSecrets must be an object; the default (enabled, strict, never outbound) was kept");
+    return base;
+  }
+  const next: PersistedSecretsScope = { ...base };
+  const obj = raw as Record<string, unknown>;
+  if (obj.enabled !== undefined) {
+    if (typeof obj.enabled === "boolean") next.enabled = obj.enabled;
+    else warnings.push("options.persistedSecrets.enabled must be a boolean; the default (true) was kept");
+  }
+  if (obj.mode !== undefined) {
+    if (obj.mode === "strict" || obj.mode === "semi-strict" || obj.mode === "permissive") next.mode = obj.mode;
+    else warnings.push("options.persistedSecrets.mode must be \"strict\", \"semi-strict\", or \"permissive\"; the default (\"strict\") was kept");
+  }
+  if (obj.onRefuse !== undefined) {
+    if (obj.onRefuse === "block" || obj.onRefuse === "ask") next.onRefuse = obj.onRefuse;
+    else warnings.push("options.persistedSecrets.onRefuse must be \"block\" or \"ask\"; the default (\"block\") was kept");
+  }
+  if (obj.destinations !== undefined) {
+    if (Array.isArray(obj.destinations)) {
+      const destinations = obj.destinations.filter((entry) => {
+        if (typeof entry === "string" && entry.trim().length > 0 && validDestinationEntry(entry)) return true;
+        warnings.push(`options.persistedSecrets.destinations entry ${JSON.stringify(entry)} is not a valid destination (expected a domain, "*.host", intranet wildcard like "10.0.*", or IP literal) and was dropped`);
+        return false;
+      }) as string[];
+      next.destinations = destinations;
+    } else {
+      warnings.push("options.persistedSecrets.destinations must be an array of destination entries and was ignored");
+    }
+  }
+  return next;
 }
 
 // ─── File reading ───────────────────────────────────────────────────────────
@@ -1066,6 +1144,16 @@ function buildLoadResult(
       warnings.push("options.trustedDestinations must be an array of destination entries and was ignored");
     }
   }
+
+  // Persisted-secrets protection (sessions transcripts + this config file):
+  // global entries only, field-by-field validation with defaults kept. The
+  // base is the built-in default — the merged options object may already
+  // carry raw unvalidated values from the file.
+  config.options.persistedSecrets = sanitizePersistedSecrets(
+    (globalData?.options as Record<string, unknown> | undefined)?.persistedSecrets,
+    { ...DEFAULT_PERSISTED_SECRETS },
+    warnings,
+  );
 
   // Switch coupling: disclosure requires the model guidance. The intent to
   // disclose is clear, so the loader auto-corrects instead of erroring.

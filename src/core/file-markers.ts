@@ -106,6 +106,35 @@ export function referencedMarkedPaths(
   return refs;
 }
 
+/** Substrings whose presence in a tool-call input means the call touches the
+ *  persisted secret stores (the pi sessions directory and the masking config
+ *  file). Absolute forms catch a custom PI_CODING_AGENT_DIR; the `.pi/agent`
+ *  relative form catches `~`/`$HOME` spellings of the default layout; the
+ *  bare config filename catches any copy of the config by its name. */
+export function persistedSecretPathForms(sessionsDir: string, configPath: string): string[] {
+  return [
+    sessionsDir,
+    sessionsDir.replaceAll("/", "\\"),
+    ".pi/agent/sessions",
+    ".pi\\agent\\sessions",
+    configPath,
+    "masking.config.json",
+  ];
+}
+
+/** True when a tool-call input references a persisted secret store (see
+ *  persistedSecretPathForms). These files hold restored values and every
+ *  rule's `real` in plaintext no matter how rules are scoped, so an egress
+ *  reference is governed by the built-in Session history pseudo-rule. */
+export function referencesPersistedSecrets(input: unknown, forms: string[]): boolean {
+  for (const value of stringsIn(input)) {
+    for (const form of forms) {
+      if (value.includes(form)) return true;
+    }
+  }
+  return false;
+}
+
 /** Structured path arguments of write-like tools (`write`/`edit` put the
  *  target under `path`; bash/powershell redirect targets are extracted so a
  *  restored value written via `echo … > f` / `tee f` still marks the file). */

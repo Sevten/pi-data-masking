@@ -294,6 +294,42 @@
           },
           "uniqueItems": true,
           "description": "Global trusted destinations for scoped restoration: merged (union) into every rule's restoreScope destinations. Entries use restoreScope destination syntax: domains (dot-anchored suffix match, e.g. corp.internal covers api.corp.internal), single-label wildcards (*.corp), intranet wildcards (10.0.*), or IP literals. Widens destination checks only — tools checks and strict blocks on unextractable destinations are unaffected. Read from the global config only."
+        },
+        "persistedSecrets": {
+          "type": "object",
+          "description": "Protection for files that hold secret values in plaintext: the pi sessions directory (transcripts keep restored values verbatim) and this config file (every rule's real value). Local reads stay allowed; outbound sends are checked. Default: enabled, strict, never outbound.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "strict",
+                "semi-strict",
+                "permissive"
+              ],
+              "default": "strict"
+            },
+            "destinations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Destinations allowed to receive these files. Default [] = never outbound; options.trustedDestinations does not widen this list."
+            },
+            "onRefuse": {
+              "type": "string",
+              "enum": [
+                "block",
+                "ask"
+              ],
+              "default": "block"
+            }
+          }
         }
       }
     },
