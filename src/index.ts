@@ -79,6 +79,7 @@ import {
   type AuditEventKind,
 } from "./history/audit-log.ts";
 import { createMaskingLogViewer } from "./history/log-viewer.ts";
+import { readRawConfigFile, saveConfigRuleMutations } from "./config/config-loader.ts";
 import type { EffectiveScope } from "./core/restore-scope.ts";
 import {
   armStreamRestore,
@@ -212,6 +213,31 @@ function latestInputsFromTranscript(
 }
 
 // ─── Extension entry point ──────────────────────────────────────────────────
+
+// ─── Out-of-scope approval ─────────────────────────────────────────────
+
+/** Outcome of the out-of-scope approval prompt. */
+type GrantOutcome = "once" | "session" | "save" | "decline";
+
+/** The approval prompt for a refused-but-asked violation. `sessionLabel`
+ *  and `saveLabel` are null when the situation cannot be granted (a
+ *  detection gap has no known destination or tool to trust). Cancel and
+ *  any missing UI close as a decline — fail closed. */
+async function askGrant(
+  ui: ExtensionContext["ui"],
+  title: string,
+  question: string,
+  sessionLabel: string | null,
+  saveLabel: string | null,
+): Promise<GrantOutcome> {
+  if (!ui) return "decline";
+  const options: Array<{ label: string; outcome: GrantOutcome }> = [{ label: "Allow once", outcome: "once" }];
+  if (sessionLabel) options.push({ label: sessionLabel, outcome: "session" });
+  if (saveLabel) options.push({ label: saveLabel, outcome: "save" });
+  options.push({ label: "Block", outcome: "decline" });
+  const choice = await ui.select(title, options.map((o) => o.label));
+  return options.find((o) => o.label === choice)?.outcome ?? "decline";
+}
 
 export default async function (pi: ExtensionAPI) {
   // Register stream-restoring provider wrappers eagerly — see stream-restore.ts.
@@ -1178,6 +1204,44 @@ export default async function (pi: ExtensionAPI) {
   // resume keeps its custody chain.
   const fileMarkers = createFileMarkerRegistry();
 
+  // Session grants: confirmed violations the user approved beyond one call
+  // ("Allow … for this session", or added to the rule and saved). Keys are
+  // `${ruleId}:${host}` or `${ruleId}:tool:${name}`. Not persisted — dying
+  // with the session is the point of "this session"; the saved variant
+  // lives on in the rule's config instead.
+  const sessionGrants = new Set<string>();
+  const sessionGrant = (ruleId: string, key: string): boolean => sessionGrants.has(`${ruleId}:${key}`);
+
+  /** Persist a grant into the rule's config: add hosts to
+   *  `restoreScope.destinations` (or a tool name to `tools`) and save the
+   *  file the rule lives in. "Always allow" is a config edit, not a
+   *  parallel trust store — the file stays the single source of truth. */
+  const saveGrantToConfig = async (
+    ruleId: string,
+    additions: { destinations?: string[]; tool?: string },
+  ): Promise<boolean> => {
+    const configured = config.configuredRules.find((c) => c.rule.id === ruleId);
+    if (!configured) return false;
+    try {
+      const raw = await readRawConfigFile(configured.path);
+      const sourceIndex = raw.rules.findIndex((r) => (r as { id?: unknown }).id === ruleId);
+      if (sourceIndex < 0) return false;
+      const rule = structuredClone(raw.rules[sourceIndex]!) as Record<string, unknown>;
+      const scope = { ...((rule.restoreScope as Record<string, unknown> | undefined) ?? {}) };
+      if (additions.tool) {
+        scope.tools = [...new Set([...((scope.tools as string[] | undefined) ?? []), additions.tool])];
+      }
+      if (additions.destinations?.length) {
+        scope.destinations = [...new Set([...((scope.destinations as string[] | undefined) ?? []), ...additions.destinations])];
+      }
+      rule.restoreScope = scope;
+      await saveConfigRuleMutations([{ kind: "replace", path: configured.path, sourceIndex, id: ruleId, rule: rule as never }]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const recordAudit = (event: AuditEvent): void => {
     auditEvents.push(event);
     try {
@@ -1287,6 +1351,7 @@ export default async function (pi: ExtensionAPI) {
             config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
           destinations,
           signatureOnly: signature && destinations.length === 0,
+          granted: (ruleId, key) => sessionGrant(ruleId, key),
         });
         for (const v of markerDecision.blocked) {
           const key = `marker:${v.ruleId}`;
@@ -1325,26 +1390,41 @@ export default async function (pi: ExtensionAPI) {
         }
         for (const v of markerDecision.confirm) {
           const paths = markedRefs.map((r) => r.path).join(", ");
-          const allowed = ctx.ui
-            ? await ctx.ui.confirm(
-                "pi-data-masking: out-of-scope egress (approval requested)",
-                `"${v.ruleName}" values were written to ${paths}. ` +
-                  (v.offending.length > 0
-                    ? `The command sends them to ${v.offending.join(", ")}, outside the rule's allowed destinations.`
-                    : "The command sends them to a destination that cannot be verified.") +
-                  "\nAllow this call?",
-              )
-            : false;
+          const hostList = v.offending.join(", ");
+          let outcome = await askGrant(
+            ctx.ui,
+            "pi-data-masking: out-of-scope egress (approval requested)",
+            `"${v.ruleName}" values were written to ${paths}. ` +
+              (v.offending.length > 0
+                ? `The command sends them to ${hostList}, outside the rule's allowed destinations.`
+                : "The command sends them to a destination that cannot be verified.") +
+              "\nAllow this call?",
+            v.offending.length > 0 ? `Allow ${hostList} for this session` : null,
+            v.offending.length > 0 ? `Add ${hostList} to the rule and save` : null,
+          );
+          if (outcome === "session" || outcome === "save") {
+            for (const host of v.offending) sessionGrants.add(`${v.ruleId}:${host}`);
+          }
+          if (outcome === "save") {
+            const saved = await saveGrantToConfig(v.ruleId, { destinations: v.offending });
+            if (!saved) {
+              ctx.ui?.notify(`pi-data-masking: failed to add ${hostList} to "${v.ruleName}" — blocking the call`, "warning");
+              outcome = "decline"; // fail closed: the rule was not updated
+            }
+          }
+          const allowed = outcome !== "decline";
           recordAudit({
             at: Date.now(),
             kind: allowed ? "restored" : "blocked",
-            basis: allowed ? "user-approved" : "user-declined",
+            basis: allowed
+              ? (outcome === "once" ? "user-approved" : "session-granted")
+              : "user-declined",
             ruleId: v.ruleId,
             ruleName: v.ruleName,
             tool: event.toolName,
             callId: event.toolCallId,
             destinations: v.offending,
-            detail: `paths: ${paths}`,
+            detail: `paths: ${paths}` + (outcome === "save" ? "; added to the rule" : ""),
           });
           if (!allowed) {
             return {
@@ -1357,6 +1437,19 @@ export default async function (pi: ExtensionAPI) {
                   : "to a destination that cannot be verified."),
             };
           }
+        }
+        for (const g of markerDecision.granted) {
+          recordAudit({
+            at: Date.now(),
+            kind: "restored",
+            basis: "session-granted",
+            ruleId: g.ruleId,
+            ruleName: g.ruleName,
+            tool: event.toolName,
+            callId: event.toolCallId,
+            destinations: g.offending,
+            detail: `paths: ${markedRefs.map((r) => r.path).join(", ")}; session grant: ${g.offending.join(", ")}`,
+          });
         }
         for (const v of markerDecision.unverified) {
           const key = `markerwarn:${v.ruleId}`;
@@ -1411,11 +1504,13 @@ export default async function (pi: ExtensionAPI) {
         config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
       commandSignature: command !== "" && hasNetworkSignature(command),
       consumerSignature: consumerSignatureWord(command) !== undefined,
+      granted: (ruleId, key) => sessionGrant(ruleId, key),
     });
     if (
       decision.count === 0 &&
       decision.violations.length === 0 &&
       decision.confirm.length === 0 &&
+      decision.granted.length === 0 &&
       decision.unverified.length === 0
     )
       return;
@@ -1464,37 +1559,73 @@ export default async function (pi: ExtensionAPI) {
 
     // Refused-but-asked violations (rule's onRefuse=ask): the value is
     // restored, but the call runs only with the user's approval
-    // (no UI → decline, fail closed).
+    // (no UI → decline, fail closed). Destination and tool violations can
+    // be granted beyond one call; a detection gap cannot (there is no
+    // known destination or tool to trust).
     const confirmRuleIds = new Set<string>();
     for (const v of decision.confirm) {
       confirmRuleIds.add(v.ruleId);
       const mode = scopes.get(v.ruleId)?.mode ?? "strict";
+      const grantable = v.reason !== "no-destination";
+      const hostList = capDestinationList(v.offending);
       const question =
         v.reason === "tool"
           ? `"${v.ruleName}" (${mode}) restores only for its allowed tools, and this call used "${v.offending.join(", ")}".\nAllow this call?`
           : v.reason === "destination"
-            ? `"${v.ruleName}" (${mode}) is scoped to its allowed destinations, and this call sends it to ${capDestinationList(v.offending)}.\nAllow this call?`
+            ? `"${v.ruleName}" (${mode}) is scoped to its allowed destinations, and this call sends it to ${hostList}.\nAllow this call?`
             : hasNetworkSignature(command)
               ? `"${v.ruleName}" (${mode}) blocks outbound calls with no verifiable destination; this command hides it (a variable or config).\nAllow this call?`
               : `"${v.ruleName}" (${mode}) may not be written to local files or used by local processes.\nAllow this call?`;
-      const allowed = ctx.ui ? await ctx.ui.confirm("pi-data-masking: out-of-scope use (approval requested)", question) : false;
+      let outcome = await askGrant(
+        ctx.ui,
+        "pi-data-masking: out-of-scope use (approval requested)",
+        question,
+        grantable
+          ? v.reason === "tool"
+            ? `Allow tool "${v.offending.join(", ")}" for this session`
+            : `Allow ${hostList} for this session`
+          : null,
+        grantable
+          ? v.reason === "tool"
+            ? `Add "${v.offending.join(", ")}" to the rule and save`
+            : `Add ${hostList} to the rule and save`
+          : null,
+      );
+      if (outcome === "session" || outcome === "save") {
+        if (v.reason === "tool") {
+          for (const toolName of v.offending) sessionGrants.add(`${v.ruleId}:tool:${toolName}`);
+        } else {
+          for (const host of v.offending) sessionGrants.add(`${v.ruleId}:${host}`);
+        }
+      }
+      if (outcome === "save") {
+        const saved = await saveGrantToConfig(
+          v.ruleId,
+          v.reason === "tool" ? { tool: v.offending[0]! } : { destinations: v.offending },
+        );
+        if (!saved) {
+          ctx.ui?.notify(`pi-data-masking: failed to update "${v.ruleName}" — blocking the call`, "warning");
+          outcome = "decline"; // fail closed: the rule was not updated
+        }
+      }
+      const allowed = outcome !== "decline";
       recordAudit({
         at: Date.now(),
         kind: allowed ? "restored" : "blocked",
-        basis: allowed ? "user-approved" : "user-declined",
+        basis: allowed ? (outcome === "once" ? "user-approved" : "session-granted") : "user-declined",
         ruleId: v.ruleId,
         ruleName: v.ruleName,
         tool: event.toolName,
         callId: event.toolCallId,
-        destinations: v.offending.length > 0 ? v.offending : undefined,
+        destinations: v.offending.length > 0 && v.reason !== "tool" ? v.offending : undefined,
         detail:
-          v.reason === "tool"
+          (v.reason === "tool"
             ? `tool not in allowlist: ${v.offending.join(", ")}`
             : v.reason === "destination"
               ? "outside allowed destinations"
               : hasNetworkSignature(command)
                 ? "outbound call with no verifiable destination"
-                : "local use (use-not-copy)",
+                : "local use (use-not-copy)") + (outcome === "save" ? "; added to the rule" : ""),
       });
       if (!allowed) {
         return {
@@ -1531,8 +1662,24 @@ export default async function (pi: ExtensionAPI) {
     // Audit: one factual entry per rule decision on this call. Confirmed
     // violations already recorded their own entry above.
     const auditDestinations = resolvedDestinations(masker, event.input);
+    const grantedRuleIds = new Set(decision.granted.map((g) => g.ruleId));
+    for (const g of decision.granted) {
+      recordAudit({
+        at: Date.now(),
+        kind: "restored",
+        basis: "session-granted",
+        ruleId: g.ruleId,
+        ruleName: g.ruleName,
+        tool: event.toolName,
+        callId: event.toolCallId,
+        destinations: g.reason === "tool" ? undefined : g.offending,
+        detail: g.reason === "tool"
+          ? `session grant: tool ${g.offending.join(", ")}`
+          : `session grant: ${g.offending.join(", ")}`,
+      });
+    }
     for (const ruleId of decision.restoredRuleIds) {
-      if (confirmRuleIds.has(ruleId)) continue;
+      if (confirmRuleIds.has(ruleId) || grantedRuleIds.has(ruleId)) continue;
       recordAudit({
         at: Date.now(),
         kind: "restored",

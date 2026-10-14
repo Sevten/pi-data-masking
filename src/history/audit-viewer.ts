@@ -68,6 +68,7 @@ const BASIS_EXPLAIN: Record<AuditBasis, string> = {
   consumer: "a marked or inline value was passed to another program (e.g. python, bash) — what that program does next is not observable",
   "user-approved": "you approved a confirmed violation at the prompt",
   "user-declined": "you declined at the prompt; the reason was returned to the model",
+  "session-granted": "covered by a grant you approved earlier this session",
 };
 
 function explain(event: AuditEvent): string {

@@ -34,7 +34,8 @@ export type AuditBasis =
   | "local"
   | "consumer"
   | "user-approved"
-  | "user-declined";
+  | "user-declined"
+  | "session-granted";
 
 export interface AuditEvent {
   /** Date.now() at the decision. */
@@ -75,6 +76,7 @@ const BASES: readonly AuditBasis[] = [
   "consumer",
   "user-approved",
   "user-declined",
+  "session-granted",
 ];
 
 function asStringArray(value: unknown): string[] | undefined {

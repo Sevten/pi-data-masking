@@ -290,6 +290,18 @@ test("marker decision: an explicit empty allowlist governs every egress", () => 
   assert.deepEqual(tolerant.unverified.map((v) => v.ruleId), ["r"]);
 });
 
+test("marker decision: session grants lift granted hosts, refusal names the rest", () => {
+  const d = decideMarkedPaths(new Set(["r"]), {
+    scopes: new Map([["r", scope("permissive", ["stripe.com"])]]),
+    ruleName: (id) => id,
+    destinations: ["a.com", "b.com"],
+    signatureOnly: false,
+    granted: (_ruleId, key) => key === "a.com",
+  });
+  assert.deepEqual(d.confirm[0]?.offending, ["b.com"]);
+  assert.deepEqual(d.granted[0]?.offending, ["a.com"]);
+});
+
 test("marker decision: a scope without a destinations key is not governed", () => {
   const d = decideMarkedPaths(new Set(["r"]), {
     scopes: new Map([["r", { ...scope("strict", []), destinations: undefined }]]),

@@ -66,6 +66,10 @@ export interface ToolCallDecision {
   /** Permissive confirmed violations: the value is restored, but the caller
    *  must ask the user before the call runs (decline → block). */
   confirm: ScopeViolation[];
+  /** Confirmed violations covered by a session grant the user approved
+   *  earlier (Allow for this session / added to the rule): the call is
+   *  allowed without prompting; the caller audits these separately. */
+  granted: ScopeViolation[];
   unverified: UnverifiedRestore[];
   /** Rules whose restored value is handed to an unobservable process
    *  (consumer command word, local cell) — the caller warns once, never
@@ -96,6 +100,11 @@ export interface DecisionOptions {
    *  the value crosses the marker chain's observability boundary; the
    *  caller warns. Never blocks. */
   consumerSignature?: boolean;
+  /** Session grants, checked before a confirmed violation refuses. The key
+   *  is the offending host for destination checks, `tool:<name>` for the
+   *  tools check. Grants never cover the detection-gap cell (an unknown
+   *  destination cannot be granted). */
+  granted?: (ruleId: string, key: string) => boolean;
 }
 
 /** Compiled allowlists live as long as the scope object they belong to. */
@@ -117,7 +126,7 @@ export function decideToolCallRestore(
 ): ToolCallDecision {
   const probe = masker.unmaskValue(input);
   if (probe.count === 0) {
-    return { value: probe.value, count: 0, violations: [], confirm: [], unverified: [], consumed: [], restoredRuleIds: [] };
+    return { value: probe.value, count: 0, violations: [], confirm: [], granted: [], unverified: [], consumed: [], restoredRuleIds: [] };
   }
 
   const hitRuleIds = new Set(probe.details.map((d) => d.ruleId));
@@ -128,6 +137,7 @@ export function decideToolCallRestore(
       count: probe.count,
       violations: [],
       confirm: [],
+      granted: [],
       unverified: [],
       consumed: [],
       restoredRuleIds: [...hitRuleIds],
@@ -160,6 +170,7 @@ export function decideToolCallRestore(
   }
   const violations = new Map<string, ScopeViolation>();
   const confirm = new Map<string, ScopeViolation>();
+  const granted = new Map<string, ScopeViolation>();
   const unverified = new Map<string, UnverifiedRestore>();
   const consumed = new Map<string, { ruleId: string; ruleName: string }>();
 
@@ -194,7 +205,13 @@ export function decideToolCallRestore(
     };
 
     if (scope.tools && !scope.tools.includes(opts.toolName)) {
-      return refuse("tool", [opts.toolName]);
+      // A session grant for this tool (user approved it earlier) lets the
+      // call through the tools check; the destination check still applies.
+      if (opts.granted?.(ruleId, `tool:${opts.toolName}`)) {
+        setViolation(granted, ruleId, "tool", [opts.toolName]);
+      } else {
+        return refuse("tool", [opts.toolName]);
+      }
     }
 
     if (scope.destinations) {
@@ -229,8 +246,15 @@ export function decideToolCallRestore(
       }
       const offending = unmatchedDestinations(destinations, matchersFor(scope));
       if (offending.length > 0) {
-        // Confirmed violation: refused in every mode.
-        return refuse("destination", offending);
+        // Session grants (user approved these hosts earlier) leave the
+        // refusal to the hosts that are still unapproved.
+        const ungranted = offending.filter((host) => !opts.granted?.(ruleId, host));
+        const grantedHosts = offending.filter((host) => opts.granted?.(ruleId, host));
+        if (grantedHosts.length > 0) setViolation(granted, ruleId, "destination", grantedHosts);
+        if (ungranted.length > 0) {
+          // Confirmed violation: refused in every mode.
+          return refuse("destination", ungranted);
+        }
       }
       return true;
     }
@@ -243,6 +267,7 @@ export function decideToolCallRestore(
     count: result.count,
     violations: [...violations.values()],
     confirm: [...confirm.values()],
+    granted: [...granted.values()],
     unverified: [...unverified.values()],
     consumed: [...consumed.values()],
     restoredRuleIds: [...hitRuleIds].filter((id) => !violations.has(id)),
@@ -388,6 +413,9 @@ export interface MarkedPathDecision {
   /** Permissive confirmed violations: the caller must ask the user before
    *  the call runs (decline → block). */
   confirm: MarkedPathViolation[];
+  /** Confirmed violations covered by a session grant the user approved
+   *  earlier: the call is allowed; the caller audits these separately. */
+  granted: MarkedPathViolation[];
   /** Detection-gap violations the semi-strict/permissive modes allow with a
    *  warning. */
   unverified: MarkedPathViolation[];
@@ -395,7 +423,8 @@ export interface MarkedPathDecision {
 
 export interface MarkedPathOptions {
   /** Effective scopes of the marked rules only (ruleId → scope). Rules
-   *  without a destination allowlist can be omitted — they are skipped. */
+   *  without a destination key are skipped; an explicit empty allowlist
+   *  governs like any other. */
   scopes: ReadonlyMap<string, EffectiveScope>;
   ruleName: (ruleId: string) => string;
   /** Destinations extracted from the call arguments. */
@@ -404,6 +433,10 @@ export interface MarkedPathOptions {
    *  (bash network signature). Both modes treat this as
    *  destination-present-but-unverifiable. */
   signatureOnly: boolean;
+  /** Session grants, checked before a confirmed violation refuses. The
+   *  key is the offending host. Grants never cover the detection-gap
+   *  cell (an unknown destination cannot be granted). */
+  granted?: (ruleId: string, key: string) => boolean;
 }
 
 export function decideMarkedPaths(
@@ -412,6 +445,7 @@ export function decideMarkedPaths(
 ): MarkedPathDecision {
   const blocked: MarkedPathViolation[] = [];
   const confirm: MarkedPathViolation[] = [];
+  const granted: MarkedPathViolation[] = [];
   const unverified: MarkedPathViolation[] = [];
 
   for (const ruleId of referencedRuleIds) {
@@ -425,8 +459,14 @@ export function decideMarkedPaths(
     if (opts.destinations.length > 0) {
       offending = unmatchedDestinations(opts.destinations, matchersFor(scope));
       if (offending.length === 0) continue; // all destinations allowlisted
+      // Session grants (user approved these hosts earlier) leave the
+      // refusal to the hosts that are still unapproved.
+      const grantedHosts = offending.filter((host) => opts.granted?.(ruleId, host));
+      const ungranted = offending.filter((host) => !opts.granted?.(ruleId, host));
+      if (grantedHosts.length > 0) granted.push({ ruleId, ruleName: opts.ruleName(ruleId), offending: grantedHosts });
+      if (ungranted.length === 0) continue;
       // Confirmed violation: refused in every mode; onRefuse decides how.
-      const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending };
+      const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending: ungranted };
       if (scope.onRefuse === "ask") confirm.push(violation);
       else blocked.push(violation);
     } else if (opts.signatureOnly) {
@@ -441,5 +481,5 @@ export function decideMarkedPaths(
     // no egress intent at all — advisory state never blocks
   }
 
-  return { blocked, confirm, unverified };
+  return { blocked, confirm, granted, unverified };
 }
