@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfigFromPaths, SESSIONS_DIR, GLOBAL_CONFIG_PATH } from "../src/config/config-loader.ts";
+import type { EffectiveScope } from "../src/core/restore-scope.ts";
 import { persistedSecretPathForms, referencesPersistedSecrets } from "../src/core/file-markers.ts";
 
 const KEY = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
@@ -138,11 +139,11 @@ test("persistedSecrets: Outbound Anywhere (destinations ['*']) skips destination
       options: { persistedSecrets: { enabled: true, mode: "strict", destinations: ["*"], onRefuse: "block" } },
     }));
     mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
-    const { config } = await loadConfigFromPaths(configPath, undefined, key);
+    const { config } = await loadConfigFromPaths(configPath, join(dir, "project.config.json"), key);
     assert.deepEqual(config.options.persistedSecrets.destinations, ["*"], "'*' survives sanitization as Anywhere");
 
     const { decideMarkedPaths } = await import("../src/core/egress-decision.ts");
-    const scopes = new Map([["session-history", { destinations: ["*"], mode: "strict", onRefuse: "block" }]]);
+    const scopes = new Map<string, EffectiveScope>([["session-history", { destinations: ["*"], mode: "strict", onRefuse: "block", tools: undefined, envNames: undefined }]]);
     const decision = decideMarkedPaths(new Set(["session-history"]), {
       scopes,
       ruleName: () => "Session history",

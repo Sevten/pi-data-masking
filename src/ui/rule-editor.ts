@@ -41,6 +41,7 @@ import { generatePlaceholder } from "../core/placeholder-gen.ts";
 import type { PreserveStructure } from "../core/masker.ts";
 import { MASKING_PRESETS } from "../core/presets.ts";
 import {
+
   MASKING_SCREEN_OPTIONS,
   chooseExistingSource,
   confirmMaskingAction,
@@ -54,6 +55,16 @@ import {
   type ConfigSaveResult,
   type MaskingUIBridge,
 } from "./masking-common.ts";
+
+export function valueWithCursor(editor: Editor, width: number): string {
+  const text = editor.getExpandedText().replace(/[\r\n]+/g, " ");
+  const cursor = Math.max(0, Math.min(editor.getCursor().col, text.length));
+  const marked = `${text.slice(0, cursor)}▌${text.slice(cursor)}`;
+  const cursorColumn = visibleWidth(text.slice(0, cursor));
+  const startColumn = Math.max(0, cursorColumn - Math.max(1, width - 3));
+  const prefix = startColumn > 0 ? "…" : "";
+  return prefix + sliceByColumn(marked, startColumn, Math.max(1, width - visibleWidth(prefix)));
+}
 
 export async function toggleGlobalMasking(
   bridge: MaskingUIBridge,
@@ -961,15 +972,6 @@ export async function addConfigRule(
       return rendered + " ".repeat(Math.max(0, width - visibleWidth(rendered)));
     }
 
-    function valueWithCursor(editor: Editor, width: number): string {
-      const text = editor.getExpandedText().replace(/[\r\n]+/g, " ");
-      const cursor = Math.max(0, Math.min(editor.getCursor().col, text.length));
-      const marked = `${text.slice(0, cursor)}▌${text.slice(cursor)}`;
-      const cursorColumn = visibleWidth(text.slice(0, cursor));
-      const startColumn = Math.max(0, cursorColumn - Math.max(1, width - 3));
-      const prefix = startColumn > 0 ? "…" : "";
-      return prefix + sliceByColumn(marked, startColumn, Math.max(1, width - visibleWidth(prefix)));
-    }
 
     type RenderedFieldDetail = {
       label: string;

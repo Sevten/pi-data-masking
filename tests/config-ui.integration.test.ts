@@ -1075,10 +1075,16 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
       // The pinned vault line sits in the rules zone with its default state.
       const screen = () => component.render(100).join("\n");
       assert.ok(screen().includes("Session history"), "vault line must render");
-      assert.ok(screen().includes("strict"), "default mode shows");
+      // SCOPE column follows the rule-row semantics: where it is defined.
+      assert.ok(/global\s+builtin\s+Session history/.test(screen()), "vault row shows global/builtin like a rule row");
       // Selecting the vault row shows its detail block (rule-row behavior).
       component.handleInput(INPUT.up);
       assert.ok(component.render(100).some((line) => line.includes("Outbound: Never · local reads stay allowed")), "detail block shows the never-outbound default");
+      assert.ok(component.render(100).some((line) => line.includes("Scope mode: strict")), "detail block shows the mode");
+      // Delete is refused with an on-screen notice: built-in, not deletable.
+      component.handleInput("d");
+      assert.ok(component.render(100).some((line) => line.includes("Session history is built-in · it cannot be deleted")), "delete refusal is announced on screen");
+      component.handleInput(INPUT.down);
       component.handleInput(INPUT.down);
       // V opens the dedicated editor; the editor's save writes the global
       // config, and once it lands this screen closes the whole flow.
@@ -1100,15 +1106,11 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
       assert.ok(text().includes("Anywhere"), "right from Never wraps to Anywhere like the Rule Builder cycle");
       editor.handleInput(INPUT.right);
       assert.ok(text().includes("Listed only"), "outbound staged; the cursor jumped to Destinations");
-      editor.handleInput(INPUT.enter);
-      assert.ok(text().includes("No destinations"), "list mode shows the empty-list state");
-      // Stage a destination — the empty list already focuses the add row.
+      assert.ok(text().includes("(e.g. archive.internal, 10.0.*)"), "empty field shows the dim example placeholder");
+      // Inline comma-list input, exactly like the Rule Builder Destinations
+      // field: typing edits the focused row.
       for (const ch of "archive.corp") editor.handleInput(ch);
-      editor.handleInput(INPUT.enter);
-      assert.ok(text().includes("archive.corp"), "staged destination renders");
-      // Back to fields, then finish — the confirmation screen is the next
-      // scenario; its default highlight is "Save & close".
-      editor.handleInput(INPUT.escape);
+      assert.ok(text().includes("archive.corp"), "typed destination renders");
       editor.handleInput(INPUT.escape);
     },
     async (confirm) => {

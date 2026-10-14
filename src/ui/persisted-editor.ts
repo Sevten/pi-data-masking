@@ -29,7 +29,7 @@ import {
   wrappedMaskingText,
   type MaskingUIBridge,
 } from "./masking-common.ts";
-import { saveConfigOptionsUI } from "./rule-editor.ts";
+import { saveConfigOptionsUI, valueWithCursor } from "./rule-editor.ts";
 
 const MODES: ScopeMode[] = ["strict", "semi-strict", "permissive"];
 const REFUSALS: RefuseAction[] = ["block", "ask"];
@@ -62,11 +62,6 @@ export async function openPersistedSecretsEditor(
   const fieldCount = () => (outbound === "listed" ? 5 : 4);
   const DEST_FIELD = () => (outbound === "listed" ? 2 : -1);
   let selectedField = 0;
-  // When true the Destinations list owns the keyboard: the field rows are
-  // replaced by the list, an inline edit, and the trailing add input.
-  let listEditing = false;
-  let selectedIndex = 0;
-  let editingIndex: number | null = null;
   let exiting = false;
   let message = "";
 
@@ -81,12 +76,16 @@ export async function openPersistedSecretsEditor(
         noMatch: (text) => theme.fg("warning", text),
       },
     };
-    const addInput = new Editor(tui, editorTheme, { paddingX: 1 });
-    const editInput = new Editor(tui, editorTheme, { paddingX: 1 });
-    editInput.onChange = () => tui.requestRender();
+    // Inline comma-list editor, exactly like the Rule Builder's
+    // Destinations field: typing edits, ↑/↓ move between fields.
+    const destinationsEditor = new Editor(tui, editorTheme, { paddingX: 1 });
+    destinationsEditor.setText(draft.destinations.join(", "));
+    destinationsEditor.onChange = (text) => {
+      draft.destinations = text.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+      tui.requestRender();
+    };
 
     const refresh = () => tui.requestRender();
-    const onAddRow = () => editingIndex === null && selectedIndex === draft.destinations.length;
 
     const outboundLabel = (value: Outbound = outbound): string =>
       value === "never" ? "Never" : value === "listed" ? "Listed only" : "Anywhere";
@@ -100,97 +99,17 @@ export async function openPersistedSecretsEditor(
 
     function setOutbound(next: Outbound): void {
       if (next === outbound) return;
-      if (outbound === "listed") stashedDestinations = draft.destinations;
+      if (outbound === "listed") stashedDestinations = [...draft.destinations];
       outbound = next;
       draft.destinations = next === "listed"
-        ? stashedDestinations
+        ? [...stashedDestinations]
         : next === "anywhere" ? ["*"] : [];
+      destinationsEditor.setText(draft.destinations.join(", "));
       if (next === "listed") {
         stashedDestinations = [];
         selectedField = DEST_FIELD();
       }
       message = "Staged";
-      refresh();
-    }
-
-    function addValue(raw: string): void {
-      const value = raw.trim();
-      if (!value) return;
-      if (draft.destinations.includes(value)) {
-        message = "Already listed";
-        refresh();
-        return;
-      }
-      draft.destinations.push(value);
-      selectedIndex = draft.destinations.length - 1;
-      message = "Staged · Esc to finish";
-      refresh();
-    }
-
-    function startEdit(): void {
-      if (onAddRow() || selectedIndex < 0 || selectedIndex >= draft.destinations.length) return;
-      editingIndex = selectedIndex;
-      editInput.setText(draft.destinations[selectedIndex]!);
-      message = "Editing destination · Enter apply · Esc cancel";
-      refresh();
-    }
-
-    function cancelEdit(): void {
-      editingIndex = null;
-      editInput.setText("");
-      message = "Edit cancelled";
-      refresh();
-    }
-
-    editInput.onSubmit = (text) => {
-      const index = editingIndex;
-      if (index === null) return;
-      const value = text.trim();
-      editingIndex = null;
-      editInput.setText("");
-      if (!value) {
-        message = "Empty destination · edit cancelled";
-        refresh();
-        return;
-      }
-      if (draft.destinations.some((existing, i) => i !== index && existing === value)) {
-        message = "Already listed · edit rejected";
-        refresh();
-        return;
-      }
-      draft.destinations[index] = value;
-      message = "Staged · Esc to finish";
-      refresh();
-    };
-
-    addInput.onSubmit = (text) => {
-      addValue(text);
-      addInput.setText("");
-      refresh();
-    };
-
-    function deleteSelected(): void {
-      if (onAddRow() || selectedIndex < 0 || selectedIndex >= draft.destinations.length) return;
-      draft.destinations.splice(selectedIndex, 1);
-      if (selectedIndex >= draft.destinations.length) selectedIndex = draft.destinations.length;
-      message = "Staged · Esc to finish";
-      refresh();
-    }
-
-    function moveSelection(delta: 1 | -1): void {
-      const next = selectedIndex + delta;
-      if (next < 0 || next > draft.destinations.length) return;
-      selectedIndex = next;
-      refresh();
-    }
-
-    function leaveListEditing(): void {
-      listEditing = false;
-      editingIndex = null;
-      editInput.setText("");
-      addInput.setText("");
-      selectedIndex = 0;
-      message = "";
       refresh();
     }
 
@@ -239,6 +158,7 @@ export async function openPersistedSecretsEditor(
         draft.onRefuse = original.onRefuse;
         draft.destinations = [...original.destinations];
         outbound = outboundOf(draft.destinations);
+        destinationsEditor.setText(draft.destinations.join(", "));
         done(false);
         return;
       }
@@ -258,9 +178,8 @@ export async function openPersistedSecretsEditor(
         setOutbound(cycle(OUTBOUND_CYCLE, outbound, direction));
         return;
       } else if (selectedField === DEST_FIELD()) {
-        listEditing = true;
-        selectedIndex = 0;
-        message = "";
+        // An editor field: keys go to the editor, not a cycler.
+        return;
       } else if (selectedField === fieldCount() - 2) {
         draft.mode = cycle(MODES, draft.mode, direction);
         draft.onRefuse = presetRefusal(draft.mode);
@@ -286,13 +205,14 @@ export async function openPersistedSecretsEditor(
       }
       if (index === 1) return [row("Outbound", outboundLabel()), outboundDescription()];
       if (index === DEST_FIELD()) {
-        const value = draft.destinations.length > 0
-          ? draft.destinations.join(", ")
+        const typed = destinationsEditor.getExpandedText().trim();
+        const value = typed.length > 0
+          ? (index === selectedField
+            ? valueWithCursor(destinationsEditor, 44)
+            : typed)
           : "(e.g. archive.internal, 10.0.*)";
         return [row("Destinations", value),
-          draft.destinations.length === 0
-            ? "these destinations may receive the files · Enter to list"
-            : "these destinations may receive the files · Enter to edit"];
+          "these destinations may receive the files · comma-separated · ←→ edit"];
       }
       if (index === fieldCount() - 2) {
         return [row("Scope mode", draft.mode === "strict" ? "Strict" : draft.mode === "semi-strict" ? "Semi-strict" : "Permissive"),
@@ -316,123 +236,56 @@ export async function openPersistedSecretsEditor(
         if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));
         lines.push("");
 
-        if (!listEditing) {
-          let focusedDescription = "";
-          for (let index = 0; index < fieldCount(); index++) {
-            const cell = fieldRow(index);
-            if (!cell) continue;
-            const [text, description] = cell;
-            lines.push(index === selectedField
-              ? theme.fg("accent", truncateToWidth(text, Math.max(1, width)))
-              : theme.fg("muted", truncateToWidth(text, Math.max(1, width))));
-            if (index === selectedField) focusedDescription = description;
-          }
-          if (focusedDescription) {
-            lines.push(...wrappedMaskingText(theme.fg("dim", focusedDescription), width));
-          }
-          lines.push("");
-          lines.push(...wrappedMaskingText(theme.fg("dim", "↑/↓ field · ←/→ or Space change · Enter destinations list · S save · Esc finish"), width));
-        } else {
-          lines.push(theme.fg("accent", truncateToWidth("  Destinations allowed to receive these files", Math.max(1, width))));
-          lines.push("");
-          if (draft.destinations.length === 0) {
-            lines.push(theme.fg("warning", "No destinations — the files may never be sent outbound."));
-          }
-          for (let index = 0; index < draft.destinations.length; index++) {
-            if (index === editingIndex) {
-              lines.push(...editInput.render(width));
-              continue;
-            }
-            const cursor = index === selectedIndex ? "›" : " ";
-            const text = `${cursor} ${String(index + 1).padStart(3)}  ${draft.destinations[index]}`;
-            lines.push(index === selectedIndex ? theme.fg("accent", truncateToWidth(text, Math.max(1, width))) : truncateToWidth(text, Math.max(1, width)));
-          }
-          if (onAddRow()) {
-            lines.push(...addInput.render(width));
-          } else {
-            lines.push(theme.fg("dim", truncateToWidth("  ＋ Add destination…", Math.max(1, width))));
-          }
-          lines.push("");
-          const hints = editingIndex !== null
-            ? "Enter apply · Esc cancel edit"
-            : onAddRow()
-              ? "Type a destination · Enter add · ↑ back · Esc back to fields"
-              : "↑/↓ navigate · Enter edit · D delete · A add · Esc back to fields";
-          lines.push(...wrappedMaskingText(theme.fg("dim", hints), width));
+        let focusedDescription = "";
+        for (let index = 0; index < fieldCount(); index++) {
+          const cell = fieldRow(index);
+          if (!cell) continue;
+          const [text, description] = cell;
+          lines.push(index === selectedField
+            ? theme.fg("accent", truncateToWidth(text, Math.max(1, width)))
+            : theme.fg("muted", truncateToWidth(text, Math.max(1, width))));
+          if (index === selectedField) focusedDescription = description;
         }
+        if (focusedDescription) {
+          lines.push(...wrappedMaskingText(theme.fg("dim", focusedDescription), width));
+        }
+        lines.push("");
+        lines.push(...wrappedMaskingText(theme.fg("dim", "↑/↓ field · ←/→ change or edit · S save · Esc finish"), width));
         return fillMaskingScreen(lines, width, tui.terminal.rows);
       },
       invalidate: () => {
-        addInput.invalidate();
-        editInput.invalidate();
+        destinationsEditor.invalidate();
       },
       handleInput: (data) => {
         if (exiting) return;
         const escape = keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")
           || matchesKey(data, Key.escape);
-        if (listEditing) {
-          if (escape) {
-            if (editingIndex !== null) cancelEdit();
-            else leaveListEditing();
-            return;
-          }
-          if (editingIndex !== null) {
-            editInput.handleInput(data);
-            return;
-          }
-          if (onAddRow()) {
-            if (matchesKey(data, Key.up) || keybindings.matches(data, "tui.select.up")) {
-              moveSelection(-1);
-              return;
-            }
-            addInput.handleInput(data);
-            return;
-          }
-          if (matchesKey(data, Key.up) || keybindings.matches(data, "tui.select.up")) {
-            moveSelection(-1);
-            return;
-          }
-          if (matchesKey(data, Key.down) || keybindings.matches(data, "tui.select.down")) {
-            moveSelection(1);
-            return;
-          }
-          if (matchesKey(data, Key.enter) || keybindings.matches(data, "tui.select.confirm")) {
-            startEdit();
-            return;
-          }
-          if (matchesKey(data, Key.delete)) {
-            deleteSelected();
-            return;
-          }
-          if (typeof data === "string" && data.length === 1) {
-            const key = data.toLowerCase();
-            if (key === "d") {
-              deleteSelected();
-              return;
-            }
-            if (key === "a") {
-              selectedIndex = draft.destinations.length;
-              refresh();
-              return;
-            }
-          }
-          return;
-        }
-        // Field mode
+        // Field mode. Esc always finishes; ↑/↓ always navigate; everything
+        // else depends on the focused field — editors own their keys (Rule
+        // Builder behavior), selector rows cycle on ←/→/Space.
         if (escape) {
           void finish();
           return;
         }
-        if (matchesKey(data, Key.up) || keybindings.matches(data, "tui.select.up")) {
-          selectedField = Math.max(0, selectedField - 1);
+        const navigate = (delta: -1 | 1): void => {
+          selectedField = Math.max(0, Math.min(fieldCount() - 1, selectedField + delta));
           message = "";
           refresh();
+        };
+        if (matchesKey(data, Key.up) || keybindings.matches(data, "tui.select.up")) {
+          navigate(-1);
           return;
         }
         if (matchesKey(data, Key.down) || keybindings.matches(data, "tui.select.down")) {
-          selectedField = Math.min(fieldCount() - 1, selectedField + 1);
-          message = "";
-          refresh();
+          navigate(1);
+          return;
+        }
+        if (selectedField === DEST_FIELD()) {
+          if (matchesKey(data, Key.enter) || keybindings.matches(data, "tui.select.confirm")) {
+            navigate(1);
+            return;
+          }
+          destinationsEditor.handleInput(data);
           return;
         }
         if (matchesKey(data, Key.left)) {
@@ -444,23 +297,12 @@ export async function openPersistedSecretsEditor(
           return;
         }
         if (matchesKey(data, Key.enter) || keybindings.matches(data, "tui.select.confirm")) {
-          if (selectedField === DEST_FIELD()) {
-            cycleField(1);
-            return;
-          }
           void finish();
           return;
         }
-        if (typeof data === "string" && data.length === 1) {
-          const key = data.toLowerCase();
-          if (key === "s") {
-            void finish();
-            return;
-          }
-          if (key === " ") {
-            cycleField(1);
-            return;
-          }
+        if (typeof data === "string" && data.length === 1 && data.toLowerCase() === "s") {
+          void finish();
+          return;
         }
       },
     };

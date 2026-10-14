@@ -557,7 +557,9 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             : `${vaultOptions.destinations.length} destination(s)`;
           const pending = vaultPendingHint();
           const cursor = selectedIndex === 0 && homeFocus === "rules" ? "›" : " ";
-          const text = `${cursor} ‹ ${slot} › ${"—".padStart(5)}  ${vaultOptions.mode.padEnd(7)}  ${"builtin".padEnd(7)}  Session history${pending ? ` · ${pending}` : ""}`;
+          // SCOPE column = where the entry is defined (project/global),
+          // same as rule rows; the vault lives in the global config.
+          const text = `${cursor} ‹ ${slot} › ${"—".padStart(5)}  ${"global".padEnd(7)}  ${"builtin".padEnd(7)}  Session history${pending ? ` · ${pending}` : ""}`;
           const clipped = truncateToWidth(text, Math.max(1, width));
           return homeFocus === "rules" && selectedIndex === 0
             ? theme.fg("accent", clipped)
@@ -948,6 +950,11 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             return;
           }
           void runScreenAction(selected ? { kind: "edit", rule: selected } : { kind: "add" });
+          return;
+        }
+        if ((matchesKey(data, "d") || matchesKey(data, Key.delete)) && vaultSelected) {
+          mutationMessage = "Session history is built-in · it cannot be deleted";
+          refresh();
           return;
         }
         if ((matchesKey(data, "d") || matchesKey(data, Key.delete)) && selected) {
