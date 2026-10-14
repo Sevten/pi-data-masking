@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Fixed: the `onRefuse: "ask"` approval dialog never showed which rule was asking — `ui.select` has no message line, and the composed question text was passed to a parameter that was never displayed. The rule name (and mode) now goes into the dialog title ("pi-data-masking: \"GitHub personal access token\" (permissive) out-of-scope use (approval requested)").
 - Changed: the public command surface is two commands — `/masking` and `/masking-history`. The restoration audit lives inside `/masking-history` as a second tab (`Tab` switches; the search/filter prompt keeps `Tab` while it owns the keyboard) instead of a separate command, so both replay views stay visible in slash completion.
 - Changed: the Masked views and Restoration audit tabs bracket their content area with full-width rules, so the title, legend, and key hints read as a frame around the transcript/event list instead of blending into it.
 - Changed: restoration audit outcome symbols are fixed two-cell emoji (✅ restored · ❌ blocked · ⚠️ warning), replacing East Asian Ambiguous glyphs whose rendered width varied per glyph and font fallback.

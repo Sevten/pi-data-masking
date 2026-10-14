@@ -226,7 +226,6 @@ type GrantOutcome = "once" | "session" | "save" | "decline";
 async function askGrant(
   ui: ExtensionContext["ui"],
   title: string,
-  question: string,
   sessionLabel: string | null,
   saveLabel: string | null,
 ): Promise<GrantOutcome> {
@@ -1391,14 +1390,12 @@ export default async function (pi: ExtensionAPI) {
         for (const v of markerDecision.confirm) {
           const paths = markedRefs.map((r) => r.path).join(", ");
           const hostList = v.offending.join(", ");
+          // ruleName goes into the dialog title — ui.select has no separate
+          // message line, so the title is the only place the user can see
+          // which rule is asking.
           let outcome = await askGrant(
             ctx.ui,
-            "pi-data-masking: out-of-scope egress (approval requested)",
-            `"${v.ruleName}" values were written to ${paths}. ` +
-              (v.offending.length > 0
-                ? `The command sends them to ${hostList}, outside the rule's allowed destinations.`
-                : "The command sends them to a destination that cannot be verified.") +
-              "\nAllow this call?",
+            `pi-data-masking: "${v.ruleName}" out-of-scope egress (approval requested)`,
             v.offending.length > 0 ? `Allow ${hostList} for this session` : null,
             v.offending.length > 0 ? `Add ${hostList} to the rule and save` : null,
           );
@@ -1568,18 +1565,12 @@ export default async function (pi: ExtensionAPI) {
       const mode = scopes.get(v.ruleId)?.mode ?? "strict";
       const grantable = v.reason !== "no-destination";
       const hostList = capDestinationList(v.offending);
-      const question =
-        v.reason === "tool"
-          ? `"${v.ruleName}" (${mode}) restores only for its allowed tools, and this call used "${v.offending.join(", ")}".\nAllow this call?`
-          : v.reason === "destination"
-            ? `"${v.ruleName}" (${mode}) is scoped to its allowed destinations, and this call sends it to ${hostList}.\nAllow this call?`
-            : hasNetworkSignature(command)
-              ? `"${v.ruleName}" (${mode}) blocks outbound calls with no verifiable destination; this command hides it (a variable or config).\nAllow this call?`
-              : `"${v.ruleName}" (${mode}) may not be written to local files or used by local processes.\nAllow this call?`;
+      // ruleName goes into the dialog title — ui.select has no separate
+      // message line, so the title is the only place the user can see
+      // which rule is asking.
       let outcome = await askGrant(
         ctx.ui,
-        "pi-data-masking: out-of-scope use (approval requested)",
-        question,
+        `pi-data-masking: "${v.ruleName}" (${mode}) out-of-scope use (approval requested)`,
         grantable
           ? v.reason === "tool"
             ? `Allow tool "${v.offending.join(", ")}" for this session`
