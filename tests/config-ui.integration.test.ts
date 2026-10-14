@@ -1096,11 +1096,9 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
     async (editor) => {
       const text = () => editor.render(100).join("\n");
       await waitFor(() => text().includes("SESSION HISTORY"));
-      assert.ok(text().includes("Enabled"), "field rows render");
       assert.ok(text().includes("Outbound"), "the Outbound selector renders like the Rule Builder");
-      // Outbound → Listed only reveals the Destinations row (Rule Builder
-      // behavior), then Enter opens the list editor.
-      editor.handleInput(INPUT.down);
+      assert.ok(!text().includes("Enabled"), "no Enabled row — the list page toggle owns on/off, like rule editors");
+      // Outbound is the first field; its description renders once below.
       assert.ok(text().includes("Never: the files may never be sent outbound"), "focused-field description renders once below the rows");
       editor.handleInput(INPUT.right);
       assert.ok(text().includes("Anywhere"), "right from Never wraps to Anywhere like the Rule Builder cycle");

@@ -4,13 +4,15 @@
  * (options.persistedSecrets): one scope guarding the pi sessions directory
  * (session transcripts keep restored values verbatim) and the masking config
  * file (every rule's `real`). The form mirrors the Rule Builder's scope
- * experience: same row grammar (▶ marker, 14-column label, ‹ value ›
- * selector), the description of the focused field rendered once below the
- * rows so navigation never shifts them, and the same Outbound selector
- * (Never / Listed only) governing the Destinations list. Esc finishes: with
- * staged changes an explicit confirmation picks Save & close, Discard
- * changes, or Back to editing — nothing is written without an explicit
- * save. Saving goes through the same options pipeline as the other settings.
+ * experience exactly: same row grammar (▶ marker, 14-column label, ‹ value ›
+ * selectors, plain-text editor fields), the description of the focused field
+ * rendered once below the rows so navigation never shifts them, and the same
+ * Outbound selector (Anywhere / Listed only / Never) governing the inline
+ * comma-list Destinations field. There is no Enabled row — the list page's
+ ←/→/Space toggle owns the on/off state, like every rule. Esc finishes:
+ * with staged changes an explicit confirmation picks Save & close, Discard
+ * changes, or Back to editing. Saving goes through the same options
+ * pipeline as the other settings.
  */
 
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -57,10 +59,10 @@ export async function openPersistedSecretsEditor(
     destinations.includes("*") ? "anywhere" : destinations.length === 0 ? "never" : "listed";
   let outbound: Outbound = outboundOf(draft.destinations);
   let stashedDestinations: string[] = [];
-  // Field rows depend on the Outbound choice: 0 Enabled · 1 Outbound ·
-  // 2 Destinations (only when Listed only) · 3 Scope mode · 4 On refusal.
-  const fieldCount = () => (outbound === "listed" ? 5 : 4);
-  const DEST_FIELD = () => (outbound === "listed" ? 2 : -1);
+  // Field rows depend on the Outbound choice: 0 Outbound · 1 Destinations
+  // (only when Listed only) · 2 Scope mode · 3 On refusal.
+  const fieldCount = () => (outbound === "listed" ? 4 : 3);
+  const DEST_FIELD = () => (outbound === "listed" ? 1 : -1);
   let selectedField = 0;
   let exiting = false;
   let message = "";
@@ -114,8 +116,7 @@ export async function openPersistedSecretsEditor(
     }
 
     async function finish(): Promise<void> {
-      const changed = draft.enabled !== original.enabled
-        || draft.mode !== original.mode
+      const changed = draft.mode !== original.mode
         || draft.onRefuse !== original.onRefuse
         || draft.destinations.length !== original.destinations.length
         || draft.destinations.some((host, index) => host !== original.destinations[index]);
@@ -125,7 +126,6 @@ export async function openPersistedSecretsEditor(
       }
       exiting = true;
       const summary: string[] = [];
-      if (draft.enabled !== original.enabled) summary.push(draft.enabled ? "protection on" : "protection off");
       if (outboundLabel() !== outboundLabel(outboundOf(original.destinations))) {
         summary.push(`outbound ${outboundLabel()}`);
       }
@@ -153,7 +153,6 @@ export async function openPersistedSecretsEditor(
         return;
       }
       if (choice === "Discard changes") {
-        draft.enabled = original.enabled;
         draft.mode = original.mode;
         draft.onRefuse = original.onRefuse;
         draft.destinations = [...original.destinations];
@@ -172,15 +171,14 @@ export async function openPersistedSecretsEditor(
 
     function cycleField(direction: 1 | -1): void {
       if (selectedField === 0) {
-        draft.enabled = !draft.enabled;
-        message = draft.enabled ? "Protection on" : "Protection off — transcripts and config can be sent out unchecked";
-      } else if (selectedField === 1) {
         setOutbound(cycle(OUTBOUND_CYCLE, outbound, direction));
         return;
-      } else if (selectedField === DEST_FIELD()) {
+      }
+      if (selectedField === DEST_FIELD()) {
         // An editor field: keys go to the editor, not a cycler.
         return;
-      } else if (selectedField === fieldCount() - 2) {
+      }
+      if (selectedField === fieldCount() - 2) {
         draft.mode = cycle(MODES, draft.mode, direction);
         draft.onRefuse = presetRefusal(draft.mode);
         message = `Staged · mode ${draft.mode} · on refusal ${draft.onRefuse}`;
@@ -191,37 +189,47 @@ export async function openPersistedSecretsEditor(
       refresh();
     }
 
-    /** The description rows render once below the field rows (Rule Builder
-     *  pattern): navigation never shifts the field rows themselves. */
-    const fieldRow = (index: number): [string, string, boolean?] | null => {
-      const marker = index === selectedField ? "▶" : " ";
-      const row = (label: string, value: string, dim = false): string =>
-        dim
-          ? `${marker} ${label.padEnd(LABEL_WIDTH)}  ${value}`
-          : `${marker} ${label.padEnd(LABEL_WIDTH)}  ‹ ${value} ›`;
+    /** Row rendering mirrors renderFieldRow in the Rule Builder: focused →
+     *  accent, explicit dim → dim, everything else plain; only selector
+     *  fields carry ‹ › chrome; the description of the focused field
+     *  renders once below the field block so navigation never shifts the
+     *  rows. */
+    const fieldRow = (width: number) => (index: number): { text: string; description: string; style: "focus" | "dim" | "plain" } | null => {
+      const focused = index === selectedField;
+      const marker = focused ? "▶" : " ";
+      const padCell = (value: string): string => {
+        const rendered = truncateToWidth(value, LABEL_WIDTH);
+        return rendered + " ".repeat(Math.max(0, LABEL_WIDTH - rendered.length));
+      };
+      const row = (labelText: string, value: string, style: "focus" | "dim" | "plain", description: string) => ({
+        text: `${marker} ${padCell(labelText)}  ${truncateToWidth(value, Math.max(1, width - (2 + LABEL_WIDTH + 2)))}`,
+        description,
+        style,
+      });
       if (index === 0) {
-        return [row("Enabled", draft.enabled ? "ON" : "OFF"),
-          draft.enabled
-            ? "an outbound command that sends these files is checked"
-            : "no protection — transcripts and config can be sent out unchecked"];
+        return row("Outbound", `‹ ${outboundLabel()} ›`, focused ? "focus" : "plain", outboundDescription());
       }
-      if (index === 1) return [row("Outbound", outboundLabel()), outboundDescription()];
       if (index === DEST_FIELD()) {
-        const typed = destinationsEditor.getExpandedText().trim();
-        const value = index === selectedField
-          ? valueWithCursor(destinationsEditor, 44)
-          : typed.length > 0 ? typed : "(e.g. archive.internal, 10.0.*)";
-        return [row("Destinations", value, typed.length === 0 && index !== selectedField),
-          "these destinations may receive the files · comma-separated"];
+        // Editor field: no ‹ › chrome. Focused shows the text cursor;
+        // empty and unfocused shows the dim example placeholder.
+        const typed = destinationsEditor.getExpandedText();
+        if (focused) {
+          return row("Destinations", valueWithCursor(destinationsEditor, Math.max(1, width - (2 + LABEL_WIDTH + 2))), "focus",
+            "these destinations may receive the files · comma-separated");
+        }
+        return row("Destinations", typed.trim().length > 0 ? typed : "(e.g. archive.internal, 10.0.*)",
+          typed.trim().length > 0 ? "plain" : "dim",
+          "these destinations may receive the files · comma-separated");
       }
       if (index === fieldCount() - 2) {
-        return [row("Scope mode", draft.mode === "strict" ? "Strict" : draft.mode === "semi-strict" ? "Semi-strict" : "Permissive"),
-          "how a blind send (no verifiable destination) is judged · ←/→ re-presets On refusal"];
+        const modeLabel = draft.mode === "strict" ? "Strict" : draft.mode === "semi-strict" ? "Semi-strict" : "Permissive";
+        return row("Scope mode", `‹ ${modeLabel} ›`, focused ? "focus" : "plain",
+          "how a blind send (no verifiable destination) is judged · ←/→ re-presets On refusal");
       }
-      return [row("On refusal", draft.onRefuse === "block" ? "Block" : "Ask"),
+      return row("On refusal", `‹ ${draft.onRefuse === "block" ? "Block" : "Ask"} ›`, focused ? "focus" : "plain",
         draft.onRefuse === "block"
           ? "Block: the call is refused and the model is told why"
-          : "Ask: you decide — approve releases this call, decline blocks it"];
+          : "Ask: you decide — approve releases this call, decline blocks it");
     };
 
     return {
@@ -237,15 +245,15 @@ export async function openPersistedSecretsEditor(
 
         let focusedDescription = "";
         for (let index = 0; index < fieldCount(); index++) {
-          const cell = fieldRow(index);
+          const cell = fieldRow(width)(index);
           if (!cell) continue;
-          const [text, description, dim] = cell;
-          lines.push(index === selectedField
-            ? theme.fg("accent", truncateToWidth(text, Math.max(1, width)))
-            : dim
-              ? theme.fg("dim", truncateToWidth(text, Math.max(1, width)))
-              : theme.fg("muted", truncateToWidth(text, Math.max(1, width))));
-          if (index === selectedField) focusedDescription = description;
+          const rendered = truncateToWidth(cell.text, Math.max(1, width));
+          lines.push(cell.style === "focus"
+            ? theme.fg("accent", rendered)
+            : cell.style === "dim"
+              ? theme.fg("dim", rendered)
+              : rendered);
+          if (index === selectedField) focusedDescription = cell.description;
         }
         if (focusedDescription) {
           lines.push(...wrappedMaskingText(theme.fg("dim", focusedDescription), width));
