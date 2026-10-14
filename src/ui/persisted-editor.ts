@@ -271,12 +271,12 @@ export async function openPersistedSecretsEditor(
         // never shifts the rows.
         if (exitChoice) {
           lines.push(...wrappedMaskingText(theme.fg("warning", theme.bold("Unsaved changes — what should happen to them?")), width));
-          const choices = ["Save & close", "Discard changes", "Back to editing"];
+          const choices = ["Save & close (S)", "Discard changes (D)", "Back to editing (B)"];
           for (let index = 0; index < choices.length; index++) {
             const choiceRow = `${index === exitChoice.index ? "▶" : " "} ${choices[index]}`;
             lines.push(index === exitChoice.index ? theme.fg("accent", choiceRow) : theme.fg("muted", choiceRow));
           }
-          lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓/←→ select · Enter confirm · S save · D discard · B back"), width));
+          lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓/←→ select · Enter confirm"), width));
         } else if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));
         lines.push("");
         lines.push(...wrappedMaskingText(theme.fg("dim", "↑/↓ field · ←/→ change or edit · S save · Esc finish"), width));

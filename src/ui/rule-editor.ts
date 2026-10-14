@@ -1321,12 +1321,12 @@ export async function addConfigRule(
         if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
         if (exitChoice) {
           lines.push(...wrappedMaskingText(theme.fg("warning", theme.bold("Unsaved changes — what should happen to the draft?")), width));
-          const choices = ["Save & close", "Discard changes", "Back to editing"];
+          const choices = ["Save & close (S)", "Discard changes (D)", "Back to editing (B)"];
           for (let index = 0; index < choices.length; index++) {
             const choiceRow = `${index === exitChoice.index ? "▶" : " "} ${choices[index]}`;
             lines.push(index === exitChoice.index ? theme.fg("accent", choiceRow) : theme.fg("muted", choiceRow));
           }
-          lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓/←→ select · Enter confirm · S save · D discard · B back"), width));
+          lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓/←→ select · Enter confirm"), width));
         } else if (saveMessage) {
           lines.push(...wrappedMaskingText(theme.fg(saveMessage.startsWith("Cannot") ? "warning" : "accent", saveMessage), width));
         }
