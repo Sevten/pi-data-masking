@@ -596,8 +596,8 @@ test("adding a rule keeps the type picker and builder on clean full-screen pages
       assert.ok(detachedPreview.some((line) => line.startsWith("preview-value custom context")), "manual test input should stop exact-value synchronization");
       assert.ok(detachedPreview.some((line) => line.includes("Preview: No values matched")));
       component.handleInput(INPUT.escape);
-      assert.ok(component.render(100).some((line) => line.includes("Discard unsaved changes?")));
-      component.handleInput(INPUT.enter);
+      assert.ok(component.render(100).some((line) => line.includes("Unsaved changes — what should happen to the draft?")), "same-page three-choice exit confirm");
+      component.handleInput("d"); // quick-key discard
     },
   ]);
 
@@ -775,8 +775,8 @@ test("Rule Builder retains a dirty draft after save failure and confirms discard
       assert.ok(component.render(100).some((line) => line.includes("OriginalX")));
 
       component.handleInput(INPUT.escape);
-      assert.ok(component.render(100).some((line) => line.includes("Discard unsaved changes?")));
-      component.handleInput(INPUT.enter);
+      assert.ok(component.render(100).some((line) => line.includes("Unsaved changes — what should happen to the draft?")), "same-page three-choice exit confirm");
+      component.handleInput("d"); // quick-key discard
     },
   ]);
 
@@ -1112,11 +1112,11 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
       // field: typing edits the focused row.
       for (const ch of "archive.corp") editor.handleInput(ch);
       assert.ok(text().includes("archive.corp"), "typed destination renders");
+      // Same-page three-choice exit confirm (Rule Builder behavior);
+      // "Back to editing" is the safe default — quick-key S saves.
       editor.handleInput(INPUT.escape);
-    },
-    async (confirm) => {
-      await waitFor(() => confirm.render(100).some((line) => line.includes("Finish Session history editing")));
-      confirm.handleInput(INPUT.enter);
+      await waitFor(() => text().includes("Unsaved changes — what should happen to them?"));
+      editor.handleInput("s");
     },
   ]);
   try {

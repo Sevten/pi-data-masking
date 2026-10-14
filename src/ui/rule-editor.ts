@@ -469,7 +469,9 @@ export async function addConfigRule(
     let saveWarnings: string[] = [];
     let warningSignature = "";
     let saving = false;
-    let discardConfirmation = false;
+    /** Same-page exit confirmation: three choices, arrow-key navigable,
+     *  S/D/B quick keys — mirrors the vault editor. */
+    let exitChoice: { index: number } | null = null;
     let builderType: BuilderType = selectedType;
     let replacementIndex = editing && editing.initial.placeholder !== undefined && editing.initial.placeholder !== "auto" ? 1 : 0;
     // Disclosure preference for literal rules: off is the default; the
@@ -511,7 +513,7 @@ export async function addConfigRule(
         saveMessage = "";
         saveWarnings = [];
         warningSignature = "";
-        discardConfirmation = false;
+        exitChoice = null;
         afterChange?.(text);
         tui.requestRender();
       };
@@ -1283,11 +1285,19 @@ export async function addConfigRule(
             renderSelector(lines, "scopeMode", "Scope mode",
               scopeMode === "strict" ? "Strict" : scopeMode === "semi-strict" ? "Semi-strict" : "Permissive",
               width,
-              "Strict restores only verified destinations · Semi-strict also allows local use · Permissive also restores unverifiable outbound, with a warning");
+              "←/→ or Space switches how a send without a verifiable destination is judged · "
+              + (scopeMode === "strict"
+                ? "Strict: only verified destinations"
+                : scopeMode === "semi-strict"
+                  ? "Semi-strict: also allows local use — outbound still needs a verifiable destination"
+                  : "Permissive: also allows unverifiable outbound, with a warning"));
             renderSelector(lines, "scopeRefuse", "On refusal",
               scopeRefuse === "block" ? "Block" : "Ask",
               width,
-              "Block: the call is refused and the model is told why · Ask: you decide — approve releases this call, decline blocks it");
+              "←/→ or Space switches what happens when a check refuses · "
+              + (scopeRefuse === "block"
+                ? "Block: the call is refused and the model is told why"
+                : "Ask: you decide — approve releases this call, decline blocks it"));
           }
           const fixedFieldRowCount = 10;
           while (lines.length - fieldRowsStart < fixedFieldRowCount) lines.push("");
@@ -1309,7 +1319,15 @@ export async function addConfigRule(
         lines.push(theme.fg(preview.count > 0 ? "accent" : "muted", `Preview: ${status}`));
         for (const line of preview.text.split("\n").slice(0, 2)) if (line) lines.push(line);
         if (preview.count > 0) lines.push(theme.fg("muted", `Matched: ${preview.attribution}`));
-        if (saveMessage) {
+        if (exitChoice) {
+          lines.push(...wrappedMaskingText(theme.fg("warning", theme.bold("Unsaved changes — what should happen to the draft?")), width));
+          const choices = ["Save & close", "Discard changes", "Back to editing"];
+          for (let index = 0; index < choices.length; index++) {
+            const choiceRow = `${index === exitChoice.index ? "▶" : " "} ${choices[index]}`;
+            lines.push(index === exitChoice.index ? theme.fg("accent", choiceRow) : theme.fg("muted", choiceRow));
+          }
+          lines.push(...wrappedMaskingText(theme.fg("dim", "←→ select · Enter confirm · S save · D discard · B back"), width));
+        } else if (saveMessage) {
           lines.push(...wrappedMaskingText(theme.fg(saveMessage.startsWith("Cannot") ? "warning" : "accent", saveMessage), width));
         }
         for (const warning of saveWarnings.slice(0, 3)) {
@@ -1327,25 +1345,42 @@ export async function addConfigRule(
       invalidate: () => Object.values(editors).forEach((editor) => editor.invalidate()),
       handleInput: (data) => {
         if (saving) return;
-        if (discardConfirmation) {
-          if (matchesKey(data, "y") || keybindings.matches(data, "tui.select.confirm")) {
-            done(undefined);
-          } else if (
-            matchesKey(data, "n")
-            || keybindings.matches(data, "tui.select.cancel")
-            || keybindings.matches(data, "app.interrupt")
-          ) {
-            discardConfirmation = false;
-            saveMessage = "Editing resumed";
+        if (exitChoice) {
+          const pick = (index: number): void => {
+            if (index === 0) {
+              exitChoice = null;
+              void attemptSave();
+            } else if (index === 1) {
+              done(undefined);
+            } else {
+              exitChoice = null;
+              saveMessage = "Editing resumed";
+              tui.requestRender();
+            }
+          };
+          if (matchesKey(data, Key.left)) {
+            exitChoice.index = (exitChoice.index + 2) % 3;
             tui.requestRender();
+          } else if (matchesKey(data, Key.right)) {
+            exitChoice.index = (exitChoice.index + 1) % 3;
+            tui.requestRender();
+          } else if (keybindings.matches(data, "tui.select.confirm")) {
+            pick(exitChoice.index);
+          } else if (typeof data === "string" && data.length === 1) {
+            const key = data.toLowerCase();
+            if (key === "s") pick(0);
+            else if (key === "d") pick(1);
+            else if (key === "b" || matchesKey(data, Key.escape)) pick(2);
+          } else if (matchesKey(data, Key.escape)) {
+            pick(2);
           }
           return;
         }
         if (keybindings.matches(data, "tui.select.cancel") || keybindings.matches(data, "app.interrupt")) {
           if (draftSignature() === initialDraftSignature) done(undefined);
           else {
-            discardConfirmation = true;
-            saveMessage = "Discard unsaved changes? Y / Enter discard · N / Esc continue editing";
+            exitChoice = { index: 2 };
+            saveMessage = "";
             tui.requestRender();
           }
           return;

@@ -66,6 +66,9 @@ export async function openPersistedSecretsEditor(
   let selectedField = 0;
   let exiting = false;
   let message = "";
+  /** Same-page exit confirmation: three choices, arrow-key navigable,
+   *  S/D/B quick keys — mirrors the Rule Builder. */
+  let exitChoice: { index: number } | null = null;
 
   return await ctx.ui.custom<boolean>((tui, theme, keybindings, done) => {
     const editorTheme: EditorTheme = {
@@ -92,7 +95,12 @@ export async function openPersistedSecretsEditor(
     const outboundLabel = (value: Outbound = outbound): string =>
       value === "never" ? "Never" : value === "listed" ? "Listed only" : "Anywhere";
     const outboundDescription = (): string =>
-      "←/→ or Space switches where these files may be sent · Anywhere: no destination checks · Listed only: sends must name a destination from the list below · Never: the files may never be sent outbound";
+      "←/→ or Space switches where these files may be sent · "
+      + (outbound === "anywhere"
+        ? "Anywhere: no destination checks — Scope mode still governs blind sends"
+        : outbound === "listed"
+          ? "Listed only: sends must name a destination from the list below"
+          : "Never: the files may never be sent outbound");
     const OUTBOUND_CYCLE: Outbound[] = ["anywhere", "listed", "never"];
 
     function setOutbound(next: Outbound): void {
@@ -120,49 +128,44 @@ export async function openPersistedSecretsEditor(
         done(false);
         return;
       }
+      exitChoice = { index: 2 };
+      message = payloadDestinations.length !== original.destinations.length
+        || payloadDestinations.some((host, index) => host !== original.destinations[index])
+        ? `Staged · outbound ${outboundLabel()} · written to the global config on save`
+        : "Staged · written to the global config on save";
+      refresh();
+    }
+
+    async function saveDraft(): Promise<void> {
       exiting = true;
-      const summary: string[] = [];
-      if (outboundLabel() !== outboundLabel(outboundOf(original.destinations))) {
-        summary.push(`outbound ${outboundLabel()}`);
-      }
-      if (draft.mode !== original.mode) summary.push(`mode ${original.mode} → ${draft.mode}`);
-      if (draft.onRefuse !== original.onRefuse) summary.push(`on refusal ${original.onRefuse} → ${draft.onRefuse}`);
-      if (payloadDestinations.length !== original.destinations.length
-        || payloadDestinations.some((host, index) => host !== original.destinations[index])) {
-        summary.push(`outbound ${outboundLabel()} · ${payloadDestinations.length} destination(s)`);
-      }
-      const choice = await selectMaskingOption(
+      const result = await saveConfigOptionsUI(
+        bridge,
         ctx,
-        "Finish Session history editing",
-        ["Save & close", "Discard changes", "Back to editing"],
-        `${summary.join(" · ") || "updated"} · written to the global config (${GLOBAL_CONFIG_PATH}).`,
+        { persistedSecrets: { ...draft, destinations: destinationsPayload() } },
+        { scope: "global" as ConfigScope, path: GLOBAL_CONFIG_PATH },
       );
-      if (choice === "Save & close") {
-        const result = await saveConfigOptionsUI(
-          bridge,
-          ctx,
-          { persistedSecrets: { ...draft, destinations: payloadDestinations } },
-          { scope: "global" as ConfigScope, path: GLOBAL_CONFIG_PATH },
-        );
-        if (result.saved) {
-          done(true);
-          return;
-        }
-        exiting = false;
-        message = "Save failed · changes remain staged";
-        refresh();
+      if (result.saved) {
+        done(true);
         return;
       }
-      if (choice === "Discard changes") {
-        draft.mode = original.mode;
-        draft.onRefuse = original.onRefuse;
-        draft.destinations = outboundOf(original.destinations) === "listed" ? [...original.destinations] : draft.destinations;
-        outbound = outboundOf(original.destinations);
+      exiting = false;
+      exitChoice = null;
+      message = "Save failed · changes remain staged";
+      refresh();
+    }
+
+    function pickExitChoice(index: number): void {
+      if (index === 0) {
+        void saveDraft();
+        return;
+      }
+      if (index === 1) {
         done(false);
         return;
       }
       exiting = false;
-      message = "";
+      exitChoice = null;
+      message = "Editing resumed";
       refresh();
     }
 
@@ -224,10 +227,18 @@ export async function openPersistedSecretsEditor(
       if (index === fieldCount() - 2) {
         const modeLabel = draft.mode === "strict" ? "Strict" : draft.mode === "semi-strict" ? "Semi-strict" : "Permissive";
         return row("Scope mode", `‹ ${modeLabel} ›`, focused ? "focus" : "plain",
-          "←/→ or Space switches how a send without a verifiable destination is judged · Strict: only verified destinations · Semi-strict: also allows local use · Permissive: also allows unverifiable outbound, with a warning");
+          "←/→ or Space switches how a send without a verifiable destination is judged · "
+          + (draft.mode === "strict"
+            ? "Strict: only verified destinations"
+            : draft.mode === "semi-strict"
+              ? "Semi-strict: also allows local use — outbound still needs a verifiable destination"
+              : "Permissive: also allows unverifiable outbound, with a warning"));
       }
       return row("On refusal", `‹ ${draft.onRefuse === "block" ? "Block" : "Ask"} ›`, focused ? "focus" : "plain",
-        "←/→ or Space switches what happens when a check refuses · Block: the call is refused and the model is told why · Ask: you decide — approve releases this call, decline blocks it");
+        "←/→ or Space switches what happens when a check refuses · "
+        + (draft.onRefuse === "block"
+          ? "Block: the call is refused and the model is told why"
+          : "Ask: you decide — approve releases this call, decline blocks it"));
     };
 
     return {
@@ -258,7 +269,15 @@ export async function openPersistedSecretsEditor(
         }
         // Staged-change notices render below the field block so navigation
         // never shifts the rows.
-        if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));
+        if (exitChoice) {
+          lines.push(...wrappedMaskingText(theme.fg("warning", theme.bold("Unsaved changes — what should happen to them?")), width));
+          const choices = ["Save & close", "Discard changes", "Back to editing"];
+          for (let index = 0; index < choices.length; index++) {
+            const choiceRow = `${index === exitChoice.index ? "▶" : " "} ${choices[index]}`;
+            lines.push(index === exitChoice.index ? theme.fg("accent", choiceRow) : theme.fg("muted", choiceRow));
+          }
+          lines.push(...wrappedMaskingText(theme.fg("dim", "←→ select · Enter confirm · S save · D discard · B back"), width));
+        } else if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));
         lines.push("");
         lines.push(...wrappedMaskingText(theme.fg("dim", "↑/↓ field · ←/→ change or edit · S save · Esc finish"), width));
         return fillMaskingScreen(lines, width, tui.terminal.rows);
@@ -273,6 +292,29 @@ export async function openPersistedSecretsEditor(
         // Field mode. Esc always finishes; ↑/↓ always navigate; everything
         // else depends on the focused field — editors own their keys (Rule
         // Builder behavior), selector rows cycle on ←/→/Space.
+        if (exitChoice) {
+          const leftRight = matchesKey(data, Key.left) || matchesKey(data, Key.right);
+          if (leftRight) {
+            exitChoice.index = matchesKey(data, Key.left)
+              ? (exitChoice.index + 2) % 3
+              : (exitChoice.index + 1) % 3;
+            refresh();
+            return;
+          }
+          if (keybindings.matches(data, "tui.select.confirm")) {
+            pickExitChoice(exitChoice.index);
+            return;
+          }
+          if (typeof data === "string" && data.length === 1) {
+            const key = data.toLowerCase();
+            if (key === "s") pickExitChoice(0);
+            else if (key === "d") pickExitChoice(1);
+            else if (key === "b") pickExitChoice(2);
+          } else if (matchesKey(data, Key.escape)) {
+            pickExitChoice(2);
+          }
+          return;
+        }
         if (escape) {
           void finish();
           return;
