@@ -1106,7 +1106,11 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
       assert.ok(text().includes("Anywhere"), "right from Never wraps to Anywhere like the Rule Builder cycle");
       editor.handleInput(INPUT.right);
       assert.ok(text().includes("Listed only"), "outbound staged; the cursor jumped to Destinations");
+      // The empty unfocused field shows the dim example placeholder (focused
+      // shows the text cursor instead, like the Rule Builder).
+      editor.handleInput(INPUT.down);
       assert.ok(text().includes("(e.g. archive.internal, 10.0.*)"), "empty field shows the dim example placeholder");
+      editor.handleInput(INPUT.up);
       // Inline comma-list input, exactly like the Rule Builder Destinations
       // field: typing edits the focused row.
       for (const ch of "archive.corp") editor.handleInput(ch);

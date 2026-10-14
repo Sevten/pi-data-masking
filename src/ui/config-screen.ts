@@ -561,9 +561,12 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           // same as rule rows; the vault lives in the global config.
           const text = `${cursor} ‹ ${slot} › ${"—".padStart(5)}  ${"global".padEnd(7)}  ${"builtin".padEnd(7)}  Session history${pending ? ` · ${pending}` : ""}`;
           const clipped = truncateToWidth(text, Math.max(1, width));
-          return homeFocus === "rules" && selectedIndex === 0
+          // Rule-row color logic: selected → accent; enabled → normal;
+          // disabled or unfocused zone → dim.
+          if (homeFocus !== "rules") return theme.fg("dim", clipped);
+          return selectedIndex === 0
             ? theme.fg("accent", clipped)
-            : theme.fg("dim", clipped);
+            : vaultOptions.enabled ? clipped : theme.fg("dim", clipped);
         };
         /** Vault detail rows, mimicking the rule detail block style. */
         const vaultDetailRows = (): string[] => {

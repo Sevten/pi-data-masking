@@ -193,10 +193,12 @@ export async function openPersistedSecretsEditor(
 
     /** The description rows render once below the field rows (Rule Builder
      *  pattern): navigation never shifts the field rows themselves. */
-    const fieldRow = (index: number): [string, string] | null => {
+    const fieldRow = (index: number): [string, string, boolean?] | null => {
       const marker = index === selectedField ? "▶" : " ";
-      const row = (label: string, value: string): string =>
-        `${marker} ${label.padEnd(LABEL_WIDTH)}  ‹ ${value} ›`;
+      const row = (label: string, value: string, dim = false): string =>
+        dim
+          ? `${marker} ${label.padEnd(LABEL_WIDTH)}  ${value}`
+          : `${marker} ${label.padEnd(LABEL_WIDTH)}  ‹ ${value} ›`;
       if (index === 0) {
         return [row("Enabled", draft.enabled ? "ON" : "OFF"),
           draft.enabled
@@ -206,13 +208,11 @@ export async function openPersistedSecretsEditor(
       if (index === 1) return [row("Outbound", outboundLabel()), outboundDescription()];
       if (index === DEST_FIELD()) {
         const typed = destinationsEditor.getExpandedText().trim();
-        const value = typed.length > 0
-          ? (index === selectedField
-            ? valueWithCursor(destinationsEditor, 44)
-            : typed)
-          : "(e.g. archive.internal, 10.0.*)";
-        return [row("Destinations", value),
-          "these destinations may receive the files · comma-separated · ←→ edit"];
+        const value = index === selectedField
+          ? valueWithCursor(destinationsEditor, 44)
+          : typed.length > 0 ? typed : "(e.g. archive.internal, 10.0.*)";
+        return [row("Destinations", value, typed.length === 0 && index !== selectedField),
+          "these destinations may receive the files · comma-separated"];
       }
       if (index === fieldCount() - 2) {
         return [row("Scope mode", draft.mode === "strict" ? "Strict" : draft.mode === "semi-strict" ? "Semi-strict" : "Permissive"),
@@ -229,26 +229,30 @@ export async function openPersistedSecretsEditor(
         const lines: string[] = [
           theme.fg("accent", theme.bold("SESSION HISTORY · built-in protection")),
           ...wrappedMaskingText(
-            theme.fg("dim", "Watches the pi sessions directory (transcripts keep restored values verbatim) and the masking config (every rule's real value). Local reads stay allowed; outbound sends are checked."),
+            theme.fg("dim", "Protects the two files where your secrets sit in plain text: the session transcripts and the masking config that stores every rule's real value. Reading them locally is always allowed; sending them anywhere else is checked."),
             width,
           ),
         ];
-        if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));
         lines.push("");
 
         let focusedDescription = "";
         for (let index = 0; index < fieldCount(); index++) {
           const cell = fieldRow(index);
           if (!cell) continue;
-          const [text, description] = cell;
+          const [text, description, dim] = cell;
           lines.push(index === selectedField
             ? theme.fg("accent", truncateToWidth(text, Math.max(1, width)))
-            : theme.fg("muted", truncateToWidth(text, Math.max(1, width))));
+            : dim
+              ? theme.fg("dim", truncateToWidth(text, Math.max(1, width)))
+              : theme.fg("muted", truncateToWidth(text, Math.max(1, width))));
           if (index === selectedField) focusedDescription = description;
         }
         if (focusedDescription) {
           lines.push(...wrappedMaskingText(theme.fg("dim", focusedDescription), width));
         }
+        // Staged-change notices render below the field block so navigation
+        // never shifts the rows.
+        if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));
         lines.push("");
         lines.push(...wrappedMaskingText(theme.fg("dim", "↑/↓ field · ←/→ change or edit · S save · Esc finish"), width));
         return fillMaskingScreen(lines, width, tui.terminal.rows);
