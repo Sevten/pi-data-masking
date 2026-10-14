@@ -92,34 +92,30 @@ export async function openPersistedSecretsEditor(
     const outboundLabel = (value: Outbound = outbound): string =>
       value === "never" ? "Never" : value === "listed" ? "Listed only" : "Anywhere";
     const outboundDescription = (): string =>
-      outbound === "anywhere"
-        ? "Anywhere: outbound sends are not destination-checked · Scope mode still governs blind sends"
-        : outbound === "listed"
-          ? "Listed only: outbound sends require a destination from the list below"
-          : "Never: the files may never be sent outbound · whether local use is allowed is set by Scope mode";
+      "←/→ or Space switches where these files may be sent · Anywhere: no destination checks · Listed only: sends must name a destination from the list below · Never: the files may never be sent outbound";
     const OUTBOUND_CYCLE: Outbound[] = ["anywhere", "listed", "never"];
 
     function setOutbound(next: Outbound): void {
       if (next === outbound) return;
-      if (outbound === "listed") stashedDestinations = [...draft.destinations];
+      // Rule-editor behavior: the plain destination list is kept as-is and
+      // simply hidden while Outbound is not Listed only; the cursor stays
+      // on the Outbound row.
       outbound = next;
-      draft.destinations = next === "listed"
-        ? [...stashedDestinations]
-        : next === "anywhere" ? ["*"] : [];
-      destinationsEditor.setText(draft.destinations.join(", "));
-      if (next === "listed") {
-        stashedDestinations = [];
-        selectedField = DEST_FIELD();
-      }
       message = "Staged";
       refresh();
     }
 
+    /** The destinations payload for the current selector state: the typed
+     *  list when Listed only, [] for Never, ["*"] for Anywhere. */
+    const destinationsPayload = (): string[] =>
+      outbound === "listed" ? draft.destinations : outbound === "anywhere" ? ["*"] : [];
+
     async function finish(): Promise<void> {
+      const payloadDestinations = destinationsPayload();
       const changed = draft.mode !== original.mode
         || draft.onRefuse !== original.onRefuse
-        || draft.destinations.length !== original.destinations.length
-        || draft.destinations.some((host, index) => host !== original.destinations[index]);
+        || payloadDestinations.length !== original.destinations.length
+        || payloadDestinations.some((host, index) => host !== original.destinations[index]);
       if (!changed) {
         done(false);
         return;
@@ -131,9 +127,9 @@ export async function openPersistedSecretsEditor(
       }
       if (draft.mode !== original.mode) summary.push(`mode ${original.mode} → ${draft.mode}`);
       if (draft.onRefuse !== original.onRefuse) summary.push(`on refusal ${original.onRefuse} → ${draft.onRefuse}`);
-      if (draft.destinations.length !== original.destinations.length
-        || draft.destinations.some((host, index) => host !== original.destinations[index])) {
-        summary.push(`${draft.destinations.length} destination(s)`);
+      if (payloadDestinations.length !== original.destinations.length
+        || payloadDestinations.some((host, index) => host !== original.destinations[index])) {
+        summary.push(`outbound ${outboundLabel()} · ${payloadDestinations.length} destination(s)`);
       }
       const choice = await selectMaskingOption(
         ctx,
@@ -142,7 +138,12 @@ export async function openPersistedSecretsEditor(
         `${summary.join(" · ") || "updated"} · written to the global config (${GLOBAL_CONFIG_PATH}).`,
       );
       if (choice === "Save & close") {
-        const result = await saveConfigOptionsUI(bridge, ctx, { persistedSecrets: { ...draft } }, { scope: "global" as ConfigScope, path: GLOBAL_CONFIG_PATH });
+        const result = await saveConfigOptionsUI(
+          bridge,
+          ctx,
+          { persistedSecrets: { ...draft, destinations: payloadDestinations } },
+          { scope: "global" as ConfigScope, path: GLOBAL_CONFIG_PATH },
+        );
         if (result.saved) {
           done(true);
           return;
@@ -155,9 +156,8 @@ export async function openPersistedSecretsEditor(
       if (choice === "Discard changes") {
         draft.mode = original.mode;
         draft.onRefuse = original.onRefuse;
-        draft.destinations = [...original.destinations];
-        outbound = outboundOf(draft.destinations);
-        destinationsEditor.setText(draft.destinations.join(", "));
+        draft.destinations = outboundOf(original.destinations) === "listed" ? [...original.destinations] : draft.destinations;
+        outbound = outboundOf(original.destinations);
         done(false);
         return;
       }
@@ -215,21 +215,19 @@ export async function openPersistedSecretsEditor(
         const typed = destinationsEditor.getExpandedText();
         if (focused) {
           return row("Destinations", valueWithCursor(destinationsEditor, Math.max(1, width - (2 + LABEL_WIDTH + 2))), "focus",
-            "these destinations may receive the files · comma-separated");
+            "Destinations these files may be sent to, comma-separated: domains (suffix match — archive.internal covers logs.archive.internal), IP literals, wildcards (*.internal.acme.com, 10.0.*)");
         }
         return row("Destinations", typed.trim().length > 0 ? typed : "(e.g. archive.internal, 10.0.*)",
           typed.trim().length > 0 ? "plain" : "dim",
-          "these destinations may receive the files · comma-separated");
+          "Destinations these files may be sent to, comma-separated: domains (suffix match — archive.internal covers logs.archive.internal), IP literals, wildcards (*.internal.acme.com, 10.0.*)");
       }
       if (index === fieldCount() - 2) {
         const modeLabel = draft.mode === "strict" ? "Strict" : draft.mode === "semi-strict" ? "Semi-strict" : "Permissive";
         return row("Scope mode", `‹ ${modeLabel} ›`, focused ? "focus" : "plain",
-          "how a blind send (no verifiable destination) is judged · ←/→ re-presets On refusal");
+          "←/→ or Space switches how a send without a verifiable destination is judged · Strict: only verified destinations · Semi-strict: also allows local use · Permissive: also allows unverifiable outbound, with a warning");
       }
       return row("On refusal", `‹ ${draft.onRefuse === "block" ? "Block" : "Ask"} ›`, focused ? "focus" : "plain",
-        draft.onRefuse === "block"
-          ? "Block: the call is refused and the model is told why"
-          : "Ask: you decide — approve releases this call, decline blocks it");
+        "←/→ or Space switches what happens when a check refuses · Block: the call is refused and the model is told why · Ask: you decide — approve releases this call, decline blocks it");
     };
 
     return {
