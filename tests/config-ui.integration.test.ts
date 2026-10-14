@@ -213,12 +213,15 @@ test("configuration home toggles and reorders in place while retaining selection
     component.handleInput(INPUT.pageDown);
     assert.ok(component.render(100).some((line) => line.startsWith("▶ ＋ Add new rule")));
     component.handleInput(INPUT.pageUp);
+    assert.ok(component.render(100).some((line) => line.startsWith("› [") && line.includes("Session history")), "pageUp lands on the vault row");
+    component.handleInput(INPUT.down);
     assert.ok(component.render(100).some((line) => line.startsWith("›") && line.includes("First rule")));
     assert.ok(component.render(100).includes("Exact value: <hidden> · R to show"));
     component.handleInput(INPUT.end);
     assert.ok(component.render(100).some((line) => line.startsWith("▶ ＋ Add new rule")));
     component.handleInput(INPUT.home);
-    assert.ok(component.render(100).some((line) => line.startsWith("›") && line.includes("First rule")));
+    assert.ok(component.render(100).some((line) => line.startsWith("› [") && line.includes("Session history")), "home lands on the vault row");
+    component.handleInput(INPUT.down);
     component.handleInput("r");
     assert.ok(component.render(100).includes('Exact value: first-secret-value'));
     // Make the session's model-bound context actually contain masked
@@ -321,22 +324,26 @@ test("rules zone title carries the cursor position and the filtered total", asyn
 
   const harness = await createHarness(dir, [async (component) => {
     const zoneLine = () => component.render(100).find((line) => line.includes("RULES · focused")) ?? "";
-    assert.ok(zoneLine().endsWith("(1/3)"), "cursor position · list size, the Add row counted as a list row");
-    assert.match(zoneLine(), /RULES · focused \(1\/3\)/, "counter sits next to the zone title");
+    assert.ok(zoneLine().endsWith("(2/4)"), "cursor starts on the first rule; vault + rules + Add all count");
+    component.handleInput(INPUT.up);
+    assert.ok(zoneLine().endsWith("(1/4)"), "the vault row is row 1 and reachable");
     component.handleInput(INPUT.down);
-    assert.ok(zoneLine().endsWith("(2/3)"));
+    assert.ok(zoneLine().endsWith("(2/4)"));
     component.handleInput(INPUT.down);
-    assert.ok(zoneLine().endsWith("(3/3)"), "the Add row is a reachable row");
+    assert.ok(zoneLine().endsWith("(3/4)"));
+    component.handleInput(INPUT.down);
+    assert.ok(zoneLine().endsWith("(4/4)"), "the Add row is a reachable row");
     component.handleInput(INPUT.pageUp);
-    assert.ok(zoneLine().endsWith("(1/3)"));
+    assert.ok(zoneLine().endsWith("(1/4)"));
     // The total is the filtered count, not the configured count: enabled and
-    // disabled each keep one of the two rules, project keeps both.
-    component.handleInput("f");
-    assert.ok(zoneLine().endsWith("(1/2)"));
-    component.handleInput("f");
-    assert.ok(zoneLine().endsWith("(1/2)"));
+    // disabled each keep one of the two rules, project keeps both. Filter
+    // changes reset the cursor to the top (the vault row).
     component.handleInput("f");
     assert.ok(zoneLine().endsWith("(1/3)"));
+    component.handleInput("f");
+    assert.ok(zoneLine().endsWith("(1/3)"));
+    component.handleInput("f");
+    assert.ok(zoneLine().endsWith("(1/4)"));
     component.handleInput("f");
     assert.ok(component.render(100).some((line) => line.includes("No rules match")));
     assert.equal(zoneLine().includes("("), false, "no counter when nothing is listed");

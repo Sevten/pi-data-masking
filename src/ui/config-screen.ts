@@ -96,7 +96,10 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
     | { kind: "import" | "export" | "help" };
   await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
     let screenRules = bridge.effectiveConfig().configuredRules;
-    let selectedIndex = 0;
+    // Row 0 is the built-in Session history vault; with rules present the
+    // cursor starts on the first rule (the common target), otherwise on
+    // the vault itself.
+    let selectedIndex = screenRules.length > 0 ? 1 : 0;
     let scrollOffset = 0;
     let rulePageSize = 1;
     let searchMode = false;
@@ -151,12 +154,13 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       const retainedIndex = visibleRules().findIndex(
         (configured) => configuredRuleStableKey(configured) === selectedRuleKey,
       );
-      if (retainedIndex >= 0) selectedIndex = retainedIndex;
+      // Row 0 is the vault; rules shift down by one.
+      if (retainedIndex >= 0) selectedIndex = retainedIndex + 1;
     }
 
     function refresh(): void {
       const visible = visibleRules();
-      selectedIndex = Math.max(0, Math.min(selectedIndex, visible.length));
+      selectedIndex = Math.max(0, Math.min(selectedIndex, visible.length + 1));
       tui.requestRender();
     }
 
@@ -171,8 +175,8 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       const retainedIndex = visibleRules().findIndex(
         (configured) => configuredRuleStableKey(configured) === stableKey,
       );
-      if (retainedIndex >= 0) selectedIndex = retainedIndex;
-      else selectedIndex = Math.max(0, Math.min(selectedIndex, visibleRules().length));
+      if (retainedIndex >= 0) selectedIndex = retainedIndex + 1;
+      else selectedIndex = Math.max(0, Math.min(selectedIndex, visibleRules().length + 1));
     }
 
     /** Inline second confirmation for disabling global masking: rendered
@@ -418,18 +422,14 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             || JSON.stringify(options.allowlist ?? []) !== JSON.stringify(activeOptions.allowlist ?? []))
           ? " · activates next run" : "";
         const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
-        // Pinned vault entry: the built-in persisted-secrets protection is
-        // not a rule row (no pattern, not deletable) but lives visually at
-        // the top of the rules zone, edited with V.
+        // The vault row is row 0 of the rules list: selectable, Enter opens
+        // its editor — same navigation model as every rule row. It has no
+        // pattern and cannot be deleted or reordered, so ORDER shows “—”.
         const vaultOptions = bridge.effectiveConfig().options.persistedSecrets;
-        const vaultLine = truncateToWidth(
-          `📌 Session history · built-in · ${vaultOptions.enabled ? vaultOptions.mode : "off"} · ${vaultOptions.destinations.length === 0 ? "never outbound" : `${vaultOptions.destinations.length} destination(s)`} · V edit`,
-          Math.max(1, width),
-        );
         // The navigation cluster leads the bar because the list scrolls
         // silently; it carries no label, which also keeps the narrow-width
         // wrap of every following pair intact.
-        const browseHints = wrappedMaskingText(theme.fg("dim", `↑↓/PgUp/PgDn · Enter edit · F2 JSON · ←/→ or Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · V session history · Tab zone · M masking · H help · Esc close`), width);
+        const browseHints = wrappedMaskingText(theme.fg("dim", `↑↓/PgUp/PgDn · Enter edit · F2 JSON · ←/→ or Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
         const settingsDivider = theme.fg(homeFocus === "settings" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
         const settingRow = (index: number, label: string, value: boolean | string | number, description: string, cell?: string): string => {
           const selected = homeFocus === "settings" && index === settingsIndex;
@@ -512,7 +512,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           ? theme.fg("accent", theme.bold("RULES · focused"))
           : theme.fg("muted", "RULES · Tab to focus");
         const rulesZoneCount = visibleRulesNow.length > 0
-          ? theme.fg("dim", ` (${Math.min(selectedIndex, visibleRulesNow.length) + 1}/${visibleRulesNow.length + 1})`)
+          ? theme.fg("dim", ` (${Math.min(selectedIndex, visibleRulesNow.length + 1) + 1}/${visibleRulesNow.length + 2})`)
           : "";
         const rulesZoneLine = truncateToWidth(`${rulesZoneTitle}${rulesZoneCount}`, Math.max(1, width));
         const lines: string[] = [
@@ -523,10 +523,24 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           "",
           rulesZoneLine,
           rulesDivider,
-          homeFocus === "rules" ? vaultLine : theme.fg("dim", vaultLine),
         ];
 
+        const vaultRowLine = (): string => {
+          const stateLabel = vaultOptions.enabled ? "ON" : "OFF";
+          const pad = Math.max(0, 4 - stateLabel.length);
+          const slot = " ".repeat(Math.ceil(pad / 2)) + stateLabel + " ".repeat(Math.floor(pad / 2));
+          const destinationLabel = vaultOptions.destinations.length === 0
+            ? "never outbound"
+            : `${vaultOptions.destinations.length} destination(s)`;
+          const cursor = selectedIndex === 0 && homeFocus === "rules" ? "›" : " ";
+          const text = `${cursor} [ ${slot} ]     —  ${vaultOptions.enabled ? vaultOptions.mode : "off"}  built-in  Session history · ${destinationLabel}`;
+          const clipped = truncateToWidth(text, Math.max(1, width));
+          return homeFocus === "rules" && selectedIndex === 0
+            ? theme.fg("accent", clipped)
+            : theme.fg("dim", clipped);
+        };
         if (screenRules.length === 0) {
+          lines.push(vaultRowLine());
           lines.push(theme.fg("warning", "No rules are configured."));
           lines.push(theme.fg("muted", "Create or edit one of these files:"));
           lines.push(...wrappedMaskingText(theme.fg("dim", `  project  ${getProjectConfigPath(ctx.cwd)}`), width));
@@ -535,13 +549,14 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           lines.push(...wrappedMaskingText(theme.fg("accent", "Choose Add new rule; its Scope creates the project or global config when saved."), width));
           lines.push("", theme.fg("accent", "▶ ＋ Add new rule"));
         } else if (visibleRulesNow.length === 0) {
+          lines.push(vaultRowLine());
           lines.push(theme.fg("warning", "No rules match the current filter/search."));
           lines.push("", theme.fg("accent", "▶ ＋ Add new rule"));
         } else {
           const header = `  ${"STATE".padEnd(6)} ${"ORDER".padStart(5)}  ${"SCOPE".padEnd(7)}  ${"TYPE".padEnd(7)}  NAME`;
           lines.push(theme.fg("dim", truncateToWidth(header, Math.max(1, width))));
           const reservedRows = 21 + settingsLines.length + confirmDisableLines.length + browseHints.length;
-          const rowCount = visibleRulesNow.length + 1;
+          const rowCount = visibleRulesNow.length + 2;
           listRendered = true;
           listExtraCap = rowCount - (tui.terminal.rows - reservedRows);
           const listHeight = Math.max(3, Math.min(rowCount, tui.terminal.rows - reservedRows + listExtraRows));
@@ -549,14 +564,20 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           keepSelectedVisible(listHeight, rowCount);
           const endIndex = Math.min(rowCount, scrollOffset + listHeight);
           for (let absoluteIndex = scrollOffset; absoluteIndex < endIndex; absoluteIndex++) {
-            if (absoluteIndex === visibleRulesNow.length) {
+            if (absoluteIndex === visibleRulesNow.length + 1) {
               const addRow = `${absoluteIndex === selectedIndex ? "▶" : " "} ＋ Add new rule`;
               lines.push(homeFocus !== "rules"
                 ? theme.fg("dim", addRow)
                 : absoluteIndex === selectedIndex ? theme.fg("accent", addRow) : theme.fg("muted", addRow));
               continue;
             }
-            const configured = visibleRulesNow[absoluteIndex]!;
+            if (absoluteIndex === 0) {
+              // Vault: same columns as a rule row; brackets mark a built-in
+              // (toggle lives in its editor), ORDER “—”, TYPE “built-in”.
+              lines.push(vaultRowLine());
+              continue;
+            }
+            const configured = visibleRulesNow[absoluteIndex - 1]!;
             const enabled = configured.enabled;
             const cursor = absoluteIndex === selectedIndex ? "›" : " ";
             const stateLabel = !enabled ? "OFF" : configured.available ? "ON" : "WAIT";
@@ -569,8 +590,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             const state = stateLabel === "WAIT" ? "[WAIT]" : `‹ ${stateSlot(stateLabel)} ›`;
             const priority = screenRules.indexOf(configured) + 1;
             const displayName = configuredRuleDisplayName(configured) + rulePendingHint(configured);
-            const text = `${cursor} ${state} ${String(priority).padStart(5)}  ${configured.scope.padEnd(7)}  ${configuredRuleKind(configured).padEnd(7)}  ${displayName}`;
-            const clipped = truncateToWidth(text, Math.max(1, width));
+            const text = `${cursor} ${state} ${String(priority).padStart(5)}  ${configured.scope.padEnd(7)}  ${configuredRuleKind(configured).padEnd(7)}  ${displayName}`;            const clipped = truncateToWidth(text, Math.max(1, width));
             lines.push(homeFocus !== "rules"
               ? theme.fg("dim", clipped)
               : absoluteIndex === selectedIndex
@@ -591,7 +611,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           // Keep details outside the list dividers and reserve a fixed block
           // so exact/env/regex/preset rows never move the test panel.
           const detailRowCount = 5;
-          const selected = visibleRulesNow[selectedIndex];
+          const selected = visibleRulesNow[selectedIndex - 1];
           const details = selected
             ? configuredRuleDetail(selected, showExactValues, bridge.config().options.disclosePlaceholders, (text) => theme.fg("dim", text))
             : [];
@@ -819,8 +839,14 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         }
 
         const visible = visibleRules();
-        const selected = visible[selectedIndex];
+        // Row 0 is the vault; a rule is only selected from index 1 on.
+        const vaultSelected = selectedIndex === 0;
+        const selected = visible[selectedIndex - 1];
         if (matchesKey(data, Key.f2)) {
+          if (vaultSelected) {
+            openPersistedInPlace();
+            return;
+          }
           void runScreenAction(selected
             ? { kind: "edit", rule: selected, initialMode: "json" }
             : { kind: "add", initialMode: "json" });
@@ -840,7 +866,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           return;
         }
         if (keybindings.matches(data, "tui.select.down")) {
-          selectedIndex = Math.min(visible.length, selectedIndex + 1);
+          selectedIndex = Math.min(visible.length + 1, selectedIndex + 1);
           refresh();
           return;
         }
@@ -850,7 +876,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           return;
         }
         if (keybindings.matches(data, "tui.select.pageDown")) {
-          selectedIndex = Math.min(visible.length, selectedIndex + rulePageSize);
+          selectedIndex = Math.min(visible.length + 1, selectedIndex + rulePageSize);
           refresh();
           return;
         }
@@ -860,16 +886,14 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           return;
         }
         if (matchesKey(data, Key.end)) {
-          selectedIndex = visible.length;
+          selectedIndex = visible.length + 1;
           refresh();
           return;
         }
-        if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
+        if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.space)) {
+          // The vault has no inline toggle: its Enabled field lives in the
+          // editor, like every other vault setting.
           if (selected) void toggleRuleInPlace(selected);
-          return;
-        }
-        if (matchesKey(data, Key.space) && selected) {
-          void toggleRuleInPlace(selected);
           return;
         }
         if (matchesKey(data, "m") || data === "M") {
@@ -877,6 +901,10 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           return;
         }
         if (keybindings.matches(data, "tui.select.confirm")) {
+          if (vaultSelected) {
+            openPersistedInPlace();
+            return;
+          }
           void runScreenAction(selected ? { kind: "edit", rule: selected } : { kind: "add" });
           return;
         }
