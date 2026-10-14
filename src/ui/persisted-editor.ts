@@ -276,7 +276,7 @@ export async function openPersistedSecretsEditor(
             const choiceRow = `${index === exitChoice.index ? "▶" : " "} ${choices[index]}`;
             lines.push(index === exitChoice.index ? theme.fg("accent", choiceRow) : theme.fg("muted", choiceRow));
           }
-          lines.push(...wrappedMaskingText(theme.fg("dim", "←→ select · Enter confirm · S save · D discard · B back"), width));
+          lines.push(...wrappedMaskingText(theme.fg("dim", "↑↓/←→ select · Enter confirm · S save · D discard · B back"), width));
         } else if (message) lines.push(...wrappedMaskingText(theme.fg("muted", message), width));
         lines.push("");
         lines.push(...wrappedMaskingText(theme.fg("dim", "↑/↓ field · ←/→ change or edit · S save · Esc finish"), width));
@@ -293,11 +293,11 @@ export async function openPersistedSecretsEditor(
         // else depends on the focused field — editors own their keys (Rule
         // Builder behavior), selector rows cycle on ←/→/Space.
         if (exitChoice) {
-          const leftRight = matchesKey(data, Key.left) || matchesKey(data, Key.right);
-          if (leftRight) {
-            exitChoice.index = matchesKey(data, Key.left)
-              ? (exitChoice.index + 2) % 3
-              : (exitChoice.index + 1) % 3;
+          const move = matchesKey(data, Key.left) || keybindings.matches(data, "tui.select.up") ? -1
+            : matchesKey(data, Key.right) || keybindings.matches(data, "tui.select.down") ? 1
+            : 0;
+          if (move !== 0) {
+            exitChoice.index = (exitChoice.index + move + 3) % 3;
             refresh();
             return;
           }

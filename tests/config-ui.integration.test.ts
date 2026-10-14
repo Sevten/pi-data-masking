@@ -1116,7 +1116,13 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
       // "Back to editing" is the safe default — quick-key S saves.
       editor.handleInput(INPUT.escape);
       await waitFor(() => text().includes("Unsaved changes — what should happen to them?"));
-      editor.handleInput("s");
+      // ↑/↓ and ←/→ both move the highlight; the default is Back to editing.
+      editor.handleInput(INPUT.up);
+      assert.ok(text().includes("▶ Discard changes"), "up moves the highlight");
+      editor.handleInput(INPUT.down);
+      editor.handleInput(INPUT.down);
+      assert.ok(text().includes("▶ Save & close"), "navigation wraps to the first choice");
+      editor.handleInput("s"); // quick-key save
     },
   ]);
   try {
