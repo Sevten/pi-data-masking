@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 670" width="900" height="670" role="img" aria-labelledby="t d">
+  <title id="t">Masking and scoped restore flow</title>
+  <desc id="d">User and tool data is masked before the LLM sees it. When the LLM makes a tool call, possibly steered by prompt injection, placeholders are restored to real values only if the call's destination is in scope; otherwise the call is blocked or the user is asked. Tool results are masked again before the next LLM request.</desc>
+  <defs>
+    <marker id="aBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker>
+    <marker id="aRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/></marker>
+    <marker id="aGray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/></marker>
+  </defs>
+  <style>
+    text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #111827; }
+    .head { font-size: 15px; font-weight: 600; text-anchor: middle; }
+    .sub { font-size: 12px; text-anchor: middle; fill: #6b7280; }
+    .msg { font-size: 14px; text-anchor: middle; }
+    .note { font-size: 13px; text-anchor: middle; }
+    .warn { font-size: 12px; text-anchor: middle; fill: #b45309; }
+    .tag { font-size: 12px; font-weight: 600; fill: #374151; }
+    .life { stroke: #d1d5db; stroke-width: 1.5; stroke-dasharray: 5 5; }
+  </style>
+
+  <rect width="900" height="670" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+
+  <!-- lifelines -->
+  <line class="life" x1="120" y1="72" x2="120" y2="610"/>
+  <line class="life" x1="340" y1="72" x2="340" y2="610"/>
+  <line class="life" x1="560" y1="72" x2="560" y2="610"/>
+  <line class="life" x1="780" y1="72" x2="780" y2="610"/>
+
+  <!-- participants -->
+  <g>
+    <rect x="45" y="20" width="150" height="52" rx="8" fill="#f3f4f6" stroke="#9ca3af"/>
+    <text class="head" x="120" y="42">User / Tool data</text><text class="sub" x="120" y="60">real values</text>
+    <rect x="265" y="20" width="150" height="52" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+    <text class="head" x="340" y="42">Masking layer</text><text class="sub" x="340" y="60">mask / scoped restore</text>
+    <rect x="485" y="20" width="150" height="52" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+    <text class="head" x="560" y="42">LLM</text><text class="sub" x="560" y="60">sees placeholders</text>
+    <rect x="705" y="20" width="150" height="52" rx="8" fill="#fee2e2" stroke="#dc2626"/>
+    <text class="head" x="780" y="42">Tool</text><text class="sub" x="780" y="60">runs on real values</text>
+  </g>
+
+  <!-- 1 -->
+  <line x1="120" y1="112" x2="340" y2="112" stroke="#dc2626" stroke-width="2" marker-end="url(#aRed)"/>
+  <text class="msg" x="230" y="102">① user / tool data</text>
+  <rect x="250" y="130" width="180" height="30" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+  <text class="note" x="340" y="150">mask → placeholders</text>
+
+  <!-- 2 -->
+  <line x1="340" y1="196" x2="560" y2="196" stroke="#2563eb" stroke-width="2" marker-end="url(#aBlue)"/>
+  <text class="msg" x="450" y="186">② placeholders</text>
+  <rect x="590" y="174" width="200" height="40" rx="6" fill="#eff6ff" stroke="#2563eb"/>
+  <text class="note" x="690" y="191" style="fill:#1d4ed8">LLM sees placeholders,</text>
+  <text class="note" x="690" y="206" style="fill:#1d4ed8">not real values</text>
+
+  <!-- 3 -->
+  <line x1="560" y1="246" x2="340" y2="246" stroke="#2563eb" stroke-width="2" marker-end="url(#aBlue)"/>
+  <text class="msg" x="450" y="236">③ tool call + destination</text>
+  <rect x="590" y="224" width="200" height="40" rx="6" fill="#fef9c3" stroke="#ca8a04"/>
+  <text class="warn" x="690" y="241">⚠ may be steered by</text>
+  <text class="warn" x="690" y="256">prompt injection</text>
+  <rect x="205" y="264" width="270" height="30" rx="6" fill="#fef9c3" stroke="#ca8a04"/>
+  <text class="note" x="340" y="284">restore only if destination in scope</text>
+
+  <!-- alt frame -->
+  <rect x="40" y="312" width="820" height="150" rx="6" fill="none" stroke="#9ca3af"/>
+  <path d="M40,312 h52 v20 l-8,8 h-44 z" fill="#e5e7eb" stroke="#9ca3af"/>
+  <text class="tag" x="50" y="327">alt</text>
+  <text class="tag" x="104" y="327">destination in scope</text>
+  <line x1="340" y1="362" x2="780" y2="362" stroke="#dc2626" stroke-width="2" marker-end="url(#aRed)"/>
+  <text class="msg" x="670" y="352">④a restore → real values</text>
+  <line x1="40" y1="388" x2="860" y2="388" stroke="#9ca3af" stroke-dasharray="6 4"/>
+  <text class="tag" x="50" y="406">destination out of scope</text>
+  <line x1="340" y1="438" x2="120" y2="438" stroke="#4b5563" stroke-width="2.5" marker-end="url(#aGray)"/>
+  <text class="msg" x="230" y="428" style="font-size:13px">④b blocked (the call never runs), or ask the user</text>
+  <text class="warn" x="690" y="430" style="font-size:13px">↳ real values withheld from</text>
+  <text class="warn" x="690" y="448" style="font-size:13px">out-of-scope destinations</text>
+
+  <!-- 5 -->
+  <line x1="780" y1="496" x2="340" y2="496" stroke="#dc2626" stroke-width="2" marker-end="url(#aRed)"/>
+  <text class="msg" x="670" y="486">⑤ tool result</text>
+  <rect x="250" y="514" width="180" height="30" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+  <text class="note" x="340" y="534">mask → placeholders</text>
+
+  <!-- 6 -->
+  <line x1="340" y1="580" x2="560" y2="580" stroke="#2563eb" stroke-width="2" marker-end="url(#aBlue)"/>
+  <text class="msg" x="450" y="570">⑥ next LLM request</text>
+
+  <!-- legend -->
+  <g transform="translate(40,634)">
+    <line x1="0" y1="0" x2="36" y2="0" stroke="#2563eb" stroke-width="2" marker-end="url(#aBlue)"/>
+    <text x="48" y="4" style="font-size:12px">placeholders (masked)</text>
+    <line x1="210" y1="0" x2="246" y2="0" stroke="#dc2626" stroke-width="2" marker-end="url(#aRed)"/>
+    <text x="258" y="4" style="font-size:12px">real values (restored only in scope)</text>
+    <line x1="520" y1="0" x2="556" y2="0" stroke="#4b5563" stroke-width="2.5" marker-end="url(#aGray)"/>
+    <text x="568" y="4" style="font-size:12px">blocked / asks the user</text>
+  </g>
+</svg>
