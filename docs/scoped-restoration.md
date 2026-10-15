@@ -5,7 +5,6 @@ Rules may declare a `restoreScope` restricting where their real values may flow 
 ## Scope fields
 
 - **`destinations`** — a dot-anchored host allowlist: `stripe.com` covers `api.stripe.com` but not `api.stripe.com.evil.com`; IP literals and intranet wildcards like `10.0.*` are supported. An empty array (`[]`) means the value may never go outbound (see [Never outbound](#never-outbound)); an absent key means no destination checks ("Anywhere") — the mode still governs blind sends.
-- **`tools`** — tool names allowed to receive the value.
 - **`mode`** — a three-step ladder deciding what the rule restores (see below).
 - **`onRefuse`** — what happens when the scope refuses: `block` or `ask` (see [When the scope refuses](#when-the-scope-refuses)).
 
@@ -15,7 +14,6 @@ Rules may declare a `restoreScope` restricting where their real values may flow 
 |---|---|---|---|
 | destination verified | restore | restore | restore |
 | destination outside the allowlist | refuse | refuse | refuse |
-| tool not in the rule's `tools` allowlist | refuse | refuse | refuse |
 | outbound call, destination unverifiable (`curl "$URL"`) | refuse | refuse | restore + warning |
 | local use (write a file, run a local command) | refuse | restore + mark (later egress stays tracked) | restore + mark (later egress stays tracked) |
 | marked or inline value consumed by an interpreter (`python x.py <file>`, `source .env`) | warning¹ | warning | warning |
@@ -32,7 +30,7 @@ Rules may declare a `restoreScope` restricting where their real values may flow 
 
 ## When the scope refuses
 
-With `onRefuse: "ask"` a refused call pauses for your approval. The prompt names the value, the destination (or disallowed tool), and the rule, and offers up to four choices:
+With `onRefuse: "ask"` a refused call pauses for your approval. The prompt names the value, the destination, and the rule, and offers up to four choices:
 
 - **Allow once** — releases this one call.
 - **Allow … for this session** — a session grant keyed by rule + destination, or rule + tool. Later calls to the same destination skip the prompt and are audited as `session-granted`. Grants cover both decision dimensions (direct tool calls and the marked-path chain) and die with the session.
@@ -63,7 +61,7 @@ Presets such as `github-pat`, `npm-token`, `huggingface-token`, `aws-access-key-
 
 ## Shared trusted destinations
 
-Trusted environments that many rules share — an intranet, a company registry mirror — can be declared once instead of per rule: `options.trustedDestinations` (global config) is merged into every rule's destination allowlist. It only widens destination checks: per-rule `tools` restrictions and strict blocks on calls with no extractable destination are unaffected, rules without a scope stay unconditional, rules without a destinations list do not gain one, and a rule that declares an explicit empty allowlist (`destinations: []`) is never widened — never outbound means never.
+Trusted environments that many rules share — an intranet, a company registry mirror — can be declared once instead of per rule: `options.trustedDestinations` (global config) is merged into every rule's destination allowlist. It only widens destination checks: strict blocks on calls with no extractable destination are unaffected, rules without a scope stay unconditional, rules without a destinations list do not gain one, and a rule that declares an explicit empty allowlist (`destinations: []`) is never widened — never outbound means never.
 
 ## Session history vault
 
