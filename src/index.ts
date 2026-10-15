@@ -1729,10 +1729,18 @@ export default async function (pi: ExtensionAPI) {
     }
     for (const ruleId of decision.restoredRuleIds) {
       if (confirmRuleIds.has(ruleId) || grantedRuleIds.has(ruleId)) continue;
+      // Basis reflects the rule's own check, not the presence of any URL in
+      // the arguments: "verified" only when the rule's destination allowlist
+      // actually matched (scoped rules), extraction-based for scopeless rules
+      // (no check exists to verify against).
+      const scoped = scopes.has(ruleId);
+      const basis = scoped
+        ? (decision.verifiedRuleIds.includes(ruleId) ? "verified" : "local")
+        : (auditDestinations.length > 0 ? "verified" : "local");
       recordAudit({
         at: Date.now(),
         kind: "restored",
-        basis: auditDestinations.length > 0 ? "verified" : "local",
+        basis,
         ruleId,
         ruleName: config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
         tool: event.toolName,

@@ -488,3 +488,25 @@ test("empty allowlist: local use restores under semi-strict, blocked under stric
   assert.equal(withheld.count, 0);
   assert.equal(withheld.violations[0]?.reason, "no-destination");
 });
+
+// ── Audit basis: verified only when the rule's own check matched ──
+
+test("verifiedRuleIds: destination match verifies; no-allowlist or local use does not", () => {
+  const verified = fixture({ scope: { destinations: ["stripe.com"], mode: "semi-strict", onRefuse: "block" } });
+  const hit = decide(verified, "bash", { command: `curl -H "Auth: ${verified.placeholder}" https://api.stripe.com/v1` });
+  assert.deepEqual(hit.verifiedRuleIds, ["stripe-key"]);
+
+  // A scope without a destinations key runs no destination check: the URL
+  // in the arguments must not read as "verified" (the old extraction-based
+  // basis mislabeled these).
+  const noAllowlist = fixture({ scope: { mode: "semi-strict", onRefuse: "block" } });
+  const withUrl = decide(noAllowlist, "bash", { command: `echo KEY=${noAllowlist.placeholder} # see https://example.com/docs` });
+  assert.equal(withUrl.count, 1);
+  assert.deepEqual(withUrl.verifiedRuleIds, []);
+
+  // Local write with no destination at all: not verified.
+  const plain = fixture({ scope: { destinations: ["stripe.com"], mode: "semi-strict", onRefuse: "block" } });
+  const local = decide(plain, "write", { path: "deploy.env", content: `KEY=${plain.placeholder}` });
+  assert.equal(local.count, 1);
+  assert.deepEqual(local.verifiedRuleIds, []);
+});
