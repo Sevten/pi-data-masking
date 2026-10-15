@@ -78,6 +78,12 @@ export interface ToolCallDecision {
   /** Rule ids whose values were restored (hit minus violated) — the caller uses
    *  this to mark write targets (file markers). */
   restoredRuleIds: string[];
+  /** Scoped rules whose restore passed an actual destination match
+   *  (destinations extracted, all within the rule's allowlist). The caller
+   *  uses this for the audit basis: "verified" only when the rule's own
+   *  check verified a destination, not when any URL happens to appear in
+   *  the arguments. */
+  verifiedRuleIds: string[];
 }
 
 export interface DecisionOptions {
@@ -126,7 +132,7 @@ export function decideToolCallRestore(
 ): ToolCallDecision {
   const probe = masker.unmaskValue(input);
   if (probe.count === 0) {
-    return { value: probe.value, count: 0, violations: [], confirm: [], granted: [], unverified: [], consumed: [], restoredRuleIds: [] };
+    return { value: probe.value, count: 0, violations: [], confirm: [], granted: [], unverified: [], consumed: [], restoredRuleIds: [], verifiedRuleIds: [] };
   }
 
   const hitRuleIds = new Set(probe.details.map((d) => d.ruleId));
@@ -141,6 +147,7 @@ export function decideToolCallRestore(
       unverified: [],
       consumed: [],
       restoredRuleIds: [...hitRuleIds],
+      verifiedRuleIds: [],
     };
   }
 
@@ -173,6 +180,7 @@ export function decideToolCallRestore(
   const granted = new Map<string, ScopeViolation>();
   const unverified = new Map<string, UnverifiedRestore>();
   const consumed = new Map<string, { ruleId: string; ruleName: string }>();
+  const verified = new Set<string>();
 
   const setViolation = (map: Map<string, ScopeViolation>, ruleId: string, reason: ScopeViolation["reason"], offending: string[]): void => {
     const existing = map.get(ruleId);
@@ -256,6 +264,7 @@ export function decideToolCallRestore(
           return refuse("destination", ungranted);
         }
       }
+      verified.add(ruleId);
       return true;
     }
     return true;
@@ -271,6 +280,7 @@ export function decideToolCallRestore(
     unverified: [...unverified.values()],
     consumed: [...consumed.values()],
     restoredRuleIds: [...hitRuleIds].filter((id) => !violations.has(id)),
+    verifiedRuleIds: [...verified],
   };
 }
 
@@ -335,17 +345,21 @@ export function resolvedDestinations(masker: Masker, input: unknown): string[] {
 // ── Marker dimension: read-result marking ─────────────────────────────
 
 /**
- * Rule ids whose placeholders appear in a text blob — the read-result
- * marking probe (design: "File markers", read-result marking). When the
- * masked result of a read-like call contains values of rule X and the call
- * referenced path F, the caller marks "F contains values of rule X" so the
- * custody chain covers values that already lived on disk before the
- * session. Pure probe: no restoration is written anywhere.
+ * Rule ids whose values appear in a text blob — the read-result marking
+ * probe (design: "File markers", read-result marking). Two forms match:
+ * placeholders the model saw (files seeded with placeholder text) and the
+ * rules' real values — the raw `tool_result` content holds the file's true
+ * values (masking happens later at the context hook), so read-marking must
+ * detect them directly. Pure probe: no restoration is written anywhere.
  */
 export function ruleIdsInText(masker: Masker, text: string): Set<string> {
   if (!text) return new Set();
-  const probe = masker.unmaskValue(text);
-  return new Set(probe.details.map((d) => d.ruleId));
+  const ids = new Set<string>();
+  const placeholderProbe = masker.unmaskValue(text);
+  for (const detail of placeholderProbe.details) ids.add(detail.ruleId);
+  const valueProbe = masker.maskValue(text);
+  for (const detail of valueProbe.details) ids.add(detail.ruleId);
+  return ids;
 }
 
 // ── Env-reference dimension: $NAME references ───────────────────────────
