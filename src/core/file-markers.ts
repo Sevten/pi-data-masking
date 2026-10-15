@@ -80,6 +80,22 @@ function* stringsIn(value: unknown): Generator<string> {
   }
 }
 
+/** Lexically collapse `.`/`..` segments in path-like text so a `..`-spelled
+ *  reference (`~/.pi/agent/../agent/sessions`) still substring-matches the
+ *  plain forms. Applied per line (never across `\n` boundaries); collapsing
+ *  only removes segments, so it cannot fabricate a needle that was not in
+ *  the text. */
+export function collapseDotSegments(text: string): string {
+  let cur = text;
+  for (;;) {
+    const next = cur
+      .replace(/(?:^|\/)\.(?=\/|$)/g, "")
+      .replace(/(?:^|\/)[^/]+\/\.\.(?=\/|$)/g, "");
+    if (next === cur) return cur;
+    cur = next;
+  }
+}
+
 export interface PathReference {
   path: string;
   ruleIds: string[];
@@ -96,7 +112,10 @@ export function referencedMarkedPaths(
   input: unknown,
   cwd: string,
 ): PathReference[] {
-  const args = [...stringsIn(input)].join("\n");
+  const lines = [...stringsIn(input)].join("\n");
+  const args = lines.includes("/..") || lines.includes("/.")
+    ? lines.split("\n").map(collapseDotSegments).join("\n")
+    : lines;
   const refs: PathReference[] = [];
   for (const path of registry.markedPaths()) {
     if (args.includes(path)) {
@@ -139,6 +158,14 @@ export function referencesPersistedSecrets(input: unknown, forms: string[]): boo
   for (const value of stringsIn(input)) {
     for (const form of forms) {
       if (value.includes(form)) return true;
+    }
+    // `..`-spelled references (`~/.pi/agent/../agent/sessions`) must govern
+    // like the plain form — collapse per line before giving up.
+    if (value.includes("/..") || value.includes("/.")) {
+      const collapsed = value.split("\n").map(collapseDotSegments).join("\n");
+      for (const form of forms) {
+        if (collapsed.includes(form)) return true;
+      }
     }
   }
   return false;
