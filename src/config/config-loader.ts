@@ -75,10 +75,13 @@ export interface PersistedSecretsScope {
   enabled: boolean;
   /** Verification strictness for the pseudo-rule (default "strict"). */
   mode: ScopeMode;
-  /** Destinations allowed to receive these files (default [] = never
-   *  outbound). Explicit list only — options.trustedDestinations does NOT
-   *  widen it: a trusted host may receive one value, not the whole vault. */
-  destinations: string[];
+  /** Destinations allowed to receive these files. Unified with rule
+   *  scopes: absent = Anywhere (no destination checks; the mode still
+   *  governs blind sends), [] = never outbound (the default — fail-safe),
+   *  a list = only those destinations. Explicit list only —
+   *  options.trustedDestinations does NOT widen it: a trusted host may
+   *  receive one value, not the whole vault. */
+  destinations?: string[];
   /** What happens on a confirmed violation (default "block"; "ask" enables
    *  the four-choice approval dialog and session/save grants). */
   onRefuse: RefuseAction;
@@ -365,6 +368,11 @@ function sanitizePersistedSecrets(
     } else {
       warnings.push("options.persistedSecrets.destinations must be an array of destination entries and was ignored");
     }
+  } else {
+    // Key absent in a user-provided persistedSecrets object = the unified
+    // "Anywhere" (no destination checks; the mode still governs blind
+    // sends). Only the fully-absent object keeps the safe Never default.
+    next.destinations = undefined;
   }
   return next;
 }
@@ -937,7 +945,6 @@ function parseRestoreScope(
 function validDestinationEntry(entry: string): boolean {
   const e = entry.trim().toLowerCase().replace(/\.$/, "");
   if (!e || /\s/.test(e)) return false;
-  if (e === "*") return true; // destination-unrestricted (vault Outbound Anywhere)
   if (e.startsWith("*.")) return !e.slice(2).includes("*") && /^[*.a-z0-9-]+$/.test(e);
   if (e.endsWith(".*")) return !e.slice(0, -2).includes("*") && /^[*.a-z0-9-]+$/.test(e);
   return !e.includes("*") && /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(e);

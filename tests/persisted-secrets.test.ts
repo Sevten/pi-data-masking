@@ -135,21 +135,30 @@ test("persistedSecrets: path forms and reference detection", () => {
   );
 });
 
-test("persistedSecrets: Outbound Anywhere (destinations ['*']) skips destination checks", async () => {
+test("persistedSecrets: Outbound Anywhere (no destinations key) — destination checks off, mode still governs blind sends", async () => {
   const { loadConfigFromPaths } = await import("../src/config/config-loader.ts");
   const key = Buffer.from("0123456789abcdef0123456789abcdef", "hex");
   const dir = mkdtempSync(join(tmpdir(), "vault-anywhere-"));
   try {
     const configPath = join(dir, "masking.config.json");
     writeFileSync(configPath, JSON.stringify({
-      options: { persistedSecrets: { enabled: true, mode: "strict", destinations: ["*"], onRefuse: "block" } },
+      options: { persistedSecrets: { enabled: true, mode: "strict", onRefuse: "block" } },
     }));
     mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
     const { config } = await loadConfigFromPaths(configPath, join(dir, "project.config.json"), key);
-    assert.deepEqual(config.options.persistedSecrets.destinations, ["*"], "'*' survives sanitization as Anywhere");
+    assert.equal(config.options.persistedSecrets.destinations, undefined, "absent key survives as the unified Anywhere");
+
+    // Legacy spelling: ["*"] is no longer valid — every entry drops → [] =
+    // Never (fail-safe).
+    writeFileSync(configPath, JSON.stringify({
+      options: { persistedSecrets: { enabled: true, mode: "strict", destinations: ["*"], onRefuse: "block" } },
+    }));
+    const legacy = await loadConfigFromPaths(configPath, join(dir, "project.config.json"), key);
+    assert.deepEqual(legacy.config.options.persistedSecrets.destinations, [], "legacy '*' degrades to Never");
+    assert.ok(legacy.warnings.some((w) => w.includes("persistedSecrets.destinations") && w.includes('"*"')));
 
     const { decideMarkedPaths } = await import("../src/core/egress-decision.ts");
-    const scopes = new Map<string, EffectiveScope>([["session-history", { destinations: ["*"], mode: "strict", onRefuse: "block", tools: undefined, envNames: undefined }]]);
+    const scopes = new Map<string, EffectiveScope>([["session-history", { destinations: undefined, mode: "strict", onRefuse: "block", tools: undefined, envNames: undefined }]]);
     const decision = decideMarkedPaths(new Set(["session-history"]), {
       scopes,
       ruleName: () => "Session history",
@@ -159,13 +168,15 @@ test("persistedSecrets: Outbound Anywhere (destinations ['*']) skips destination
     assert.equal(decision.blocked.length, 0, "Anywhere means no destination checks");
     assert.equal(decision.confirm.length, 0);
 
+    // Unified semantics: the mode still governs blind sends (detection-gap
+    // cell), unlike the old unconditional skip.
     const blind = decideMarkedPaths(new Set(["session-history"]), {
       scopes,
       ruleName: () => "Session history",
       destinations: [],
       signatureOnly: true,
     });
-    assert.equal(blind.blocked.length, 0, "Anywhere also lifts the blind-send hold");
+    assert.equal(blind.blocked.length, 1, "strict Anywhere still blocks the blind send");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

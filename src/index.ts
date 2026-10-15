@@ -1342,10 +1342,11 @@ export default async function (pi: ExtensionAPI) {
       const markedScopes = new Map<string, EffectiveScope>();
       for (const ruleId of referencedRuleIds) {
         const scope = scopes.get(ruleId);
-        if (scope?.destinations) {
-          // Includes an explicit empty allowlist ([] = never outbound): a
-          // marked path carrying such a value must still be checked, or
-          // the two-step path (write file, then blind send) would leak it.
+        if (scope) {
+          // Every scoped rule is governed (mode applies unconditionally);
+          // an explicit empty allowlist ([] = never outbound) and a
+          // missing key (Anywhere) alike — the two-step path (write file,
+          // then blind send) must stay checked either way.
           markedScopes.set(ruleId, scope);
         }
       }
@@ -1699,13 +1700,13 @@ export default async function (pi: ExtensionAPI) {
       for (const key of Object.keys(unmasked)) {
         (event.input as Record<string, unknown>)[key] = unmasked[key];
       }
-      // The value now lives on disk at the write target — extend custody
-      // one hop so later outbound references to it stay checked.
-      const target = structuredTargetPaths(event.toolName, event.input)[0];
-      if (target) {
+      // The value now lives on disk at the write targets — extend custody
+      // one hop so later outbound references to it stay checked. Every
+      // target is marked: `tee f1 f2` materializes the value twice.
+      for (const target of structuredTargetPaths(event.toolName, event.input)) {
         fileMarkers.mark(target, cwd, new Set(decision.restoredRuleIds));
-        persistMarkers();
       }
+      persistMarkers();
     }
 
     // Audit: one factual entry per rule decision on this call. Confirmed

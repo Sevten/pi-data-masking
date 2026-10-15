@@ -17,8 +17,10 @@
 /** Declared per-rule scope, exactly as it appears in the config file. */
 export interface RestoreScope {
   /** Hosts the rule's values may be sent to (dot-anchored suffix match,
-   *  IP literals, intranet wildcards). Present ⇒ tool calls with no
-   *  extractable destination follow `mode`. */
+   *  IP literals, intranet wildcards). Optional allowlist: present ⇒ calls
+   *  to other destinations are confirmed violations; [] = never outbound;
+   *  absent (unified "Anywhere") ⇒ no destination checks, but `mode`
+   *  still governs every call (detection-gap and local cells included). */
   destinations?: string[];
   /** Tool names allowed to receive the restored value. */
   tools?: string[];
@@ -68,9 +70,10 @@ export interface ScopeMaterializationInput {
   /** Environment variable name backing the rule (envNames fallback). */
   realFromEnv: string | undefined;
   /** Global `options.trustedDestinations`, validated at load time. Merged
-   *  (union) into the effective destinations — it widens the set of
-   *  verifiable destinations for every scoped rule but never creates scope
-   *  where none exists and never touches the tools check. */
+   *  (union) into rules that declare a destination allowlist — it widens
+   *  the set of verifiable destinations for those rules but never creates
+   *  an allowlist where none was declared, and never touches the tools
+   *  check. */
   trustedDestinations?: string[];
 }
 
@@ -99,17 +102,19 @@ export function effectiveScope(input: ScopeMaterializationInput): EffectiveScope
   };
 }
 
-/** Merge the global trusted-destination list into a rule's destinations
- *  (order-preserving dedupe: rule/preset entries first, trusted entries
- *  after). An explicit empty allowlist is absolute — the value may never
- *  go outbound — so the global list does not widen it back open. */
+/** Merge the global trusted-destination list into a rule's declared
+ *  destination allowlist (order-preserving dedupe: rule/preset entries
+ *  first, trusted entries after). Rules without a destinations key stay
+ *  without one — the global list must not silently turn "Anywhere" into
+ *  an allowlist. An explicit empty allowlist is absolute — the value may
+ *  never go outbound — so the global list does not widen it back open. */
 function unionDestinations(
   base: string[] | undefined,
   trusted: string[] | undefined,
 ): string[] | undefined {
-  if (base !== undefined && base.length === 0) return base;
+  if (base === undefined || base.length === 0) return base;
   if (!trusted || trusted.length === 0) return base;
-  return [...new Set([...(base ?? []), ...trusted])];
+  return [...new Set([...base, ...trusted])];
 }
 
 // ─── Host normalization ─────────────────────────────────────────────────────

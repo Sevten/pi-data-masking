@@ -222,9 +222,13 @@ export function decideToolCallRestore(
       }
     }
 
-    if (scope.destinations) {
-      if (destinations.length === 0) {
-        if (opts.commandSignature) {
+    if (destinations.length === 0) {
+      // Detection-gap and local cells — apply to EVERY scoped rule: the
+      // mode governs unconditionally; a destinations key only adds the
+      // allowlist on top. A scope without one (unified "Anywhere",
+      // tools-only, mode+onRefuse-only) is blind-send governed exactly
+      // like an allowlisted one.
+      if (opts.commandSignature) {
           // Detection-gap cell: outbound intent, destination hidden
           // (`curl … "$URL"`). strict and semi-strict refuse it — the
           // value may only go where the destination is verifiable; the
@@ -237,21 +241,22 @@ export function decideToolCallRestore(
             unverified.set(ruleId, { ruleId, ruleName: name, kind: "no-destination" });
           }
           return true;
-        }
-        // Local cell: no outbound form at all. semi-strict and permissive
-        // restore — the value may flow locally, and the marker chain
-        // covers materialized values (a later blind egress hits the gap
-        // cell and is refused under semi-strict). strict enforces
-        // use-not-copy: the value only flows to allowlisted destinations,
-        // and a local file or indirect process is not one.
-        if (scope.mode === "strict") {
-          return refuse("no-destination", []);
-        }
-        if (opts.consumerSignature) {
-          consumed.set(ruleId, { ruleId, ruleName: name });
-        }
-        return true;
       }
+      // Local cell: no outbound form at all. semi-strict and permissive
+      // restore — the value may flow locally, and the marker chain
+      // covers materialized values (a later blind egress hits the gap
+      // cell and is refused under semi-strict). strict enforces
+      // use-not-copy: the value only flows to allowlisted destinations,
+      // and a local file or indirect process is not one.
+      if (scope.mode === "strict") {
+        return refuse("no-destination", []);
+      }
+      if (opts.consumerSignature) {
+        consumed.set(ruleId, { ruleId, ruleName: name });
+      }
+      return true;
+    }
+    if (scope.destinations) {
       const offending = unmatchedDestinations(destinations, matchersFor(scope));
       if (offending.length > 0) {
         // Session grants (user approved these hosts earlier) leave the
@@ -267,6 +272,9 @@ export function decideToolCallRestore(
       verified.add(ruleId);
       return true;
     }
+    // Destinations extracted but the scope declares no allowlist (the
+    // unified "Anywhere"): nothing to match against — the send is
+    // allowed without a verification claim.
     return true;
   };
 
@@ -409,8 +417,9 @@ function envNameReferenced(command: string, name: string): boolean {
  *
  * Triggered only by egress intent: an extractable destination or a network
  * signature. Calls with neither are never checked here (local reads, diffs
- * and greps stay untouched). Rules without a destination allowlist are not
- * governed by the marker dimension (scopeless rules create no scope).
+ * and greps stay untouched). Every scoped rule is governed, allowlist or
+ * not — the mode applies unconditionally; a destinations key only adds
+ * the confirmed-violation check on top.
  */
 
 export interface MarkedPathViolation {
@@ -436,9 +445,9 @@ export interface MarkedPathDecision {
 }
 
 export interface MarkedPathOptions {
-  /** Effective scopes of the marked rules only (ruleId → scope). Rules
-   *  without a destination key are skipped; an explicit empty allowlist
-   *  governs like any other. */
+  /** Effective scopes of the marked rules only (ruleId → scope). An
+   *  explicit empty allowlist governs like any other; a scope without a
+   *  destinations key is governed by its mode alone. */
   scopes: ReadonlyMap<string, EffectiveScope>;
   ruleName: (ruleId: string) => string;
   /** Destinations extracted from the call arguments. */
@@ -464,18 +473,13 @@ export function decideMarkedPaths(
 
   for (const ruleId of referencedRuleIds) {
     const scope = opts.scopes.get(ruleId);
-    if (!scope?.destinations) continue; // not governed by markers
-    // "*" is the destination-unrestricted spelling (the vault's Outbound
-    // "Anywhere", mirroring a rule scope without a destinations key): no
-    // destination checks, blind sends included.
-    if (scope.destinations.includes("*")) continue;
+    if (!scope) continue; // not scoped — unconditionally restored
     // An explicit empty allowlist is checked like any other: nothing can
     // match it, so any egress intent is a confirmed violation (or a
     // detection gap) — that is what "never restore outbound" means.
 
-    let offending: string[] = [];
-    if (opts.destinations.length > 0) {
-      offending = unmatchedDestinations(opts.destinations, matchersFor(scope));
+    if (opts.destinations.length > 0 && scope.destinations) {
+      const offending = unmatchedDestinations(opts.destinations, matchersFor(scope));
       if (offending.length === 0) continue; // all destinations allowlisted
       // Session grants (user approved these hosts earlier) leave the
       // refusal to the hosts that are still unapproved.
@@ -487,11 +491,11 @@ export function decideMarkedPaths(
       const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending: ungranted };
       if (scope.onRefuse === "ask") confirm.push(violation);
       else blocked.push(violation);
-    } else if (opts.signatureOnly) {
+    } else if (opts.destinations.length === 0 && opts.signatureOnly) {
       // Detection gap: intent, no verified destination. strict and
       // semi-strict refuse it (onRefuse: block or ask); permissive
       // tolerates it with a warning.
-      const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending };
+      const violation: MarkedPathViolation = { ruleId, ruleName: opts.ruleName(ruleId), offending: [] };
       if (scope.mode === "permissive") unverified.push(violation);
       else if (scope.onRefuse === "ask") confirm.push(violation);
       else blocked.push(violation);

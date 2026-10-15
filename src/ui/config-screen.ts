@@ -552,9 +552,11 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           const stateLabel = vaultOptions.enabled ? "ON" : "OFF";
           const pad = Math.max(0, 4 - stateLabel.length);
           const slot = " ".repeat(Math.ceil(pad / 2)) + stateLabel + " ".repeat(Math.floor(pad / 2));
-          const destinationLabel = vaultOptions.destinations.length === 0
-            ? "never outbound"
-            : `${vaultOptions.destinations.length} destination(s)`;
+          const destinationLabel = vaultOptions.destinations === undefined
+            ? "anywhere outbound"
+            : vaultOptions.destinations.length === 0
+              ? "never outbound"
+              : `${vaultOptions.destinations.length} destination(s)`;
           const pending = vaultPendingHint();
           const cursor = selectedIndex === 0 && homeFocus === "rules" ? "›" : " ";
           // SCOPE column = where the entry is defined (project/global),
@@ -570,8 +572,8 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         };
         /** Vault detail rows, mimicking the rule detail block style. */
         const vaultDetailRows = (): string[] => {
-          const outbound = vaultOptions.destinations.includes("*")
-            ? "Anywhere · outbound sends are not destination-checked"
+          const outbound = vaultOptions.destinations === undefined
+            ? "Anywhere · outbound sends are not destination-checked; scope mode still governs blind sends"
             : vaultOptions.destinations.length === 0
               ? "Never · local reads stay allowed"
               : `Listed only · ${vaultOptions.destinations.join(", ")}`;

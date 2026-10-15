@@ -146,3 +146,18 @@ test("unmatchedDestinations reports the offending hosts", () => {
   assert.deepEqual(unmatchedDestinations(["api.stripe.com", "10.0.1.2", "evil.com"], matchers), ["evil.com"]);
   assert.deepEqual(unmatchedDestinations([], matchers), []);
 });
+
+test("trustedDestinations never creates an allowlist where none was declared", () => {
+  const keyless = effectiveScope({
+    scope: { mode: "strict", onRefuse: "block" },
+    realFromEnv: undefined,
+    trustedDestinations: ["github.com"],
+  });
+  assert.equal(keyless?.destinations, undefined, "keyless scope stays keyless (unified Anywhere)");
+  const declared = effectiveScope({
+    scope: { destinations: ["api.github.com"], mode: "strict", onRefuse: "block" },
+    realFromEnv: undefined,
+    trustedDestinations: ["github.com"],
+  });
+  assert.deepEqual(declared?.destinations, ["api.github.com", "github.com"]);
+});

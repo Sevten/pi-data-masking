@@ -47,16 +47,17 @@ export async function openPersistedSecretsEditor(
   ctx: ExtensionContext,
   current: PersistedSecretsScope,
 ): Promise<boolean> {
-  const original: PersistedSecretsScope = { ...current, destinations: [...current.destinations] };
-  const draft: PersistedSecretsScope = { ...current, destinations: [...current.destinations] };
-  // Outbound selector, mirroring the Rule Builder: `anywhere` = no
-  // destination checks (stored as ["*"], judged like a rule scope without a
-  // destinations key); `listed` = only the listed destinations; `never` =
-  // the files may never be sent outbound. Switching away from Listed
+  const original: PersistedSecretsScope = { ...current, destinations: current.destinations ? [...current.destinations] : undefined };
+  const draft: PersistedSecretsScope = { ...current, destinations: current.destinations ? [...current.destinations] : undefined };
+  // Outbound selector, unified with the Rule Builder: `anywhere` = no
+  // destinations key in the config (no destination checks; the mode still
+  // governs blind sends) — same spelling as a rule scope without a
+  // destinations key; `listed` = only the listed destinations; `never` =
+  // the files may never be sent outbound ([]). Switching away from Listed
   // stashes the list so a stray flip does not destroy it.
   type Outbound = "anywhere" | "listed" | "never";
-  const outboundOf = (destinations: string[]): Outbound =>
-    destinations.includes("*") ? "anywhere" : destinations.length === 0 ? "never" : "listed";
+  const outboundOf = (destinations: string[] | undefined): Outbound =>
+    destinations === undefined ? "anywhere" : destinations.length === 0 ? "never" : "listed";
   let outbound: Outbound = outboundOf(draft.destinations);
   let stashedDestinations: string[] = [];
   // Field rows depend on the Outbound choice: 0 Outbound · 1 Destinations
@@ -84,7 +85,7 @@ export async function openPersistedSecretsEditor(
     // Inline comma-list editor, exactly like the Rule Builder's
     // Destinations field: typing edits, ↑/↓ move between fields.
     const destinationsEditor = new Editor(tui, editorTheme, { paddingX: 1 });
-    destinationsEditor.setText(draft.destinations.join(", "));
+    destinationsEditor.setText((draft.destinations ?? []).join(", "));
     destinationsEditor.onChange = (text) => {
       draft.destinations = text.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0);
       tui.requestRender();
@@ -114,23 +115,26 @@ export async function openPersistedSecretsEditor(
     }
 
     /** The destinations payload for the current selector state: the typed
-     *  list when Listed only, [] for Never, ["*"] for Anywhere. */
-    const destinationsPayload = (): string[] =>
-      outbound === "listed" ? draft.destinations : outbound === "anywhere" ? ["*"] : [];
+     *  list when Listed only, [] for Never, no key (undefined) for
+     *  Anywhere — the unified rule-scope spelling. */
+    const destinationsPayload = (): string[] | undefined =>
+      outbound === "listed" ? (draft.destinations ?? []) : outbound === "anywhere" ? undefined : [];
+    const sameDestinations = (a: string[] | undefined, b: string[] | undefined): boolean =>
+      a === undefined || b === undefined
+        ? a === b
+        : a.length === b.length && a.every((host, index) => host === b[index]);
 
     async function finish(): Promise<void> {
       const payloadDestinations = destinationsPayload();
       const changed = draft.mode !== original.mode
         || draft.onRefuse !== original.onRefuse
-        || payloadDestinations.length !== original.destinations.length
-        || payloadDestinations.some((host, index) => host !== original.destinations[index]);
+        || !sameDestinations(payloadDestinations, original.destinations);
       if (!changed) {
         done(false);
         return;
       }
       exitChoice = { index: 2 };
-      message = payloadDestinations.length !== original.destinations.length
-        || payloadDestinations.some((host, index) => host !== original.destinations[index])
+      message = !sameDestinations(payloadDestinations, original.destinations)
         ? `Staged · outbound ${outboundLabel()} · written to the global config on save`
         : "Staged · written to the global config on save";
       refresh();
