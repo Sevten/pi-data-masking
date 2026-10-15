@@ -109,15 +109,24 @@ export function referencedMarkedPaths(
 /** Substrings whose presence in a tool-call input means the call touches the
  *  persisted secret stores (the pi sessions directory and the masking config
  *  file). Absolute forms catch a custom PI_CODING_AGENT_DIR; the `.pi/agent`
- *  relative form catches `~`/`$HOME` spellings of the default layout; the
- *  bare config filename catches any copy of the config by its name. */
+ *  relative forms catch `~`/`$HOME` spellings of the default layout; the
+ *  bare config filename catches any copy of the config by its name. Directory
+ *  forms matter as much as file forms: `curl -T <config-dir>/*.json` names no
+ *  file and must still be governed. */
 export function persistedSecretPathForms(sessionsDir: string, configPath: string): string[] {
+  const configDir = configPath.slice(0, Math.max(configPath.lastIndexOf("/"), 0));
   return [
     sessionsDir,
     sessionsDir.replaceAll("/", "\\"),
     ".pi/agent/sessions",
     ".pi\\agent\\sessions",
     configPath,
+    configDir,
+    configDir.replaceAll("/", "\\"),
+    ".pi/agent/pi-data-masking",
+    ".pi\\agent\\pi-data-masking",
+    ".pi/pi-data-masking",
+    ".pi\\pi-data-masking",
     "masking.config.json",
   ];
 }
