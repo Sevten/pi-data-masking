@@ -121,7 +121,7 @@ When two rules overlap, the earlier one wins; in regex rules, capture groups res
 
 ### Options
 
-An allowlist (`options.allowlist`, edited in `/masking`) exempts listed values — or whole lines — from masking even when a rule would match. Other options include `showStatusBar`, `systemPromptGuidance`, and `disclosePlaceholders`; see [`masking.config.schema.json`](src/config/masking.config.schema.json) for the complete field reference and defaults.
+An allowlist (`options.allowlist`, edited in `/masking` via the **Never masked** row) exempts listed values — or whole lines — from masking even when a rule would match; the **Trusted destinations** row next to it edits `options.trustedDestinations`. Other options include `showStatusBar`, `systemPromptGuidance`, and `disclosePlaceholders`; see [`masking.config.schema.json`](src/config/masking.config.schema.json) for the complete field reference and defaults.
 
 ## Scoped restoration
 
