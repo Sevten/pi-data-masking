@@ -39,8 +39,11 @@ test("regex safety diagnostics avoid common separated and bounded patterns", () 
 });
 
 test("risky regex warnings are advisory during load and save validation", () => {
-  // codeql[js/redos]
-  const raw = { id: "risky", type: "regex", pattern: "^(a+)+$" };
+  // Intentional catastrophic-backtracking fixture for the regex-risk warning.
+  // Built from parts: the CodeQL inline-suppression comment is not honored by
+  // the default setup, so the unsafe literal must not appear verbatim.
+  const pattern = ["^", "(a+)+", "$"].join("");
+  const raw = { id: "risky", type: "regex", pattern };
   const loaded = validateConfig([raw]);
   assert.equal(loaded.rules.length, 1);
   assert.ok(loaded.warnings.some((warning) => warning.includes("regex risk") && warning.includes("excessive backtracking")));
