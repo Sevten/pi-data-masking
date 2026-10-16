@@ -30,7 +30,7 @@
   "scripts": {
     "check": "tsc",
     "pack:dry": "npm pack --dry-run",
-    "test": "node --test \"tests/*.test.ts\"",
+    "test": "node --test --test-force-exit \"tests/*.test.ts\"",
     "release": "bash scripts/release.sh"
   },
   "peerDependencies": {
