@@ -72,6 +72,7 @@ import {
 import { consumerSignatureWord, hasDestinationOverride, hasNetworkSignature } from "./core/network-signature.ts";
 import { ghDestinationHost, resolveGitRemote } from "./core/git-remote.ts";
 import { resolvedDestinations } from "./core/egress-decision.ts";
+import { extractDestinationUrls } from "./core/destination-extract.ts";
 import {
   AUDIT_ENTRY,
   MARKERS_ENTRY,
@@ -1439,6 +1440,7 @@ export default async function (pi: ExtensionAPI) {
             tool: event.toolName,
             callId: event.toolCallId,
             destinations: v.offending.length > 0 ? v.offending : undefined,
+            urls: extractDestinationUrls(event.input),
             detail: `paths: ${markedRefs.map((r) => r.path).join(", ")}`,
           });
           if (!scopeNotifiedThisTurn.has(key)) {
@@ -1611,6 +1613,7 @@ export default async function (pi: ExtensionAPI) {
           tool: event.toolName,
           callId: event.toolCallId,
           destinations: v.offending.length > 0 ? v.offending : undefined,
+          urls: extractDestinationUrls(event.input),
           detail:
             v.reason === "tool"
               ? `tool not in allowlist: ${v.offending.join(", ")}`
@@ -1766,6 +1769,7 @@ export default async function (pi: ExtensionAPI) {
         tool: event.toolName,
         callId: event.toolCallId,
         destinations: auditDestinations.length > 0 ? auditDestinations : undefined,
+        urls: basis === "verified" ? extractDestinationUrls(event.input) : undefined,
       });
     }
     for (const unverified of decision.unverified) {

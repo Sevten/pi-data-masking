@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Added: the restoration audit shows the request URL behind a destination decision — blocked and verified events carry the matched `scheme://host/path` text next to the host, and the event filter matches on it.
+- Changed: destination extraction recognizes more address spellings — bare IPv6 literals (`http://2001:db8::1/`), short-dotted and hex IPv4 (`http://127.1/`, `http://0x7f.1/`) — all normalized to canonical form before allowlist matching, so they can no longer slip through as unverifiable.
 - Added: git remotes became verifiable destinations — `git push`/`fetch`/`pull`/`clone`/`ls-remote` are outbound signatures whose remote name is resolved through the repository's `.git/config`: pushes to an allowlisted remote (including single-label intranet hosts) pass under strict unattended, a path or `file://` remote is treated as local use, and an unresolvable remote stays unverifiable.
 - Added: `gh` is governed as an outbound call to its API host — `--hostname` and `GH_HOST` are honored, `github.com` is the default — so GitHub CLI use of a scoped value verifies against the allowlist instead of landing in the blind spot.
 - Changed: curl/wget destination overrides — `--resolve`, `--connect-to`, or a `-H "Host: …"` header — now downgrade the call to destination-unverifiable: an allowlisted hostname no longer proves the receiving address, so strict/semi-strict refuse the restore instead of reporting it verified.

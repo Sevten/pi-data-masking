@@ -39,11 +39,16 @@ const STRUCTURED_KEYS = new Set([
   "repository",
 ]);
 
-/** HOST core: domain names, IPv4 literals, `localhost`. */
+/** HOST core: domain names, IPv4 literals (full, short-dotted, decimal,
+ *  hex forms — normalizeHost folds them all via WHATWG URL rules),
+ *  `localhost`, and IPv6 (bracketed, or bare with ≥ 3 colon-separated
+ *  groups so `host:port`-shaped text cannot match). */
 const HOST_CORE =
   "(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}|" +
-    "(?:\\d{1,3}\\.){3}\\d{1,3}|\\d{8,10}|localhost";
+    "(?:\\d{1,8}|0x[0-9a-f]+)(?:\\.(?:\\d{1,8}|0x[0-9a-f]+)){1,3}|" +
+    "\\d{8,10}|localhost";
 const BRACKET_IPV6 = "\\[[0-9a-f:.]+\\]";
+const BARE_IPV6 = "[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,}";
 
 /**
  * Free-form scan: optional scheme, optional userinfo (excluded from the
@@ -53,7 +58,7 @@ const BRACKET_IPV6 = "\\[[0-9a-f:.]+\\]";
 const FREEFORM = new RegExp(
   "((?:[a-z][a-z0-9+.-]*:\\/\\/))?" + // 1: scheme
     "((?:[^\\s:@/'\"<>`]+@))?" + // 2: userinfo (excluded from results)
-    `(${HOST_CORE}|${BRACKET_IPV6})` + // 3: host
+    `(${HOST_CORE}|${BRACKET_IPV6}|${BARE_IPV6})` + // 3: host
     "(:\\d{1,5})?" + // 4: port
     "(?=$|[/?#:\\s,;){}<>\"'])",
   "gi",
@@ -64,6 +69,41 @@ export function extractDestinations(input: unknown): string[] {
   const found = new Set<string>();
   collect(input, found, false);
   return [...found];
+}
+
+/**
+ * Raw destination URL text of a tool input (audit display only — never
+ * used in decisions, plan §A6): the matched `scheme://host[:port]/path`
+ * fragments so a blocked call reads with its request context, not just
+ * the host. Bounded: 5 URLs, 160 characters each.
+ */
+export function extractDestinationUrls(input: unknown): string[] {
+  const strings: string[] = [];
+  collectStrings(input, strings);
+  const found: string[] = [];
+  const seen = new Set<string>();
+  FREEFORM.lastIndex = 0;
+  for (const text of strings) {
+    for (const m of text.matchAll(FREEFORM)) {
+      if (!m[1] && !m[2] && !m[4]) continue; // same pinned shapes as hosts
+      const raw = m[0].slice(0, 160);
+      if (!seen.has(raw)) {
+        seen.add(raw);
+        found.push(raw);
+        if (found.length >= 5) return found;
+      }
+    }
+  }
+  return found;
+}
+
+function collectStrings(value: unknown, out: string[]): void {
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) {
+    for (const item of value) collectStrings(item, out);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectStrings(item, out);
+  }
 }
 
 function collect(value: unknown, found: Set<string>, structuredKey: boolean): void {
@@ -120,7 +160,10 @@ function scanFreeform(text: string, found: Set<string>): void {
     const host = m[3];
     const port = m[4];
     if (!scheme && !userinfo && !port) continue;
-    const normalized = normalizeHost(host.replace(/^\[|\]$/g, ""));
+    const bare = host.replace(/^\[|\]$/g, "");
+    // Bare IPv6 needs brackets for the URL-based normalizer, and only
+    // normalizes when it is a real address (odd shapes drop out).
+    const normalized = normalizeHost(bare.includes(":") ? `[${bare}]` : bare);
     if (normalized) found.add(normalized);
   }
 }

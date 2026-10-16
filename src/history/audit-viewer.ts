@@ -105,6 +105,10 @@ function eventLines(event: AuditEvent, width: number, theme: AuditTheme, selecte
   if (event.destinations && event.destinations.length > 0) {
     parts.push(`→ ${event.destinations.join(", ")}`);
   }
+  // Raw request context for destination events (display only, plan §A6).
+  if (event.urls && event.urls.length > 0) {
+    parts.push(`(${event.urls[0]}${event.urls.length > 1 ? ` +${event.urls.length - 1}` : ""})`);
+  }
   if (event.detail) parts.push(event.detail);
   const body = theme.fg("muted", parts.join("  "));
   return [truncateToWidth(`${selected ? theme.fg("accent", "> ") : "  "}${symbol} ${time} ${tool}  ${body}`, width)];
@@ -136,6 +140,7 @@ export function createAuditViewer(
         event.ruleId.toLowerCase().includes(needle) ||
         event.tool.toLowerCase().includes(needle) ||
         event.destinations?.some((d) => d.toLowerCase().includes(needle)) ||
+        event.urls?.some((u) => u.toLowerCase().includes(needle)) ||
         event.detail?.toLowerCase().includes(needle),
     );
   };

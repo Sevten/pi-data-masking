@@ -50,6 +50,9 @@ export interface AuditEvent {
   /** Destinations involved: offending (blocked) or matched
    *  (restored); empty when the trigger was destination-less intent. */
   destinations?: string[];
+  /** Raw destination URL text from the call arguments (display context
+   *  only — never used in decisions). */
+  urls?: string[];
   /** Free-form context: marked path(s), reason summary. */
   detail?: string;
   /** The tool call this decision fired on. Lets the audit view jump to the
