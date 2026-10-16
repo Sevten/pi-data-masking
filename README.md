@@ -4,7 +4,7 @@ General-purpose, rule-driven data masking extension for the [Pi](https://github.
 
 Instead of obvious [REDACTED] markers, the model gets placeholders that keep the shape of the original: generated automatically for secrets like API keys and tokens, or defined by you for values like customer names and internal hostnames. Tool calls keep working, and real values are restored only for destinations you allow, which also limits prompt-injection-driven data exfiltration.
 
-<p align="center"><img src="docs/masking-flow.svg" alt="User and tool data is masked before the LLM sees it. A tool call is restored to real values only if its destination is in the rule's scope; otherwise the call is blocked or the user is asked. Tool results are masked again before the next LLM request."></p>
+<p align="center"><img src="https://raw.githubusercontent.com/Sevten/pi-data-masking/main/docs/masking-flow.svg" alt="User and tool data is masked before the LLM sees it. A tool call is restored to real values only if its destination is in the rule's scope; otherwise the call is blocked or the user is asked. Tool results are masked again before the next LLM request."></p>
 
 ## Features
 
@@ -133,7 +133,7 @@ A rule can declare a restore scope: a list of network destinations its real valu
 
 A refused call is blocked outright, or paused for your approval when the rule is set to ask. Everything is logged in `/masking-history`. A built-in **Session history** rule also protects the two files that hold your secrets in plaintext (pi's session transcripts and this extension's config) from being archived or uploaded by the agent.
 
-The full guide, including the decision matrix and the approval dialog, is at [docs/scoped-restoration.md](docs/scoped-restoration.md).
+The full guide, including the decision matrix and the approval dialog, is at [docs/scoped-restoration.md](https://github.com/Sevten/pi-data-masking/blob/main/docs/scoped-restoration.md).
 
 ## Performance
 
@@ -226,7 +226,7 @@ Yes — when the call stays within the rule's scope. The extension restores the 
 
 A broker keeps the secret away from the agent entirely, but it only covers the protocols someone has built a broker for, and it can't help when a credential must be written into a `.env` or deploy config. It also protects nothing but credentials. pi-data-masking restores real values into tool arguments instead, so the agent can use them wherever you would (scp, ssh, terraform, scripts), and the same rules also mask names, phone numbers, and hostnames.
 
-The cost is a larger exposure surface: real values do reach tools and local files. Scoped restoration limits where they may go, within the limits described in [the guide](docs/scoped-restoration.md). For secrets that must never leave a trusted process, a proxy can be used alongside it.
+The cost is a larger exposure surface: real values do reach tools and local files. Scoped restoration limits where they may go, within the limits described in [the guide](https://github.com/Sevten/pi-data-masking/blob/main/docs/scoped-restoration.md). For secrets that must never leave a trusted process, a proxy can be used alongside it.
 
 ### What do `systemPromptGuidance` and `disclosePlaceholders` do?
 
