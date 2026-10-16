@@ -4,6 +4,8 @@ An API token is safe to use and dangerous to copy: you want the agent to call th
 
 A rule without a `restoreScope` restores unconditionally. A scope must be fully explicit: `mode` and `onRefuse` are required and validated at load time, so the config file always states the effective policy.
 
+Every field on this page can also be edited in the `/masking` UI (the Rule Builder and the settings rows); the page shows JSON for precision, and UI labels follow the interface, not this page.
+
 ## Quick example
 
 A GitHub token that may only be used against GitHub:
