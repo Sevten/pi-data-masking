@@ -222,13 +222,15 @@ Not by inversion: placeholders are derived with HMAC-SHA-256 under a random per-
 
 Yes — when the call stays within the rule's scope. The extension restores the original value immediately before execution; out-of-scope calls are blocked or pause for your approval first (see [Scoped restoration](#scoped-restoration)).
 
+### Why not a credential broker instead?
+
+A broker keeps the secret away from the agent entirely, but it only covers the protocols someone has built a broker for, and it can't help when a credential must be written into a `.env` or deploy config. It also protects nothing but credentials. pi-data-masking restores real values into tool arguments instead, so the agent can use them wherever you would (scp, ssh, terraform, scripts), and the same rules also mask names, phone numbers, and hostnames.
+
+The cost is a larger exposure surface: real values do reach tools and local files. Scoped restoration limits where they may go, within the limits described in [the guide](docs/scoped-restoration.md). For secrets that must never leave a trusted process, a proxy can be used alongside it.
+
 ### What do `systemPromptGuidance` and `disclosePlaceholders` do?
 
-Both are opt-in switches in the `/masking` settings zone; enable them if you notice the model analyzing or distrusting placeholders.
-
-`systemPromptGuidance` injects a note into the system prompt that pins down how the model must treat placeholders: compare them as exact full strings, pass them verbatim into tools, route transformations through tools, and report inexplicable contradictions instead of investigating them. It is advice, not enforcement.
-
-`disclosePlaceholders` controls whether that guidance lists the session's actual placeholder strings (grouped by structure fidelity), so the model knows exactly which values are substitutes — regex-discovered placeholders are never listed. It is a three-position switch: on discloses all eligible literal rules, off discloses none, and per-rule (the default) defers to each rule's own on/off toggle. Enabling disclosure enables guidance automatically.
+Two opt-in switches in the `/masking` settings zone, for sessions where the model analyzes or distrusts placeholders. `systemPromptGuidance` injects a system-prompt note pinning down how placeholders must be treated: compare them as exact full strings, pass them verbatim into tools, and route transformations through tools. It is advice, not enforcement. `disclosePlaceholders` controls whether that note also lists the session's actual placeholder strings, so the model knows exactly which values are substitutes; the default defers to each rule, and regex-discovered placeholders are never listed. Enabling disclosure enables guidance automatically.
 
 ## Development
 
