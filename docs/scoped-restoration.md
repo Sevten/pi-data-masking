@@ -157,7 +157,7 @@ Trusted environments that many rules share, such as an intranet or a company reg
 - Rules without a `destinations` list do not gain one.
 - A rule that declares `destinations: []` is never widened: never outbound means never.
 
-Both global lists are edited in one place: the `/masking` settings row **Destinations** (cell `<exempt>+<trusted>`) opens an editor with the exempt values (`options.allowlist`) and the trusted destinations side by side — Tab switches lists, each list supports add / edit / delete / F2 JSON staging, and saving writes both lists together through the options pipeline.
+Trusted destinations are edited in `/masking` via the settings row **Trusted destinations** (`<n> hosts` cell): a dedicated list editor with add / inline edit / delete / F2 JSON staging, saving through the options pipeline. (The exempt values next to it are the settings row **Exempt values**, the former Allowlist row.)
 
 ## Session history vault
 

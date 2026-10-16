@@ -109,7 +109,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
     /** Extra rows granted to the rules list so it fills the terminal
      *  down to the hint bar; corrected each render from the shortfall. */
     let listExtraRows = 0;
-    const settingsRows = ["masking", "guidance", "disclose", "status", "allowlist"] as const;
+    const settingsRows = ["masking", "guidance", "disclose", "status", "allowlist", "trusted"] as const;
     let settingsIndex = 0;
     const testEditorTheme: EditorTheme = {
       borderColor: (text) => theme.fg("accent", text),
@@ -294,20 +294,24 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       refresh();
     }
 
-    /** Settings row 5 (Allowlist): Enter/Space opens the staged editor; the
-     *  save itself goes through the options pipeline (impact changes notify). */
-    function openAllowlistInPlace(): void {
+    /** Settings rows 5/6 (Exempt values / Trusted destinations): Enter/Space
+     *  opens the staged editor for that one list; the save goes through the
+     *  options pipeline (impact changes notify). */
+    function openGlobalListInPlace(kind: "exempt" | "trusted"): void {
       mutationInProgress = true;
-      mutationMessage = "Opening destinations…";
+      mutationMessage = kind === "trusted" ? "Opening trusted destinations…" : "Opening exempt values…";
       refresh();
       void (async () => {
         // Options are global-only: always edit the global config's own
-        // allowlist (the file is created on save if it does not exist yet).
+        // options (the file is created on save if it does not exist yet).
         const target = { scope: "global" as const, path: GLOBAL_CONFIG_PATH };
         const options = bridge.effectiveConfig().options;
-        const saved = await openAllowlistEditor(bridge, ctx, target, options.allowlist ?? [], options.trustedDestinations ?? []);
+        const saved = await openAllowlistEditor(
+          bridge, ctx, target, options.allowlist ?? [], kind, options.trustedDestinations ?? []);
         mutationInProgress = false;
-        mutationMessage = saved ? "Saved · global destinations updated" : "";
+        mutationMessage = saved
+          ? (kind === "trusted" ? "Saved · trusted destinations updated" : "Saved · exempt values updated")
+          : "";
         refresh();
       })();
     }
@@ -443,7 +447,8 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           && (options.systemPromptGuidance !== activeOptions.systemPromptGuidance
             || options.disclosePlaceholders !== activeOptions.disclosePlaceholders
             || options.showStatusBar !== activeOptions.showStatusBar
-            || JSON.stringify(options.allowlist ?? []) !== JSON.stringify(activeOptions.allowlist ?? []))
+            || JSON.stringify(options.allowlist ?? []) !== JSON.stringify(activeOptions.allowlist ?? [])
+            || JSON.stringify(options.trustedDestinations ?? []) !== JSON.stringify(activeOptions.trustedDestinations ?? []))
           ? " · activates next run" : "";
         const rulesDivider = theme.fg(homeFocus === "rules" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
         // The vault row is row 0 of the rules list: selectable, Enter opens
@@ -499,9 +504,12 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
               : "list literal-rule placeholders in the model guidance") + optionsPendingSuffix),
           settingRow(3, "Status line", options.showStatusBar,
             `show the masking summary on the status line at the bottom of the chat window${optionsPendingSuffix}`),
-          settingRow(4, "Destinations", (options.allowlist ?? []).length,
-            `exempt values that are never masked + trusted destinations for every rule · Enter to edit${optionsPendingSuffix}`,
-            `${(options.allowlist ?? []).length}+${(options.trustedDestinations ?? []).length}`),
+          settingRow(4, "Exempt values", (options.allowlist ?? []).length,
+            `exact values that are never masked · Enter to edit${optionsPendingSuffix}`,
+            `${(options.allowlist ?? []).length} values`),
+          settingRow(5, "Trusted destinations", (options.trustedDestinations ?? []).length,
+            `merged into every rule's destination allowlist · Enter to edit${optionsPendingSuffix}`,
+            `${(options.trustedDestinations ?? []).length} hosts`),
         ];
         if (bridge.guidanceNoticePending() && !options.systemPromptGuidance) {
           settingsLines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: model guidance tells the model how to work with masked values — enable it above."), width));
@@ -856,13 +864,14 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             const direction: 1 | -1 = matchesKey(data, Key.left) ? -1 : 1;
             if (settingsIndex === 0) toggleMaskingInPlace();
             else if (settingsIndex < 4) void toggleGuidanceInPlace(direction);
-            // Destinations row (4): launcher — ←/→ do nothing; Enter/Space
-            // opens the editor, matching the row's non-toggle cell.
+            // Rows 4/5 (launchers): ←/→ do nothing; Enter/Space opens the
+            // editor, matching the row's non-toggle cell.
             return;
           }
           if (matchesKey(data, Key.space) || keybindings.matches(data, "tui.select.confirm")) {
             if (settingsIndex === 0) toggleMaskingInPlace();
-            else if (settingsIndex === 4) openAllowlistInPlace();
+            else if (settingsIndex === 4) openGlobalListInPlace("exempt");
+            else if (settingsIndex === 5) openGlobalListInPlace("trusted");
             else void toggleGuidanceInPlace();
             return;
           }

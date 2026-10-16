@@ -270,7 +270,7 @@ test("configuration home toggles and reorders in place while retaining selection
     component.handleInput(INPUT.down);
     component.handleInput(INPUT.down);
     component.handleInput(INPUT.down);
-    assert.ok(component.render(100).some((line) => line.includes("Destinations") && line.includes("▶")));
+    assert.ok(component.render(100).some((line) => line.includes("Exempt values") && line.includes("▶")));
     component.handleInput(INPUT.tab);
     // Cache-impacting rule toggle: applies immediately and reminds instead
     // of confirming.
@@ -826,21 +826,21 @@ test("allowlist zone opens the editor; staged entries persist as options", async
   const harness = await createHarness(dir, [
     // Scenario 1: /masking home screen.
     async (component) => {
-      assert.ok(component.render(100).some((line) => line.includes("Destinations")) &&
-        component.render(100).some((line) => line.includes("0+0")));
+      assert.ok(component.render(100).some((line) => line.includes("Exempt values")) &&
+        component.render(100).some((line) => line.includes("0 values")));
       component.handleInput("\u001B[Z"); // rules → settings
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.down);
-      component.handleInput(INPUT.down); // → Allowlist row
-      assert.ok(component.render(100).some((line) => line.includes("Destinations") && line.includes("▶")));
+      component.handleInput(INPUT.down); // → Exempt values row
+      assert.ok(component.render(100).some((line) => line.includes("Exempt values") && line.includes("▶")));
       component.handleInput(INPUT.enter);
       // The editor overlay owns its own component; wait until it has fully
       // finished saving (main screen shows the saved message) before closing.
       // Options are global-only: the entry lands in the global config.
       await waitFor(() => existsSync(globalConfigPath)
         && JSON.parse(readFileSync(globalConfigPath, "utf8")).options?.allowlist?.[0]?.text === "10.0.0.9");
-      await waitFor(() => component.render(100).some((line) => line.includes("Saved · global destinations updated")));
+      await waitFor(() => component.render(100).some((line) => line.includes("Saved · exempt values updated")));
       component.handleInput(INPUT.escape);
     },
     // Scenario 2: allowlist editor overlay with an always-focused input line.
@@ -856,7 +856,7 @@ test("allowlist zone opens the editor; staged entries persist as options", async
     },
     // Scenario 3: exit confirmation — Enter picks the highlighted "Save & close".
     async (component) => {
-      await waitFor(() => component.render(100).some((line) => line.includes("Finish destinations editing")));
+      await waitFor(() => component.render(100).some((line) => line.includes("Finish exempt values editing")));
       component.handleInput(INPUT.enter);
     },
   ]);
@@ -887,7 +887,7 @@ test("allowlist editor edits, adds, and deletes in place; discard leaves the con
       component.handleInput(INPUT.enter);
       // The editor overlay owns the next scenarios; wait for it to hand
       // control back before closing the home screen.
-      await waitFor(() => !component.render(100).join("\n").includes("Opening destinations"));
+      await waitFor(() => !component.render(100).join("\n").includes("Opening exempt values"));
       component.handleInput(INPUT.escape);
     },
     // Scenario 2: the allowlist editor.
@@ -918,7 +918,7 @@ test("allowlist editor edits, adds, and deletes in place; discard leaves the con
     },
     // Scenario 3: exit confirmation — pick "Discard changes".
     async (component) => {
-      await waitFor(() => component.render(100).some((line) => line.includes("Finish destinations editing")));
+      await waitFor(() => component.render(100).some((line) => line.includes("Finish exempt values editing")));
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.enter);
     },
@@ -952,7 +952,7 @@ test("allowlist case-mode toggle that would duplicate is rejected, not deleted",
       component.handleInput("\u001B[Z"); // rules → settings
       for (let index = 0; index < 4; index++) component.handleInput(INPUT.down);
       component.handleInput(INPUT.enter);
-      await waitFor(() => !component.render(100).join("\n").includes("Opening destinations"));
+      await waitFor(() => !component.render(100).join("\n").includes("Opening exempt values"));
       component.handleInput(INPUT.escape);
     },
     async (component) => {
@@ -996,14 +996,14 @@ test("left/right on the allowlist settings row does not open the editor", async 
       component.handleInput(INPUT.left);
       await delay(50);
       assert.equal(
-        component.render(100).join("\n").includes("Opening destinations"), false,
+        component.render(100).join("\n").includes("Opening exempt values"), false,
         "left arrow must not open the allowlist editor",
       );
       // Enter opens the editor; Esc closes it (nothing staged → no confirm).
       component.handleInput(INPUT.enter);
       // The editor overlay owns scenario 2; wait for it to hand control
       // back before closing the home screen.
-      await waitFor(() => !component.render(100).join("\n").includes("Opening destinations"));
+      await waitFor(() => !component.render(100).join("\n").includes("Opening exempt values"));
       component.handleInput(INPUT.escape);
     },
     async (component) => {
@@ -1136,7 +1136,7 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
   }
 });
 
-test("destinations editor: Tab switches to trusted destinations; both lists save together", async () => {
+test("trusted destinations row opens its own editor and saves the list", async () => {
   const dir = mkdtempSync(join(tmpdir(), "masking-ui-"));
   rmSync(globalConfigPath, { force: true });
   mkdirSync(join(dir, ".pi", "pi-data-masking"), { recursive: true });
@@ -1147,31 +1147,27 @@ test("destinations editor: Tab switches to trusted destinations; both lists save
   const harness = await createHarness(dir, [
     async (component) => {
       component.handleInput("\u001B[Z"); // rules → settings
-      for (let index = 0; index < 4; index++) component.handleInput(INPUT.down);
-      assert.ok(component.render(100).some((line) => line.includes("Destinations") && line.includes("▶")));
+      for (let index = 0; index < 5; index++) component.handleInput(INPUT.down);
+      const screen = () => component.render(100);
+      assert.ok(screen().some((line) => line.includes("Trusted destinations") && line.includes("▶")));
+      assert.ok(screen().some((line) => line.includes("0 hosts")), "cell shows the trusted count");
       component.handleInput(INPUT.enter);
       await waitFor(() => existsSync(globalConfigPath)
         && (JSON.parse(readFileSync(globalConfigPath, "utf8")).options?.trustedDestinations?.length ?? 0) > 0);
       component.handleInput(INPUT.escape);
     },
     async (component) => {
-      await waitFor(() => component.render(100).some((line) => line.includes("Exempt values")));
-      // Tab → trusted destinations (empty list focuses the add row).
-      component.handleInput("\t");
+      await waitFor(() => component.render(100).some((line) => line.includes("TRUSTED DESTINATIONS")));
       assert.ok(component.render(100).some((line) => line.includes("No trusted destinations")));
+      // Empty list focuses the add row: type + Enter stages.
       for (const char of "registry.corp") component.handleInput(char);
       component.handleInput(INPUT.enter);
       await waitFor(() => component.render(100).some((line) => line.includes("registry.corp")));
-      // Tab back → exempt list add row.
-      component.handleInput("\t");
-      for (const char of "10.0.0.9") component.handleInput(char);
-      component.handleInput(INPUT.enter);
-      await waitFor(() => component.render(100).some((line) => line.includes("10.0.0.9")));
       component.handleInput(INPUT.escape);
     },
     async (component) => {
-      await waitFor(() => component.render(100).some((line) => line.includes("Finish destinations editing")));
-      assert.ok(component.render(100).join("\n").includes("trusted 0 → 1"), "confirmation summarizes both lists");
+      await waitFor(() => component.render(100).some((line) => line.includes("Finish trusted destinations editing")));
+      assert.ok(component.render(100).join("\n").includes("0 → 1 destinations"), "confirmation summarizes the change");
       component.handleInput(INPUT.enter);
     },
   ]);
@@ -1181,7 +1177,7 @@ test("destinations editor: Tab switches to trusted destinations; both lists save
       options?: { allowlist?: Array<{ text: string }>; trustedDestinations?: string[] };
     };
     assert.deepEqual(saved.options?.trustedDestinations, ["registry.corp"]);
-    assert.deepEqual(saved.options?.allowlist, [{ text: "10.0.0.9" }]);
+    assert.equal(saved.options?.allowlist, undefined, "the exempt list must not be touched by this editor");
   } finally {
     await harness.shutdown();
     rmSync(dir, { recursive: true, force: true });
