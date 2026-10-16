@@ -12,6 +12,8 @@
 
 - **Breaking:** configs referencing `preset` rules no longer load those rules (presets are now Rule Builder templates only), and the `"*"` destination entry degrades to never-outbound on load, with a warning.
 
+## [0.9.1] - 2026-10-10
+
 ## [0.9.0] - 2026-09-23
 
 ### Added

@@ -124,6 +124,8 @@ export interface ConfiguredMaskingRule {
   /** Materialized restoration scope. Null = no tool-call constraints
    *  (unconditional restoration, backward compatible). */
   effectiveScope: EffectiveScope | null;
+  /** Validation warnings specific to this rule (low-entropy, invalid fields, etc.). */
+  warnings?: string[];
 }
 
 export interface RuleEnabledChange {
@@ -613,9 +615,7 @@ export function validateConfig(
         const est = estimateMatchLength(pattern);
         if (est !== null && est.max > 0 && est.max <= 6) {
           warnings.push(
-            `Rule [${id}] can only match values of at most ${est.max} character(s) — low entropy; ` +
-              `masking short/common values causes semantic contradictions and coincidental restores. ` +
-              `Consider not masking them; set "lowEntropy": true to silence this warning`
+            `Rule [${id}] can only match values of at most ${est.max} character(s) — low entropy; short values also occur as ordinary text, causing false restores. Consider not masking; set "lowEntropy": true to silence`
           );
         }
       }
@@ -649,16 +649,11 @@ export function validateConfig(
       if (rule.enabled !== false && rule.lowEntropy !== true) {
         if (isCommonSemanticValue(real)) {
           warnings.push(
-            `Rule [${id}] masks a common semantic value — ordinary text with the same value cannot be ` +
-              `distinguished from the sensitive value, which may cause semantic contradictions or leave a later ` +
-              `occurrence unprotected. Consider changing the credential or narrowing the rule context; ` +
-              `set "lowEntropy": true to silence this warning`
+            `Rule [${id}] masks a common semantic value — identical ordinary text cannot be distinguished from it, so replies may contradict themselves or the value may stay unmasked. Consider changing the credential or narrowing the rule; set "lowEntropy": true to silence`
           );
         } else if (real.length < 8) {
           warnings.push(
-            `Rule [${id}] masks a ${real.length}-character value — low entropy; ` +
-              `masking short/common values causes semantic contradictions and coincidental restores. ` +
-              `Consider not masking them; set "lowEntropy": true to silence this warning`
+            `Rule [${id}] masks a ${real.length}-character value — low entropy; short values also occur as ordinary text, causing false restores. Consider not masking; set "lowEntropy": true to silence`
           );
         }
       }
@@ -1193,9 +1188,10 @@ function buildLoadResult(
       if (rawId) seenIds.add(rawId);
 
       const validated = validateConfig([raw], env);
-      warnings.push(...validated.warnings.map(
+      const ruleWarnings = validated.warnings.map(
         (warning) => `${scope} ${warning}${rawRecord.enabled === false ? " (rule is currently disabled)" : ""}`,
-      ));
+      );
+      warnings.push(...ruleWarnings);
       const realFromEnv = typeof rawRecord.realFromEnv === "string" ? rawRecord.realFromEnv : undefined;
       let rule = validated.rules[0];
       let available = true;
@@ -1231,6 +1227,7 @@ function buildLoadResult(
             ? "custom"
             : "auto"
           : undefined,
+        warnings: ruleWarnings.length > 0 ? ruleWarnings : undefined,
       });
     });
   }

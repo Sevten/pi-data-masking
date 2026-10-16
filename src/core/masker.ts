@@ -292,6 +292,16 @@ export interface MaskOptions {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Image blocks in Pi's shape ({ type: "image", data, mimeType }) and in the
+// provider request the final safety net re-masks (Anthropic { type: "image", source: { data } },
+// OpenAI-style { type: "image_url", image_url: { url: "data:..." } }).
+const isImageBlock = (value: unknown): boolean => {
+  if (value === null || typeof value !== "object") return false;
+  const v = value as { type?: unknown; data?: unknown; source?: { data?: unknown }; image_url?: { url?: unknown } };
+  if (v.type === "image") return typeof v.data === "string" || typeof v.source?.data === "string";
+  return v.type === "image_url" && typeof v.image_url?.url === "string" && v.image_url.url.startsWith("data:");
+};
+
 export class Masker {
   private compiledRules: CompiledRule[] = [];
   /** Literal rules for the unmask direction, in original config order */
@@ -1150,6 +1160,9 @@ export class Masker {
   // ── Arbitrary-depth objects (recurse over all string values, keys untouched) ──
 
   maskValue(value: unknown, opts: MaskOptions = {}): { value: unknown; count: number; details: MaskDetail[] } {
+    // Image data is never masked: a key-shaped rule matched inside screenshot
+    // base64, the placeholder corrupted the PNG and the provider rejected every later request.
+    if (isImageBlock(value)) return { value, count: 0, details: [] };
     if (typeof value === "string") {
       const { text, count, details } = this.mask(value, opts);
       return { value: text, count, details };
@@ -1185,6 +1198,7 @@ export class Masker {
     opts?: { allowRuleId?: (ruleId: string) => boolean }
   ): { value: unknown; count: number; details: UnmaskDetail[] } {
     const allow = opts?.allowRuleId;
+    if (isImageBlock(value)) return { value, count: 0, details: [] };
     if (typeof value === "string") {
       if (!allow) {
         const r = this.unmask(value);
