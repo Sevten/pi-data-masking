@@ -51,10 +51,10 @@ Combined with `semi-strict`, *Never* reads as *local only*: the value may be wri
 |---|---|
 | **verified** | The call has a visible destination and it is on the allowlist. |
 | **violation** | The call has a visible destination and it is **not** on the allowlist. |
-| **unverifiable** | The call is outbound, but its destination can't be determined (for example `curl "$VAR"` where `$VAR` resolves to nothing). |
+| **unverifiable** | The call is outbound, but its destination can't be determined (for example `curl "$VAR"` where `$VAR` resolves to nothing) or no longer trustworthy (a `--resolve`/`--connect-to`/`-H "Host: …"` override points an allowlisted hostname at an arbitrary address). |
 | **refuse** | The scope's verdict that the value must not be restored for this call. `onRefuse` then decides whether the call is blocked outright or put to you. |
 | **mark** | When a value is restored for local use (such as written to a file), the extension remembers where it went. A later outbound command that uses that file is still checked against the scope. |
-| **consumer** | An interpreter that executes a marked file or an inline value (`python x.py <file>`, `source .env`). What the script does afterwards is out of sight, so the extension raises a one-time warning at handoff. Inline code with network features (`python -c "requests.post(…)"`, gawk `/inet/` or `system()`) is an exception: it counts as an outbound signature, so the detection-gap rules govern it instead of the warning-only path. |
+| **consumer** | A process whose own network behavior is not observable from the arguments: an interpreter executing a marked file or inline value (`python x.py <file>`, `source .env`), or a cloud CLI (`aws`, `gcloud`, `az` — the destination hides behind bucket URIs and region-default endpoints). What it does afterwards is out of sight, so the extension raises a one-time warning at handoff. Inline code with network features (`python -c "requests.post(…)"`, gawk `/inet/` or `system()`) is an exception: it counts as an outbound signature, so the detection-gap rules govern it instead of the warning-only path. |
 
 ## The mode ladder
 

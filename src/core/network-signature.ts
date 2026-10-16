@@ -48,7 +48,28 @@ const SIGNATURES = new Set([
   "invoke-restmethod",
   "irm",
   "socat",
+  // Traditional/Windows exfil tools. `tftp` and `bitsadmin` have almost
+  // no legitimate agent use; Start-BitsTransfer is the PowerShell form
+  // (firstToken lowercases → "start-bitstransfer").
+  "tftp",
+  "bitsadmin",
+  "start-bitstransfer",
 ]);
+
+/** Multi-word signatures: a general-purpose CLI is an outbound signature
+ *  only with the subcommand that leaves the machine (`npm publish`, not
+ *  `npm install`; `getent hosts`, not `getent passwd`; `certutil
+ *  -urlcache`, not `certutil -decode`). Matched as word followed by
+ *  subcommand in the flattened command-word list. */
+const SUBCOMMAND_SIGNATURES: ReadonlyArray<readonly [string, string]> = [
+  ["npm", "publish"],
+  ["pnpm", "publish"],
+  ["yarn", "publish"],
+  ["twine", "upload"],
+  ["cargo", "publish"],
+  ["getent", "hosts"],
+  ["certutil", "-urlcache"],
+];
 
 /** Command-position words that wrap the real command (privilege,
  *  scheduling, environment plumbing). Transparency: the wrapper is
@@ -259,19 +280,44 @@ function hasInlineNetworkCode(command: string): boolean {
 }
 
 /** True when the command text runs a known outbound tool at command
- *  position, or an interpreter/awk inline payload with network features.
- *  Plain-text mentions (`grep curl notes.md`, `echo wget`) do not match —
- *  the token must be in command position of some segment. */
+ *  position (single-word or subcommand-paired), an eval/variable head
+ *  (the real command is not observable — detection-gap cell), or an
+ *  interpreter/awk inline payload with network features. Plain-text
+ *  mentions (`grep curl notes.md`, `echo wget`) do not match — the token
+ *  must be in command position of some segment. */
 export function hasNetworkSignature(command: string): boolean {
-  const words = commandWords(command);
+  const heads = commandHeads(command);
+  const words = heads.map((head) => head.word);
   if (words.some((word) => SIGNATURES.has(word))) return true;
+  if (
+    heads.some(
+      ({ word, rest }) =>
+        rest[1] !== undefined &&
+        SUBCOMMAND_SIGNATURES.some(([w, sub]) => word === w && firstToken(rest[1]!) === sub),
+    )
+  ) {
+    return true;
+  }
   // openssl is multi-purpose: only its TLS client subcommand is an
   // outbound signature (`openssl s_client -connect host`), not local
   // crypto (`openssl enc`).
   if (words.some((word, index) => word === "openssl" && words[index + 1] === "s_client")) {
     return true;
   }
+  // eval runs its argument: the outbound tool never appears at command
+  // position, so the call is unverifiable by construction. A segment head
+  // that is a variable reference (`$CMD evil.com`) is the same case.
+  if (words.some((word) => word === "eval" || word.startsWith("$"))) return true;
   return hasInlineNetworkCode(command);
+}
+
+/** True when the command carries curl/wget options that redirect a
+ *  verified hostname to an arbitrary address (`--resolve host:port:addr`,
+ *  `--connect-to`, or a `-H "Host: …"` header): the extracted destination
+ *  is no longer trustworthy, so the call must be governed as
+ *  destination-unverifiable (detection-gap cell) instead of verified. */
+export function hasDestinationOverride(command: string): boolean {
+  return /(?:^|\s)(?:--resolve|--connect-to)(?:\s|=)|\s-H\s+["']?\s*host:|\s--header\s+["']?\s*host:/i.test(command);
 }
 
 /**
@@ -313,6 +359,16 @@ const CONSUMERS = new Set([
   "rscript",
   // make runs arbitrary commands from a makefile we do not read.
   "make",
+  // Cloud CLIs (plan §B3): their own network behavior is not observable
+  // from the arguments — the destination hides behind `s3://bucket/key`
+  // URIs and region-default endpoints, so they are the consumer class
+  // itself, not a signature: strict refuses (local cell), semi-strict
+  // restores with the handoff warning, permissive warns. Putting them in
+  // the signature table would refuse every legitimate `aws s3 cp` under
+  // semi-strict without ever verifying a real destination.
+  "aws",
+  "gcloud",
+  "az",
   // Windows script hosts: same unobservable-network-behavior class.
   "powershell",
   "pwsh",

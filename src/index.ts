@@ -69,7 +69,7 @@ import {
   referencesPersistedSecrets,
   structuredTargetPaths,
 } from "./core/file-markers.ts";
-import { consumerSignatureWord, hasNetworkSignature } from "./core/network-signature.ts";
+import { consumerSignatureWord, hasDestinationOverride, hasNetworkSignature } from "./core/network-signature.ts";
 import { resolvedDestinations } from "./core/egress-decision.ts";
 import {
   AUDIT_ENTRY,
@@ -1365,7 +1365,8 @@ export default async function (pi: ExtensionAPI) {
           onRefuse: vault.onRefuse,
         });
       }
-      const destinations = resolvedDestinations(masker, event.input);
+      const destinations =
+        command !== "" && hasDestinationOverride(command) ? [] : resolvedDestinations(masker, event.input);
       const signature = command !== "" && hasNetworkSignature(command);
       const consumerWord = command !== "" ? consumerSignatureWord(command) : undefined;
       if (markedScopes.size > 0 && destinations.length === 0 && !signature && consumerWord) {
@@ -1559,6 +1560,7 @@ export default async function (pi: ExtensionAPI) {
       ruleName: (ruleId) =>
         config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
       commandSignature: command !== "" && hasNetworkSignature(command),
+      destinationOverride: command !== "" && hasDestinationOverride(command),
       consumerSignature: consumerSignatureWord(command) !== undefined,
       granted: (ruleId, key) => sessionGrant(ruleId, key),
     });

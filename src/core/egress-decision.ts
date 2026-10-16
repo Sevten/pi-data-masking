@@ -106,6 +106,12 @@ export interface DecisionOptions {
    *  the value crosses the marker chain's observability boundary; the
    *  caller warns. Never blocks. */
   consumerSignature?: boolean;
+  /** True when the command carries a destination-override option
+   *  (curl/wget `--resolve`, `--connect-to`, or a `-H "Host: …"` header):
+   *  an extracted hostname no longer identifies the receiving address, so
+   *  the call is governed as destination-unverifiable (detection-gap cell)
+   *  instead of matched against the allowlist. */
+  destinationOverride?: boolean;
   /** Session grants, checked before a confirmed violation refuses. The key
    *  is the offending host for destination checks, `tool:<name>` for the
    *  tools check. Grants never cover the detection-gap cell (an unknown
@@ -158,7 +164,9 @@ export function decideToolCallRestore(
   // and would mismatch the allowlist as gibberish. Restored values never
   // leave this function: only extracted hosts do (a secret resolves to no
   // host and contributes nothing).
-  const destinations = extractDestinations(probe.value);
+  const destinations = opts.destinationOverride
+    ? []
+    : extractDestinations(probe.value);
   // Env-var destination resolution: `$VAR`/`${VAR}` references resolved
   // from the extension's environment and fed through the same extraction,
   // so a destination kept in a variable (`curl … "$DEPLOY_URL"`) becomes
@@ -171,8 +179,10 @@ export function decideToolCallRestore(
     for (const scope of opts.scopes.values()) {
       for (const name of scope.envNames ?? []) skipEnv.add(name);
     }
-    for (const hint of envDestinationHints(input, skipEnv)) {
-      if (!destinations.includes(hint)) destinations.push(hint);
+    if (!opts.destinationOverride) {
+      for (const hint of envDestinationHints(input, skipEnv)) {
+        if (!destinations.includes(hint)) destinations.push(hint);
+      }
     }
   }
   const violations = new Map<string, ScopeViolation>();

