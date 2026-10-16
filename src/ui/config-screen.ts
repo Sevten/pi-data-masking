@@ -460,6 +460,12 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
         // wrap of every following pair intact.
         const browseHints = wrappedMaskingText(theme.fg("dim", `↑↓/PgUp/PgDn · Enter edit · F2 JSON · ←/→ or Space on/off · / search · R ${showExactValues ? "hide" : "show"} values · A add · D delete · Tab zone · M masking · H help · Esc close`), width);
         const settingsDivider = theme.fg(homeFocus === "settings" ? "accent" : "dim", "─".repeat(Math.max(1, width)));
+        // Label column width: wide enough for the longest settings label
+        // ("Trusted destinations"), so toggle rows and launcher rows share
+        // one leading column. Revisit if a longer label is ever added.
+        const labelColumn = Math.max(16, ...[
+          "Masking", "Model guidance", "Disclose", "Status line", "Never masked", "Trusted destinations",
+        ].map((label) => visibleWidth(label)));
         const settingRow = (index: number, label: string, value: boolean | string | number, description: string, cell?: string): string => {
           const selected = homeFocus === "settings" && index === settingsIndex;
           const marker = selected ? "▶" : " ";
@@ -469,7 +475,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           // description column stays aligned across rows.
           if (cell !== undefined) {
             const alignedCell = truncateToWidth(cell, 8).padEnd(8);
-            const plain = `${marker} ${label}${" ".repeat(Math.max(0, 16 - label.length))} ${alignedCell}`;
+            const plain = `${marker} ${label}${" ".repeat(Math.max(0, labelColumn - visibleWidth(label)))} ${alignedCell}`;
             const rowBody = homeFocus === "settings"
               ? (selected ? theme.fg("accent", plain) : plain)
               : theme.fg("dim", plain);
@@ -481,7 +487,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           const pad = Math.max(0, 4 - rawLabel.length);
           const valueLabel = " ".repeat(Math.ceil(pad / 2)) + rawLabel + " ".repeat(Math.floor(pad / 2));
           const valueCell = `‹ ${valueLabel} ›`;
-          const plain = `${marker} ${label}${" ".repeat(Math.max(0, 16 - label.length))} ${valueCell}`;
+          const plain = `${marker} ${label}${" ".repeat(Math.max(0, labelColumn - visibleWidth(label)))} ${valueCell}`;
           const descriptionWidth = Math.max(0, width - visibleWidth(plain) - 2);
           const desc = truncateToWidth(description, descriptionWidth);
           const rowBody = homeFocus === "settings"
