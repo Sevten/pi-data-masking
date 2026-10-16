@@ -298,15 +298,16 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
      *  save itself goes through the options pipeline (impact changes notify). */
     function openAllowlistInPlace(): void {
       mutationInProgress = true;
-      mutationMessage = "Opening allowlist…";
+      mutationMessage = "Opening destinations…";
       refresh();
       void (async () => {
         // Options are global-only: always edit the global config's own
         // allowlist (the file is created on save if it does not exist yet).
         const target = { scope: "global" as const, path: GLOBAL_CONFIG_PATH };
-        const saved = await openAllowlistEditor(bridge, ctx, target, bridge.effectiveConfig().options.allowlist ?? []);
+        const options = bridge.effectiveConfig().options;
+        const saved = await openAllowlistEditor(bridge, ctx, target, options.allowlist ?? [], options.trustedDestinations ?? []);
         mutationInProgress = false;
-        mutationMessage = saved ? "Saved · global allowlist updated" : "";
+        mutationMessage = saved ? "Saved · global destinations updated" : "";
         refresh();
       })();
     }
@@ -498,9 +499,9 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
               : "list literal-rule placeholders in the model guidance") + optionsPendingSuffix),
           settingRow(3, "Status line", options.showStatusBar,
             `show the masking summary on the status line at the bottom of the chat window${optionsPendingSuffix}`),
-          settingRow(4, "Allowlist", (options.allowlist ?? []).length,
-            `exact values that are never masked · Enter to edit${optionsPendingSuffix}`,
-            `${(options.allowlist ?? []).length} values`),
+          settingRow(4, "Destinations", (options.allowlist ?? []).length,
+            `exempt values that are never masked + trusted destinations for every rule · Enter to edit${optionsPendingSuffix}`,
+            `${(options.allowlist ?? []).length}+${(options.trustedDestinations ?? []).length}`),
         ];
         if (bridge.guidanceNoticePending() && !options.systemPromptGuidance) {
           settingsLines.push(...wrappedMaskingText(theme.fg("accent", "New in this version: model guidance tells the model how to work with masked values — enable it above."), width));
@@ -855,7 +856,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
             const direction: 1 | -1 = matchesKey(data, Key.left) ? -1 : 1;
             if (settingsIndex === 0) toggleMaskingInPlace();
             else if (settingsIndex < 4) void toggleGuidanceInPlace(direction);
-            // Allowlist row (4): launcher — ←/→ do nothing; Enter/Space
+            // Destinations row (4): launcher — ←/→ do nothing; Enter/Space
             // opens the editor, matching the row's non-toggle cell.
             return;
           }

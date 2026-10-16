@@ -163,6 +163,7 @@ expected).
 | G5 | global `persistedSecrets: { onRefuse: "ask" }` | prompt titled `"Session history"` with the four choices; **Allow … for this session** covers later sends; **Add … and save** writes the host into `options.persistedSecrets.destinations` |
 | G6 | global `persistedSecrets: { enabled: false }` | G1 passes unchecked; the pinned `📌 Session history` row shows `off` |
 | G7 | `/masking` rules zone | `Session history` row pinned on top (Enter or `V` opens the editor: Enabled / Scope mode / On refusal / Destinations) — zero scoped rules still show it and G1 still blocks |
+| G8 | `/masking` settings row **Destinations** (`<exempt>+<trusted>` cell) | editor shows exempt values and trusted destinations side by side; Tab switches lists; add/edit/delete/F2 JSON work per list; save writes both lists through the options pipeline |
 
 ## 3. Verdict quick reference
 

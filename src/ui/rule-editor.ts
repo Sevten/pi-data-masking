@@ -1758,7 +1758,7 @@ function optionsEditTarget(_ctx: ExtensionContext): { scope: ConfigScope; path: 
 export async function saveConfigOptionsUI(
   bridge: MaskingUIBridge,
   ctx: ExtensionContext,
-  options: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders" | "showStatusBar" | "allowlist" | "persistedSecrets">>,
+  options: Partial<Pick<MaskingOptions, "systemPromptGuidance" | "disclosePlaceholders" | "showStatusBar" | "allowlist" | "trustedDestinations" | "persistedSecrets">>,
   target?: { scope: ConfigScope; path: string },
 ): Promise<ConfigSaveResult> {
   const resolvedTarget = target ?? optionsEditTarget(ctx);

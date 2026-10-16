@@ -157,6 +157,8 @@ Trusted environments that many rules share, such as an intranet or a company reg
 - Rules without a `destinations` list do not gain one.
 - A rule that declares `destinations: []` is never widened: never outbound means never.
 
+Both global lists are edited in one place: the `/masking` settings row **Destinations** (cell `<exempt>+<trusted>`) opens an editor with the exempt values (`options.allowlist`) and the trusted destinations side by side — Tab switches lists, each list supports add / edit / delete / F2 JSON staging, and saving writes both lists together through the options pipeline.
+
 ## Session history vault
 
 Two files hold secret values in plaintext no matter how rules are scoped: the pi sessions directory (session transcripts keep restored values and tool results verbatim) and this extension's config file (every rule's `real`). The built-in **Session history** protection (`options.persistedSecrets`, default on) treats both as one vault asset with its own scope. It appears as a `Session history` entry pinned at the top of the rules zone in `/masking` and is edited like any rule row.
