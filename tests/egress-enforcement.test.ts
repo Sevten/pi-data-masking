@@ -116,6 +116,35 @@ test("destinationOverride: an allowlisted host with --resolve is refused under s
   assert.equal(d.violations[0]?.reason, "no-destination");
 });
 
+// ── B1: resolved extra destinations (git remote / gh host) ────────
+
+test("extraDestinations: git push to an allowlisted remote verifies", () => {
+  const f = fixture({ scope: { destinations: ["github.com"], mode: "strict", onRefuse: "block" } });
+  const d = decideToolCallRestore(f.masker, { command: `git -c http.extraHeader="Auth: ${f.placeholder}" push origin main` }, {
+    toolName: "bash",
+    scopes: f.scopes,
+    ruleName,
+    commandSignature: true,
+    extraDestinations: ["github.com"],
+  });
+  assert.equal(d.count, 1);
+  assert.deepEqual(d.violations, []);
+  assert.deepEqual(d.verifiedRuleIds, ["stripe-key"]);
+});
+
+test("extraDestinations: git push to a non-allowlisted remote is a confirmed violation", () => {
+  const f = fixture({ scope: { destinations: ["stripe.com"], mode: "semi-strict", onRefuse: "block" } });
+  const d = decideToolCallRestore(f.masker, { command: `git -c http.extraHeader="Auth: ${f.placeholder}" push origin main` }, {
+    toolName: "bash",
+    scopes: f.scopes,
+    ruleName,
+    commandSignature: true,
+    extraDestinations: ["github.com"],
+  });
+  assert.equal(d.count, 0);
+  assert.equal(d.violations[0]?.reason, "destination");
+});
+
 // ── Inline interpreter code: signature computation wired into the matrix ──
 
 test("python -c with network payload lands in the detection-gap cell", () => {

@@ -15,6 +15,8 @@
  * per-rule/per-path tool allowlists, not a longer list here.
  */
 
+import { GIT_REMOTE_SUBCOMMANDS } from "./git-remote.ts";
+
 const SIGNATURES = new Set([
   "curl",
   "wget",
@@ -54,6 +56,9 @@ const SIGNATURES = new Set([
   "tftp",
   "bitsadmin",
   "start-bitstransfer",
+  // GitHub CLI: always network (its API host is the destination; resolved
+  // to a verifiable host by ghDestinationHost, plan §B2).
+  "gh",
 ]);
 
 /** Multi-word signatures: a general-purpose CLI is an outbound signature
@@ -70,6 +75,21 @@ const SUBCOMMAND_SIGNATURES: ReadonlyArray<readonly [string, string]> = [
   ["getent", "hosts"],
   ["certutil", "-urlcache"],
 ];
+
+/** First non-flag token after `git` (skipping `-C <dir>` / `-c <kv>`
+ *  global flags): the subcommand position for the git pair check. */
+function gitSubcommand(rest: string[]): string | undefined {
+  for (let i = 1; i < rest.length; i++) {
+    const token = firstToken(rest[i]!);
+    if (token === "-c" || token === "-C") {
+      i++;
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    return token;
+  }
+  return undefined;
+}
 
 /** Command-position words that wrap the real command (privilege,
  *  scheduling, environment plumbing). Transparency: the wrapper is
@@ -285,16 +305,23 @@ function hasInlineNetworkCode(command: string): boolean {
  *  interpreter/awk inline payload with network features. Plain-text
  *  mentions (`grep curl notes.md`, `echo wget`) do not match — the token
  *  must be in command position of some segment. */
-export function hasNetworkSignature(command: string): boolean {
+export function hasNetworkSignature(command: string, gitRemoteLocal = false): boolean {
   const heads = commandHeads(command);
   const words = heads.map((head) => head.word);
   if (words.some((word) => SIGNATURES.has(word))) return true;
   if (
-    heads.some(
-      ({ word, rest }) =>
+    heads.some(({ word, rest }) => {
+      if (word === "git") {
+        // A locally resolved remote (bare repo path) is not egress.
+        if (gitRemoteLocal) return false;
+        const sub = gitSubcommand(rest);
+        return sub !== undefined && GIT_REMOTE_SUBCOMMANDS.has(sub);
+      }
+      return (
         rest[1] !== undefined &&
-        SUBCOMMAND_SIGNATURES.some(([w, sub]) => word === w && firstToken(rest[1]!) === sub),
-    )
+        SUBCOMMAND_SIGNATURES.some(([w, sub]) => w === word && firstToken(rest[1]!) === sub)
+      );
+    })
   ) {
     return true;
   }

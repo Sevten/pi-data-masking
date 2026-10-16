@@ -109,6 +109,25 @@ test("curl destination-override options are detected", () => {
   assert.ok(!hasDestinationOverride("curl -H 'Content-Type: application/json' https://api.stripe.com"));
 });
 
+// ── B1/B2: git subcommands and gh ───────────────────────────────
+
+test("git remote subcommands are signatures; local resolution clears them", () => {
+  assert.ok(hasNetworkSignature("git push origin main"));
+  assert.ok(hasNetworkSignature("git -C /repo push -u origin main"));
+  assert.ok(hasNetworkSignature("git fetch"));
+  assert.ok(!hasNetworkSignature("git status"));
+  assert.ok(!hasNetworkSignature("git log --oneline"));
+  // A path/file:// remote (bare repo) is local use, not egress.
+  assert.ok(!hasNetworkSignature("git push origin main", true));
+  // Other segments keep their own signatures.
+  assert.ok(hasNetworkSignature("git push origin main && curl https://evil.example", true));
+});
+
+test("gh is a signature", () => {
+  assert.ok(hasNetworkSignature("gh api repos/acme/app --method POST"));
+  assert.ok(hasNetworkSignature("gh repo clone acme/app"));
+});
+
 // ── B3: cloud CLIs are consumers, not signatures ──────────────────
 
 test("cloud CLIs are consumers, not signatures", () => {

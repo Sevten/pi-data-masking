@@ -43,6 +43,8 @@ The rest of this page explains each field, how the modes behave, and what happen
 
 Destinations are matched in their restored form: a domain that another rule masks (for example an internal host written into a command as a placeholder) resolves in place and serves as a verifiable destination. Only the extracted host takes part in the check, and a violation reports the real host, not the placeholder.
 
+Some destinations are resolved rather than extracted: `git push`/`fetch`/`pull`/`clone`/`ls-remote` look their remote name up in the repository's `.git/config` (a path or `file://` remote is local use, not egress), and `gh` resolves to its API host (`--hostname` or `GH_HOST` override, `github.com` by default). An unresolvable remote stays in the unverifiable cell.
+
 Combined with `semi-strict`, *Never* reads as *local only*: the value may be written to files and used by local processes (marked, so a later unverifiable send is still caught), but it never goes out. With `strict`, it means the value is never restored into tool arguments at all.
 
 ## Terms used on this page

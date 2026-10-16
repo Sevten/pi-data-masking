@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Added: git remotes became verifiable destinations — `git push`/`fetch`/`pull`/`clone`/`ls-remote` are outbound signatures whose remote name is resolved through the repository's `.git/config`: pushes to an allowlisted remote (including single-label intranet hosts) pass under strict unattended, a path or `file://` remote is treated as local use, and an unresolvable remote stays unverifiable.
+- Added: `gh` is governed as an outbound call to its API host — `--hostname` and `GH_HOST` are honored, `github.com` is the default — so GitHub CLI use of a scoped value verifies against the allowlist instead of landing in the blind spot.
 - Changed: curl/wget destination overrides — `--resolve`, `--connect-to`, or a `-H "Host: …"` header — now downgrade the call to destination-unverifiable: an allowlisted hostname no longer proves the receiving address, so strict/semi-strict refuse the restore instead of reporting it verified.
 - Changed: the outbound-signature table grew — `npm`/`pnpm`/`yarn publish`, `twine upload`, `cargo publish`, `getent hosts`, `certutil -urlcache`, `tftp`, `bitsadmin`, and `Start-BitsTransfer` register at command position, and `eval` or a variable command head (`$CMD …`) counts as unverifiable outbound (the real command is never visible).
 - Changed: `aws`, `gcloud`, and `az` are governed as consumers — a marked or restored value handed to them draws the one-time handoff warning, since their real destination hides behind bucket URIs and region-default endpoints and can never be verified from the arguments.

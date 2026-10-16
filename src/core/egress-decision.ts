@@ -112,6 +112,10 @@ export interface DecisionOptions {
    *  the call is governed as destination-unverifiable (detection-gap cell)
    *  instead of matched against the allowlist. */
   destinationOverride?: boolean;
+  /** Resolved destinations the free-form scan cannot see — a git remote
+   *  name looked up in `.git/config`, the `gh` API host (plan §B1/§B2).
+   *  Appended to the extracted set before allowlist matching. */
+  extraDestinations?: string[];
   /** Session grants, checked before a confirmed violation refuses. The key
    *  is the offending host for destination checks, `tool:<name>` for the
    *  tools check. Grants never cover the detection-gap cell (an unknown
@@ -167,6 +171,9 @@ export function decideToolCallRestore(
   const destinations = opts.destinationOverride
     ? []
     : extractDestinations(probe.value);
+  for (const extra of opts.extraDestinations ?? []) {
+    if (!destinations.includes(extra)) destinations.push(extra);
+  }
   // Env-var destination resolution: `$VAR`/`${VAR}` references resolved
   // from the extension's environment and fed through the same extraction,
   // so a destination kept in a variable (`curl … "$DEPLOY_URL"`) becomes

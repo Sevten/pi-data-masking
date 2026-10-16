@@ -70,6 +70,7 @@ import {
   structuredTargetPaths,
 } from "./core/file-markers.ts";
 import { consumerSignatureWord, hasDestinationOverride, hasNetworkSignature } from "./core/network-signature.ts";
+import { ghDestinationHost, resolveGitRemote } from "./core/git-remote.ts";
 import { resolvedDestinations } from "./core/egress-decision.ts";
 import {
   AUDIT_ENTRY,
@@ -1306,6 +1307,18 @@ export default async function (pi: ExtensionAPI) {
           : ""
         : "";
 
+    // Destinations the free-form scan cannot see (plan §B1/§B2): a git
+    // remote name resolved through .git/config, and the gh API host.
+    // A path/file:// git remote is local — the git signature is cleared.
+    // resolveGitRemote touches the filesystem only when the command
+    // actually runs `git push|fetch|pull|clone|ls-remote`.
+    const gitResolution = command !== "" ? resolveGitRemote(command, cwd) : { kind: "unknown" as const };
+    const extraDestinations: string[] = [];
+    if (gitResolution.kind === "host") extraDestinations.push(gitResolution.host);
+    const ghHost = command !== "" ? ghDestinationHost(command) : undefined;
+    if (ghHost && !extraDestinations.includes(ghHost)) extraDestinations.push(ghHost);
+    const gitRemoteLocal = gitResolution.kind === "local";
+
     // Effective scopes of the active rules; rules without one restore
     // unconditionally. Recomputed per call — cheap, and always in sync
     // with hot-reloaded configs.
@@ -1365,9 +1378,12 @@ export default async function (pi: ExtensionAPI) {
           onRefuse: vault.onRefuse,
         });
       }
+      const scanDestinations = resolvedDestinations(masker, event.input);
       const destinations =
-        command !== "" && hasDestinationOverride(command) ? [] : resolvedDestinations(masker, event.input);
-      const signature = command !== "" && hasNetworkSignature(command);
+        command !== "" && hasDestinationOverride(command)
+          ? []
+          : [...scanDestinations, ...extraDestinations.filter((h) => !scanDestinations.includes(h))];
+      const signature = command !== "" && hasNetworkSignature(command, gitRemoteLocal);
       const consumerWord = command !== "" ? consumerSignatureWord(command) : undefined;
       if (markedScopes.size > 0 && destinations.length === 0 && !signature && consumerWord) {
         // Consumer signal: a marked path (or env reference) is handed to a
@@ -1559,8 +1575,9 @@ export default async function (pi: ExtensionAPI) {
       scopes,
       ruleName: (ruleId) =>
         config.configuredRules.find((c) => c.rule.id === ruleId)?.rule.name?.trim() || ruleId,
-      commandSignature: command !== "" && hasNetworkSignature(command),
+      commandSignature: command !== "" && hasNetworkSignature(command, gitRemoteLocal),
       destinationOverride: command !== "" && hasDestinationOverride(command),
+      extraDestinations,
       consumerSignature: consumerSignatureWord(command) !== undefined,
       granted: (ruleId, key) => sessionGrant(ruleId, key),
     });
@@ -1586,7 +1603,7 @@ export default async function (pi: ExtensionAPI) {
           basis:
             v.reason === "destination" || v.reason === "tool"
               ? "violation"
-              : hasNetworkSignature(command)
+              : hasNetworkSignature(command, gitRemoteLocal)
                 ? "unverifiable"
                 : "local",
           ruleId: v.ruleId,
@@ -1608,7 +1625,7 @@ export default async function (pi: ExtensionAPI) {
         if (v.reason === "tool") {
           return `"${v.ruleName}" restores only for its allowed tools; this call used "${v.offending.join(", ")}".`;
         }
-        return hasNetworkSignature(command)
+        return hasNetworkSignature(command, gitRemoteLocal)
           ? `"${v.ruleName}" (${mode}) blocks outbound calls with no verifiable destination. Use a literal destination or export it before launch.`
           : `"${v.ruleName}" (${mode}) may not be written to local files or used by local processes — its value only flows to its allowed destinations. Write the file yourself, or switch the rule to semi-strict/permissive in /masking.`;
       });
@@ -1675,7 +1692,7 @@ export default async function (pi: ExtensionAPI) {
             ? `tool not in allowlist: ${v.offending.join(", ")}`
             : v.reason === "destination"
               ? "outside allowed destinations"
-              : hasNetworkSignature(command)
+              : hasNetworkSignature(command, gitRemoteLocal)
                 ? "outbound call with no verifiable destination"
                 : "local use (use-not-copy)") + (outcome === "save" ? "; added to the rule" : ""),
       });
@@ -1688,7 +1705,7 @@ export default async function (pi: ExtensionAPI) {
               ? `("${v.ruleName}" restores only for its allowed tools).`
               : v.reason === "destination"
                 ? `(it sends the value to ${capDestinationList(v.offending)}, outside the rule's allowed destinations).`
-                : hasNetworkSignature(command)
+                : hasNetworkSignature(command, gitRemoteLocal)
                   ? "(it sends the value to a destination that cannot be verified)."
                   : "(it writes the value to a local file or process)."),
         };
