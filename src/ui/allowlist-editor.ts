@@ -2,7 +2,7 @@
  * ui/allowlist-editor.ts
  * Overlay editor for one global list, picked by the caller:
  *
- * - "exempt" (`options.allowlist`, Options row "Exempt values"): exact
+ * - "exempt" (`options.allowlist`, Options row "Never masked"): exact
  *   literal values that are never masked, each with its own
  *   case-sensitivity flag (case-sensitive / ignore-case; C toggles it;
  *   toggling into an already-listed mode is rejected instead of destroying
@@ -299,7 +299,7 @@ export async function openAllowlistEditor(
       else if (trustedChanged) summary.push("list updated");
       const choice = await selectMaskingOption(
         ctx,
-        editingTrusted ? "Finish trusted destinations editing" : "Finish exempt values editing",
+        editingTrusted ? "Finish trusted destinations editing" : "Finish never-masked values editing",
         ["Save & close", "Discard changes", "Back to editing"],
         `${summary.join(" · ") || "list updated"} · written to the global config (${target.path}).`,
       );

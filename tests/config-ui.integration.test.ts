@@ -270,7 +270,7 @@ test("configuration home toggles and reorders in place while retaining selection
     component.handleInput(INPUT.down);
     component.handleInput(INPUT.down);
     component.handleInput(INPUT.down);
-    assert.ok(component.render(100).some((line) => line.includes("Exempt values") && line.includes("▶")));
+    assert.ok(component.render(100).some((line) => line.includes("Never masked") && line.includes("▶")));
     component.handleInput(INPUT.tab);
     // Cache-impacting rule toggle: applies immediately and reminds instead
     // of confirming.
@@ -826,21 +826,21 @@ test("allowlist zone opens the editor; staged entries persist as options", async
   const harness = await createHarness(dir, [
     // Scenario 1: /masking home screen.
     async (component) => {
-      assert.ok(component.render(100).some((line) => line.includes("Exempt values")) &&
+      assert.ok(component.render(100).some((line) => line.includes("Never masked")) &&
         component.render(100).some((line) => line.includes("0 values")));
       component.handleInput("\u001B[Z"); // rules → settings
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.down);
-      component.handleInput(INPUT.down); // → Exempt values row
-      assert.ok(component.render(100).some((line) => line.includes("Exempt values") && line.includes("▶")));
+      component.handleInput(INPUT.down); // → Never masked row
+      assert.ok(component.render(100).some((line) => line.includes("Never masked") && line.includes("▶")));
       component.handleInput(INPUT.enter);
       // The editor overlay owns its own component; wait until it has fully
       // finished saving (main screen shows the saved message) before closing.
       // Options are global-only: the entry lands in the global config.
       await waitFor(() => existsSync(globalConfigPath)
         && JSON.parse(readFileSync(globalConfigPath, "utf8")).options?.allowlist?.[0]?.text === "10.0.0.9");
-      await waitFor(() => component.render(100).some((line) => line.includes("Saved · exempt values updated")));
+      await waitFor(() => component.render(100).some((line) => line.includes("Saved · never-masked values updated")));
       component.handleInput(INPUT.escape);
     },
     // Scenario 2: allowlist editor overlay with an always-focused input line.
@@ -856,7 +856,7 @@ test("allowlist zone opens the editor; staged entries persist as options", async
     },
     // Scenario 3: exit confirmation — Enter picks the highlighted "Save & close".
     async (component) => {
-      await waitFor(() => component.render(100).some((line) => line.includes("Finish exempt values editing")));
+      await waitFor(() => component.render(100).some((line) => line.includes("Finish never-masked values editing")));
       component.handleInput(INPUT.enter);
     },
   ]);
@@ -887,7 +887,7 @@ test("allowlist editor edits, adds, and deletes in place; discard leaves the con
       component.handleInput(INPUT.enter);
       // The editor overlay owns the next scenarios; wait for it to hand
       // control back before closing the home screen.
-      await waitFor(() => !component.render(100).join("\n").includes("Opening exempt values"));
+      await waitFor(() => !component.render(100).join("\n").includes("Opening never-masked values"));
       component.handleInput(INPUT.escape);
     },
     // Scenario 2: the allowlist editor.
@@ -918,7 +918,7 @@ test("allowlist editor edits, adds, and deletes in place; discard leaves the con
     },
     // Scenario 3: exit confirmation — pick "Discard changes".
     async (component) => {
-      await waitFor(() => component.render(100).some((line) => line.includes("Finish exempt values editing")));
+      await waitFor(() => component.render(100).some((line) => line.includes("Finish never-masked values editing")));
       component.handleInput(INPUT.down);
       component.handleInput(INPUT.enter);
     },
@@ -952,7 +952,7 @@ test("allowlist case-mode toggle that would duplicate is rejected, not deleted",
       component.handleInput("\u001B[Z"); // rules → settings
       for (let index = 0; index < 4; index++) component.handleInput(INPUT.down);
       component.handleInput(INPUT.enter);
-      await waitFor(() => !component.render(100).join("\n").includes("Opening exempt values"));
+      await waitFor(() => !component.render(100).join("\n").includes("Opening never-masked values"));
       component.handleInput(INPUT.escape);
     },
     async (component) => {
@@ -996,14 +996,14 @@ test("left/right on the allowlist settings row does not open the editor", async 
       component.handleInput(INPUT.left);
       await delay(50);
       assert.equal(
-        component.render(100).join("\n").includes("Opening exempt values"), false,
+        component.render(100).join("\n").includes("Opening never-masked values"), false,
         "left arrow must not open the allowlist editor",
       );
       // Enter opens the editor; Esc closes it (nothing staged → no confirm).
       component.handleInput(INPUT.enter);
       // The editor overlay owns scenario 2; wait for it to hand control
       // back before closing the home screen.
-      await waitFor(() => !component.render(100).join("\n").includes("Opening exempt values"));
+      await waitFor(() => !component.render(100).join("\n").includes("Opening never-masked values"));
       component.handleInput(INPUT.escape);
     },
     async (component) => {

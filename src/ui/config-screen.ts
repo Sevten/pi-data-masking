@@ -294,12 +294,12 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
       refresh();
     }
 
-    /** Settings rows 5/6 (Exempt values / Trusted destinations): Enter/Space
+    /** Settings rows 5/6 (Never masked / Trusted destinations): Enter/Space
      *  opens the staged editor for that one list; the save goes through the
      *  options pipeline (impact changes notify). */
     function openGlobalListInPlace(kind: "exempt" | "trusted"): void {
       mutationInProgress = true;
-      mutationMessage = kind === "trusted" ? "Opening trusted destinations…" : "Opening exempt values…";
+      mutationMessage = kind === "trusted" ? "Opening trusted destinations…" : "Opening never-masked values…";
       refresh();
       void (async () => {
         // Options are global-only: always edit the global config's own
@@ -310,7 +310,7 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
           bridge, ctx, target, options.allowlist ?? [], kind, options.trustedDestinations ?? []);
         mutationInProgress = false;
         mutationMessage = saved
-          ? (kind === "trusted" ? "Saved · trusted destinations updated" : "Saved · exempt values updated")
+          ? (kind === "trusted" ? "Saved · trusted destinations updated" : "Saved · never-masked values updated")
           : "";
         refresh();
       })();
@@ -504,8 +504,8 @@ export async function openMaskingConfig(bridge: MaskingUIBridge, ctx: ExtensionC
               : "list literal-rule placeholders in the model guidance") + optionsPendingSuffix),
           settingRow(3, "Status line", options.showStatusBar,
             `show the masking summary on the status line at the bottom of the chat window${optionsPendingSuffix}`),
-          settingRow(4, "Exempt values", (options.allowlist ?? []).length,
-            `exact values that are never masked · Enter to edit${optionsPendingSuffix}`,
+          settingRow(4, "Never masked", (options.allowlist ?? []).length,
+            `exact values that are never masked (options.allowlist) · Enter to edit${optionsPendingSuffix}`,
             `${(options.allowlist ?? []).length} values`),
           settingRow(5, "Trusted destinations", (options.trustedDestinations ?? []).length,
             `merged into every rule's destination allowlist · Enter to edit${optionsPendingSuffix}`,
