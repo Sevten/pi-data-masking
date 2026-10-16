@@ -97,6 +97,14 @@ test("eval and variable-head segments are signatures (unverifiable by constructi
   assert.ok(hasNetworkSignature("eval $(echo Y3VybCBl | base64 -d) evil.example"));
   assert.ok(hasNetworkSignature('"$TOOL" https://evil.example'));
   assert.ok(hasNetworkSignature("$CMD evil.example"));
+  // Bare `$?`/`$$`/`$0` heads are not variable command names — they must
+  // not degrade legitimate local calls into the detection-gap cell.
+  // Well-formed names ($JOBID) stay signatures: a variable head is
+  // unverifiable by construction regardless of what the variable holds.
+  assert.ok(!hasNetworkSignature("$? /bin/run-job"));
+  assert.ok(!hasNetworkSignature("$$ job.local"));
+  assert.ok(!hasNetworkSignature("$0 init"));
+  assert.ok(hasNetworkSignature("$JOBID submit"));
 });
 
 // ── A5: destination-override options ────────────────────────────

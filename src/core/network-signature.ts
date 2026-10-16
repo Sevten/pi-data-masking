@@ -333,8 +333,17 @@ export function hasNetworkSignature(command: string, gitRemoteLocal = false): bo
   }
   // eval runs its argument: the outbound tool never appears at command
   // position, so the call is unverifiable by construction. A segment head
-  // that is a variable reference (`$CMD evil.com`) is the same case.
-  if (words.some((word) => word === "eval" || word.startsWith("$"))) return true;
+  // that is a shell variable reference (`$CMD evil.com`) is the same case.
+  // Only well-formed variable names count — bare `$?`/`$$`/`$0` heads and
+  // HPC-style non-command words must not degrade legitimate local calls
+  // into the detection-gap cell.
+  if (
+    heads.some(
+      ({ word }) =>
+        word === "eval" || /^\$[A-Za-z_][A-Za-z0-9_]*$/.test(word),
+    )
+  )
+    return true;
   return hasInlineNetworkCode(command);
 }
 
