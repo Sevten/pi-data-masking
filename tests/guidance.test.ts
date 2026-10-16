@@ -272,7 +272,8 @@ test("scope block rides on the full form only and caps entries", () => {
   assert.ok(full.includes("Stripe: only stripe.com"));
   assert.ok(full.includes("report the contradiction"));
   const guidanceOnly = composeGuidanceNote([], scope);
-  assert.ok(!guidanceOnly.includes("stripe.com"));
+  // Not a substring-sanitization check — an exact-content assertion on the note text.
+  assert.ok(!new RegExp("stripe\.com").test(guidanceOnly));
 });
 
 test("scope block truncates beyond the cap", () => {

@@ -39,7 +39,7 @@ test("regex safety diagnostics avoid common separated and bounded patterns", () 
 });
 
 test("risky regex warnings are advisory during load and save validation", () => {
-  // codeql[js/redos] disable-next-line — intentional unsafe fixture for regex-safety tests
+  // codeql[js/redos]
   const raw = { id: "risky", type: "regex", pattern: "^(a+)+$" };
   const loaded = validateConfig([raw]);
   assert.equal(loaded.rules.length, 1);
