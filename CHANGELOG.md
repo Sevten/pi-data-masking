@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Writing a file no longer raises out-of-scope egress approvals: destination checks read intent, not payload. Only shell commands (bash/powershell) get the full-text scan; every other tool is checked on its structured URL/host fields, so a document that merely mentions hosts, session paths, or URL-shaped strings (an SVG `xmlns`, a dotted version number) is no longer treated as an outbound call.
+
 ## [0.10.0] - 2026-10-16
 
 ### New Features

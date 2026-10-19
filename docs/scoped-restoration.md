@@ -180,6 +180,8 @@ cat masking.config.json | ...
 
 Scoped restoration complements, and does not replace, host-level tool approval and network egress controls. It is argument-layer enforcement with documented evasion limits.
 
+**Destination checks read intent, not payload.** Only shell calls (bash/powershell) get the free-form scan over the whole input — there the command string is both action and payload. Every other tool is checked on its structured destination fields (`url`, `host`, `endpoint`, …) only: a write whose content mentions hosts, URL-shaped strings, or vault paths is a local call, governed by the mode ladder's local cell (strict refuses use-not-copy; semi-strict/permissive restore), never by destination matching. Shell behavior is unchanged.
+
 **What it cannot see:**
 
 - Open redirects on allowlisted destinations.
