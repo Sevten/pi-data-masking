@@ -106,7 +106,7 @@ function collectStrings(value: unknown, out: string[]): void {
   }
 }
 
-function collect(value: unknown, found: Set<string>, structuredKey: boolean): void {
+function collect(value: unknown, found: Set<string>, structuredKey: boolean, structuredOnly = false): void {
   if (typeof value === "string") {
     if (structuredKey) {
       addHost(value, found);
@@ -115,16 +115,17 @@ function collect(value: unknown, found: Set<string>, structuredKey: boolean): vo
       scanFreeform(value, found);
       return;
     }
+    if (structuredOnly) return; // payload≠intent: skip non-structured strings
     scanFreeform(value, found);
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) collect(item, found, structuredKey);
+    for (const item of value) collect(item, found, structuredKey, structuredOnly);
     return;
   }
   if (value !== null && typeof value === "object") {
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      collect(child, found, STRUCTURED_KEYS.has(key.toLowerCase()));
+      collect(child, found, STRUCTURED_KEYS.has(key.toLowerCase()), structuredOnly);
     }
   }
 }
@@ -137,6 +138,19 @@ function addHost(value: string, found: Set<string>): void {
     const normalized = normalizeHost(candidate);
     if (normalized) found.add(normalized);
   }
+}
+
+/** Destinations declared by structured fields only (`url`, `host`,
+ *  `endpoint`, …): the payload≠intent discipline for tools whose input is
+ *  a record (write `content`, read results, …). Free-form strings in
+ *  non-structured fields merely mention hosts — a document body naming
+ *  `evil.com` is not an outbound call — so they are not scanned. Shell
+ *  tools (bash/powershell) must NOT use this: their `command` string is
+ *  both action and payload, and is not under a structured key. */
+export function extractStructuredDestinations(input: unknown): string[] {
+  const found = new Set<string>();
+  collect(input, found, false, true);
+  return [...found];
 }
 
 /** Hostname of a full URL, userinfo excluded. Null when not URL-shaped. */

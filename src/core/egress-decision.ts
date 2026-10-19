@@ -24,7 +24,7 @@
  * attacker is left holding at most a placeholder.
  */
 
-import { extractDestinations } from "./destination-extract.ts";
+import { extractDestinations, extractStructuredDestinations } from "./destination-extract.ts";
 import type { Masker } from "./masker.ts";import {
   compileDestinations,
   unmatchedDestinations,
@@ -135,6 +135,15 @@ function matchersFor(scope: EffectiveScope): DestinationMatcher[] {
   return matchers;
 }
 
+/** The call's shell command (bash/powershell `command`), "" otherwise.
+ *  Single definition of the shell axis — index.ts derives its signature /
+ *  override signals from the same string. */
+export function shellCommandOf(toolName: string, input: unknown): string {
+  if (toolName !== "bash" && toolName !== "powershell") return "";
+  const command = (input as Record<string, unknown> | null)?.command;
+  return typeof command === "string" ? command : "";
+}
+
 export function decideToolCallRestore(
   masker: Masker,
   input: unknown,
@@ -168,9 +177,20 @@ export function decideToolCallRestore(
   // and would mismatch the allowlist as gibberish. Restored values never
   // leave this function: only extracted hosts do (a secret resolves to no
   // host and contributes nothing).
+  // Payload≠intent: only shell-like calls (bash/powershell `command`) get
+  // the deep free-form scan over the whole input — there the command string
+  // is both action and payload. For every other tool the input is a record
+  // whose payload fields (write `content`, read results, …) merely MENTION
+  // hosts; destinations come from structured fields only (url/host/…), so a
+  // write whose content names hosts is never an outbound call. The
+  // commandSignature comment above already promises this discipline for
+  // signatures — the extraction side must honor it too.
+  const deepScan = shellCommandOf(opts.toolName, input) !== "";
   const destinations = opts.destinationOverride
     ? []
-    : extractDestinations(probe.value);
+    : deepScan
+      ? extractDestinations(probe.value)
+      : extractStructuredDestinations(probe.value);
   for (const extra of opts.extraDestinations ?? []) {
     if (!destinations.includes(extra)) destinations.push(extra);
   }
@@ -186,7 +206,7 @@ export function decideToolCallRestore(
     for (const scope of opts.scopes.values()) {
       for (const name of scope.envNames ?? []) skipEnv.add(name);
     }
-    if (!opts.destinationOverride) {
+    if (deepScan && !opts.destinationOverride) {
       for (const hint of envDestinationHints(input, skipEnv)) {
         if (!destinations.includes(hint)) destinations.push(hint);
       }
@@ -359,11 +379,13 @@ export function envDestinationHints(
  * destination), plaintext hosts are unchanged. Resolved values never
  * leave this function — only extracted hosts do.
  */
-export function resolvedDestinations(masker: Masker, input: unknown): string[] {
+export function resolvedDestinations(masker: Masker, input: unknown, deep = true): string[] {
   try {
-    return extractDestinations(masker.unmaskValue(input).value);
+    return deep
+      ? extractDestinations(masker.unmaskValue(input).value)
+      : extractStructuredDestinations(masker.unmaskValue(input).value);
   } catch {
-    return extractDestinations(input);
+    return deep ? extractDestinations(input) : extractStructuredDestinations(input);
   }
 }
 

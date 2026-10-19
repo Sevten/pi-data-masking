@@ -361,8 +361,9 @@ test("tool scope: disallowed tool violates even with matched destination", () =>
   assert.equal(d.count, 0);
   assert.equal(d.violations[0].reason, "tool");
   assert.deepEqual(d.violations[0].offending, ["bash"]);
-  // the allowed tool restores
-  const ok = decide(f, "write", { command: `curl https://api.stripe.com ${f.placeholder}` });
+  // the allowed tool restores — destination verified via its structured field
+  // (payload≠intent: a write is scanned on structured fields, not command text)
+  const ok = decide(f, "write", { url: "https://api.stripe.com/v1", content: f.placeholder });
   assert.equal(ok.count, 1);
 });
 

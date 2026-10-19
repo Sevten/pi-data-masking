@@ -71,7 +71,7 @@ import {
 } from "./core/file-markers.ts";
 import { consumerSignatureWord, hasDestinationOverride, hasNetworkSignature } from "./core/network-signature.ts";
 import { ghDestinationHost, resolveGitRemote } from "./core/git-remote.ts";
-import { resolvedDestinations } from "./core/egress-decision.ts";
+import { resolvedDestinations, shellCommandOf } from "./core/egress-decision.ts";
 import { extractDestinationUrls } from "./core/destination-extract.ts";
 import {
   AUDIT_ENTRY,
@@ -1298,12 +1298,7 @@ export default async function (pi: ExtensionAPI) {
     // scoped, and the vault's whole point is to guard them regardless.
     if (config.rules.length === 0 && !config.options.persistedSecrets.enabled) return;
     const cwd = process.cwd();
-    const command =
-      event.toolName === "bash" || event.toolName === "powershell"
-        ? typeof (event.input as Record<string, unknown>).command === "string"
-          ? ((event.input as Record<string, unknown>).command as string)
-          : ""
-        : "";
+    const command = shellCommandOf(event.toolName, event.input);
 
     // Destinations the free-form scan cannot see (plan §B1/§B2): a git
     // remote name resolved through .git/config, and the gh API host.
@@ -1376,7 +1371,10 @@ export default async function (pi: ExtensionAPI) {
           onRefuse: vault.onRefuse,
         });
       }
-      const scanDestinations = resolvedDestinations(masker, event.input);
+      // Payload≠intent: non-shell tools get structured-fields-only
+      // extraction, same discipline as decideToolCallRestore — a write whose
+      // content names hosts or session paths is not an outbound call.
+      const scanDestinations = resolvedDestinations(masker, event.input, command !== "");
       const destinations =
         command !== "" && hasDestinationOverride(command)
           ? []
