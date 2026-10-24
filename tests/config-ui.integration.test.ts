@@ -38,6 +38,10 @@ const INPUT = {
 
 const delay = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+/** Ceiling for one TUI screen. Scenarios poll with 2s `waitFor`s, so a screen
+ *  still open after this long is stuck, not slow. */
+const SCREEN_TIMEOUT_MS = 30_000;
+
 async function waitFor(check: () => boolean, timeout = 2000): Promise<void> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -101,9 +105,31 @@ async function createHarness(cwd: string, scenarios: Scenario[]) {
     async custom<T>(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (value: T) => void) => Component): Promise<T> {
       const scenario = scenarios.shift();
       assert.ok(scenario, "unexpected TUI screen");
-      return new Promise<T>((resolve, reject) => {
-        const component = factory(tui, theme, keybindings, resolve);
-        void scenario(component, styleCalls).catch(reject);
+      return await new Promise<T>((resolve, reject) => {
+        let settled = false;
+        let component: Component | undefined;
+        const settle = (finish: () => void): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          finish();
+        };
+        // A screen whose product code never calls done() leaves this promise
+        // pending with an empty event loop: the runner only reports "Promise
+        // resolution is still pending" and CI waits out its full timeout. Cap
+        // the wait so a stuck screen fails with its own title.
+        const timer = setTimeout(() => settle(() => {
+          let title = "never rendered";
+          try { title = String(component?.render(100)[0] ?? "empty screen"); } catch { /* render failed; the timeout is the failure */ }
+          reject(new Error(`TUI screen never closed within ${SCREEN_TIMEOUT_MS / 1000}s: ${title}`));
+        }), SCREEN_TIMEOUT_MS);
+        try {
+          component = factory(tui, theme, keybindings, (value) => settle(() => resolve(value)));
+        } catch (error) {
+          settle(() => reject(error));
+          return;
+        }
+        void scenario(component, styleCalls).catch((error) => settle(() => reject(error)));
       });
     },
   };
@@ -1092,6 +1118,10 @@ test("session history vault: pinned line renders, V opens the editor, destinatio
       component.handleInput("v");
       await waitFor(() => existsSync(globalConfigPath)
         && ((JSON.parse(readFileSync(globalConfigPath, "utf8")) as { options?: { persistedSecrets?: { destinations?: string[] } } }).options?.persistedSecrets?.destinations?.length ?? 0) > 0);
+      // The write lands before the main screen regains control; Escape pressed
+      // while the editor overlay still holds its input lock is swallowed and
+      // this screen never closes. Wait for the saved message instead.
+      await waitFor(() => component.render(100).some((line) => line.includes("Saved · Session history updated")));
       component.handleInput(INPUT.escape);
     },
     async (editor) => {
@@ -1155,6 +1185,10 @@ test("trusted destinations row opens its own editor and saves the list", async (
       component.handleInput(INPUT.enter);
       await waitFor(() => existsSync(globalConfigPath)
         && (JSON.parse(readFileSync(globalConfigPath, "utf8")).options?.trustedDestinations?.length ?? 0) > 0);
+      // The write lands before the main screen regains control; Escape pressed
+      // while the editor overlay still holds its input lock is swallowed and
+      // this screen never closes. Wait for the saved message instead.
+      await waitFor(() => component.render(100).some((line) => line.includes("Saved · trusted destinations updated")));
       component.handleInput(INPUT.escape);
     },
     async (component) => {
