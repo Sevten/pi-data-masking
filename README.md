@@ -1,5 +1,7 @@
 # pi-data-masking
 
+[简体中文](README.zh-CN.md) | [English](README.md)
+
 General-purpose, rule-driven data masking extension for the [Pi](https://github.com/earendil-works/pi) agent: the model sees placeholders, your tools get the real values.
 
 Instead of obvious [REDACTED] markers, the model gets placeholders that keep the shape of the original: generated automatically for secrets like API keys and tokens, or defined by you for values like customer names and internal hostnames. Tool calls keep working, and real values are restored only for destinations you allow, which also limits prompt-injection-driven data exfiltration.
